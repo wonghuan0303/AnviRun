@@ -1,0 +1,120 @@
+[
+  {
+    "id": "msg-server-01",
+    "type": "agent.registered",
+    "timestamp": "2026-08-24T03:00:00Z",
+    "protocolVersion": 1,
+    "payload": {
+      "agentId": "agent-01",
+      "agentName": "Windows Builder",
+      "heartbeatIntervalSeconds": 15,
+      "heartbeatTimeoutSeconds": 45,
+      "serverTime": "2026-08-24T03:00:00Z"
+    }
+  },
+  {
+    "id": "msg-server-02",
+    "type": "task.available",
+    "timestamp": "2026-08-24T03:00:01Z",
+    "protocolVersion": 1,
+    "payload": {
+      "agentId": "agent-01",
+      "queuedTaskCount": 1
+    }
+  },
+  {
+    "id": "msg-server-03",
+    "type": "task.assignment",
+    "timestamp": "2026-08-24T03:00:02Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "leaseToken": "lease-token-000001",
+      "leaseExpiresAt": "2026-08-24T04:00:02Z",
+      "agentId": "agent-01",
+      "projectId": "project-01",
+      "buildTemplateId": "template-01",
+      "git": {
+        "url": "https://git.example.test/client.git",
+        "branch": "main"
+      },
+      "command": "pnpm build",
+      "artifactDir": "dist",
+      "timeoutSeconds": 3600,
+      "config": {
+        "name": "client",
+        "version": "1.0.0"
+      },
+      "sensitiveConfigKeys": []
+    }
+  },
+  {
+    "id": "msg-server-04",
+    "type": "task.cancel",
+    "timestamp": "2026-08-24T03:00:03Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "leaseToken": "lease-token-000001",
+      "requestedAt": "2026-08-24T03:00:03Z",
+      "reason": "user requested"
+    }
+  },
+  {
+    "id": "msg-server-05",
+    "type": "agent.token.revoked",
+    "timestamp": "2026-08-24T03:00:04Z",
+    "protocolVersion": 1,
+    "payload": {
+      "agentId": "agent-01",
+      "revokedAt": "2026-08-24T03:00:04Z",
+      "reason": "rotation"
+    }
+  },
+  {
+    "id": "msg-server-06",
+    "type": "task.assignment",
+    "timestamp": "2026-08-24T03:00:05Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-ssh-scp",
+      "leaseToken": "lease-token-ssh-0001",
+      "leaseExpiresAt": "2026-08-24T04:00:05Z",
+      "agentId": "agent-01",
+      "projectId": "project-01",
+      "buildTemplateId": "template-01",
+      "git": {
+        "url": "git@github.com:org/repo.git",
+        "branch": "main"
+      },
+      "command": "pnpm build",
+      "artifactDir": "dist",
+      "timeoutSeconds": 3600,
+      "config": {},
+      "sensitiveConfigKeys": []
+    }
+  },
+  {
+    "id": "msg-server-07",
+    "type": "task.assignment",
+    "timestamp": "2026-08-24T03:00:06Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-ssh-uri",
+      "leaseToken": "lease-token-ssh-0002",
+      "leaseExpiresAt": "2026-08-24T04:00:06Z",
+      "agentId": "agent-01",
+      "projectId": "project-01",
+      "buildTemplateId": "template-01",
+      "git": {
+        "url": "ssh://git@github.com/org/repo.git",
+        "branch": "main"
+      },
+      "command": "pnpm build",
+      "artifactDir": "dist",
+      "timeoutSeconds": 3600,
+      "config": {},
+      "sensitiveConfigKeys": []
+    }
+  }
+]

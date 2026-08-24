@@ -10,8 +10,7 @@
 
 ## 当前进度
 
-已完成 **T0.1 建立 Monorepo 骨架**：Web、Server、共享契约包与 Rust Agent 均可安装、检查、
-测试和构建。尚未实现登录、数据库、Agent 协议、动态表单与任务逻辑（见实施计划 T0.2 及之后）。
+已完成 **T0.1 Monorepo 骨架** 与 **T0.2 公共业务契约**：Web、Server、TypeScript contracts 与 Rust Agent 均可安装、检查、测试和构建。登录、数据库、Agent 连接、动态表单业务页面与任务执行逻辑仍按实施计划在后续任务实现。
 
 ## 目录结构
 
@@ -22,7 +21,7 @@ buildPlatform/
 │  └─ server/              # NestJS + TypeScript
 ├─ agent/                  # Rust Cargo workspace（跨平台 Agent）
 ├─ packages/
-│  └─ contracts/           # Web/Server 公共 TypeScript 协议包
+│  └─ contracts/           # Web/Server/Agent 公共业务协议与共享 fixtures
 ├─ docs/                   # 设计与开发文档
 └─ deploy/                 # 部署与运维资产（T6.3 填充）
 ```
@@ -83,5 +82,4 @@ Rust Agent：
 
 ## 持续集成
 
-`.github/workflows/ci.yml` 包含 `node` 与 `agent` 两个作业，分别执行格式检查、静态检查、
-测试和构建。CI 与本地共用 `.nvmrc` 和 `packageManager` 中的版本声明。
+`.github/workflows/ci.yml` 包含 `node` 与 `agent` 两个作业，分别执行格式检查、静态检查、测试和构建。CI 与本地共用 `.nvmrc` 和 `packageManager` 中的版本声明。

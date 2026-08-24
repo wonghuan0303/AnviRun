@@ -1,0 +1,198 @@
+[
+  {
+    "id": "invalid-version",
+    "type": "agent.heartbeat",
+    "timestamp": "2026-08-24T03:02:00Z",
+    "protocolVersion": 99,
+    "payload": {
+      "agentId": "agent-01",
+      "currentTaskId": null
+    }
+  },
+  {
+    "id": "invalid-status",
+    "type": "task.status",
+    "timestamp": "2026-08-24T03:02:01Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "leaseToken": "lease-token-000001",
+      "status": "DONE",
+      "occurredAt": "2026-08-24T03:02:01Z"
+    }
+  },
+  {
+    "id": "invalid-stream",
+    "type": "task.log",
+    "timestamp": "2026-08-24T03:02:02Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "leaseToken": "lease-token-000001",
+      "sequence": 1,
+      "stream": "console",
+      "chunk": "bad",
+      "emittedAt": "2026-08-24T03:02:02Z"
+    }
+  },
+  {
+    "id": "git-credentials",
+    "type": "task.assignment",
+    "timestamp": "2026-08-24T03:02:03Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "leaseToken": "lease-token-000001",
+      "leaseExpiresAt": "2026-08-24T04:02:03Z",
+      "agentId": "agent-01",
+      "projectId": "project-01",
+      "buildTemplateId": "template-01",
+      "git": {
+        "url": "https://user:password@git.example.test/client.git",
+        "branch": "main"
+      },
+      "command": "pnpm build",
+      "artifactDir": "dist",
+      "timeoutSeconds": 3600,
+      "config": {},
+      "sensitiveConfigKeys": []
+    }
+  },
+  {
+    "id": "invalid-timestamp-calendar",
+    "type": "agent.heartbeat",
+    "timestamp": "2026-02-30T03:02:10Z",
+    "protocolVersion": 1,
+    "payload": {
+      "agentId": "agent-01",
+      "currentTaskId": null
+    }
+  },
+  {
+    "id": "invalid-timestamp-offset",
+    "type": "agent.heartbeat",
+    "timestamp": "2026-08-24T03:02:10+08:00",
+    "protocolVersion": 1,
+    "payload": {
+      "agentId": "agent-01",
+      "currentTaskId": null
+    }
+  },
+  {
+    "id": "invalid-payload-timestamp",
+    "type": "task.completed",
+    "timestamp": "2026-08-24T03:02:10Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "leaseToken": "lease-token-000001",
+      "exitCode": 0,
+      "finishedAt": "2026-02-30T03:02:10Z",
+      "artifactCount": 0,
+      "artifactBytes": 0
+    }
+  },
+  {
+    "id": "heartbeat-current-task-id-missing",
+    "type": "agent.heartbeat",
+    "timestamp": "2026-08-24T03:02:10Z",
+    "protocolVersion": 1,
+    "payload": {
+      "agentId": "agent-01"
+    }
+  },
+  {
+    "id": "artifact-size-negative",
+    "type": "task.artifact-manifest",
+    "timestamp": "2026-08-24T03:02:10Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "leaseToken": "lease-token-000001",
+      "artifactDir": "dist",
+      "totalBytes": -1,
+      "files": [
+        {
+          "relativePath": "app.js",
+          "size": 12,
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ]
+    }
+  },
+  {
+    "id": "artifact-size-decimal",
+    "type": "task.artifact-manifest",
+    "timestamp": "2026-08-24T03:02:10Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "leaseToken": "lease-token-000001",
+      "artifactDir": "dist",
+      "totalBytes": 1.5,
+      "files": [
+        {
+          "relativePath": "app.js",
+          "size": 12,
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ]
+    }
+  },
+  {
+    "id": "artifact-size-too-large",
+    "type": "task.artifact-manifest",
+    "timestamp": "2026-08-24T03:02:10Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "leaseToken": "lease-token-000001",
+      "artifactDir": "dist",
+      "totalBytes": 9007199254740992,
+      "files": [
+        {
+          "relativePath": "app.js",
+          "size": 9007199254740992,
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ]
+    }
+  },
+  {
+    "id": "completed-artifact-count-too-large",
+    "type": "task.completed",
+    "timestamp": "2026-08-24T03:02:10Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "leaseToken": "lease-token-000001",
+      "exitCode": 0,
+      "finishedAt": "2026-08-24T03:02:10Z",
+      "artifactCount": 9007199254740992,
+      "artifactBytes": 0
+    }
+  },
+  {
+    "id": "ssh-user-info-credentials",
+    "type": "task.assignment",
+    "timestamp": "2026-08-24T03:02:10Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "leaseToken": "lease-token-000001",
+      "leaseExpiresAt": "2026-08-24T04:02:10Z",
+      "agentId": "agent-01",
+      "projectId": "project-01",
+      "buildTemplateId": "template-01",
+      "git": {
+        "url": "ssh://token@github.com/org/repo.git",
+        "branch": "main"
+      },
+      "command": "pnpm build",
+      "artifactDir": "dist",
+      "timeoutSeconds": 3600,
+      "config": {},
+      "sensitiveConfigKeys": []
+    }
+  }
+]

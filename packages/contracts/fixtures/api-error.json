@@ -1,0 +1,6 @@
+{
+  "code": "VALIDATION_FAILED",
+  "message": "请求参数校验失败",
+  "details": { "field": "name", "issues": ["name 必填"] },
+  "requestId": "req-20260824-001"
+}

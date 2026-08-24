@@ -1,0 +1,21 @@
+[
+  { "type": "component:arbitrary", "name": "dup", "label": "非法控件", "onClick": "danger" },
+  {
+    "type": "number",
+    "name": "dup",
+    "label": "重复字段",
+    "defaultValue": "not-a-number",
+    "min": 5,
+    "max": 1,
+    "step": 0
+  },
+  {
+    "type": "select",
+    "name": "options",
+    "label": "非法选项",
+    "options": [
+      { "label": "相同", "value": "same" },
+      { "label": "重复", "value": "same" }
+    ]
+  }
+]

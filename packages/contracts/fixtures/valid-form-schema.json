@@ -1,0 +1,65 @@
+[
+  {
+    "type": "input",
+    "name": "name",
+    "label": "产品名称",
+    "defaultValue": "安全客户端",
+    "required": true,
+    "placeholder": "请输入产品名称"
+  },
+  {
+    "type": "textarea",
+    "name": "description",
+    "label": "说明",
+    "defaultValue": "构建说明",
+    "maxLength": 2000
+  },
+  {
+    "type": "number",
+    "name": "retries",
+    "label": "重试次数",
+    "defaultValue": 2,
+    "min": 0,
+    "max": 5,
+    "step": 1
+  },
+  {
+    "type": "select",
+    "name": "version",
+    "label": "版本号",
+    "defaultValue": "1.0.0",
+    "options": [
+      { "label": "1.0.0", "value": "1.0.0" },
+      { "label": "2.0.0", "value": "2.0.0" }
+    ]
+  },
+  {
+    "type": "radio",
+    "name": "channel",
+    "label": "渠道",
+    "defaultValue": 1,
+    "options": [
+      { "label": "稳定", "value": 1 },
+      { "label": "测试", "value": 2 }
+    ]
+  },
+  {
+    "type": "checkbox",
+    "name": "platforms",
+    "label": "平台",
+    "defaultValue": ["windows", "linux"],
+    "options": [
+      { "label": "Windows", "value": "windows" },
+      { "label": "Linux", "value": "linux" },
+      { "label": "macOS", "value": "macos" }
+    ]
+  },
+  { "type": "switch", "name": "signed", "label": "签名", "defaultValue": true },
+  { "type": "date", "name": "releaseDate", "label": "发布日期", "defaultValue": "2026-08-24" },
+  {
+    "type": "password",
+    "name": "signingPassword",
+    "label": "签名密码",
+    "defaultValue": "not-a-real-secret"
+  }
+]

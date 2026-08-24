@@ -1,0 +1,128 @@
+[
+  {
+    "id": "msg-agent-01",
+    "type": "agent.hello",
+    "timestamp": "2026-08-24T03:01:00Z",
+    "protocolVersion": 1,
+    "payload": {
+      "agentId": null,
+      "agentVersion": "0.1.0",
+      "hostname": "builder-01",
+      "os": "windows",
+      "arch": "x86_64",
+      "workspaceRoot": "C:\\build-agent",
+      "currentTask": null
+    }
+  },
+  {
+    "id": "msg-agent-02",
+    "type": "agent.heartbeat",
+    "timestamp": "2026-08-24T03:01:01Z",
+    "protocolVersion": 1,
+    "payload": { "agentId": "agent-01", "currentTaskId": null }
+  },
+  {
+    "id": "msg-agent-03",
+    "type": "task.claim",
+    "timestamp": "2026-08-24T03:01:02Z",
+    "protocolVersion": 1,
+    "payload": { "agentId": "agent-01", "taskId": null }
+  },
+  {
+    "id": "msg-agent-04",
+    "type": "task.accepted",
+    "timestamp": "2026-08-24T03:01:03Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "leaseToken": "lease-token-000001",
+      "acceptedAt": "2026-08-24T03:01:03Z"
+    }
+  },
+  {
+    "id": "msg-agent-05",
+    "type": "task.status",
+    "timestamp": "2026-08-24T03:01:04Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "leaseToken": "lease-token-000001",
+      "status": "PREPARING",
+      "occurredAt": "2026-08-24T03:01:04Z",
+      "reason": "workspace ready"
+    }
+  },
+  {
+    "id": "msg-agent-06",
+    "type": "task.log",
+    "timestamp": "2026-08-24T03:01:05Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "leaseToken": "lease-token-000001",
+      "sequence": 1,
+      "stream": "stdout",
+      "chunk": "building\n",
+      "emittedAt": "2026-08-24T03:01:05Z"
+    }
+  },
+  {
+    "id": "msg-agent-07",
+    "type": "task.artifact-manifest",
+    "timestamp": "2026-08-24T03:01:06Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "leaseToken": "lease-token-000001",
+      "artifactDir": "dist",
+      "totalBytes": 12,
+      "files": [
+        {
+          "relativePath": "app.js",
+          "size": 12,
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ]
+    }
+  },
+  {
+    "id": "msg-agent-08",
+    "type": "task.completed",
+    "timestamp": "2026-08-24T03:01:07Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "leaseToken": "lease-token-000001",
+      "exitCode": 0,
+      "finishedAt": "2026-08-24T03:01:07Z",
+      "artifactCount": 1,
+      "artifactBytes": 12,
+      "sourceCommit": "0123456789abcdef0123456789abcdef01234567"
+    }
+  },
+  {
+    "id": "msg-agent-09",
+    "type": "task.failed",
+    "timestamp": "2026-08-24T03:01:08Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-02",
+      "leaseToken": "lease-token-000002",
+      "reason": "command failed",
+      "failedAt": "2026-08-24T03:01:08Z",
+      "exitCode": 1
+    }
+  },
+  {
+    "id": "msg-agent-10",
+    "type": "task.canceled",
+    "timestamp": "2026-08-24T03:01:09Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-03",
+      "leaseToken": "lease-token-000003",
+      "canceledAt": "2026-08-24T03:01:09Z",
+      "reason": "cancel requested"
+    }
+  }
+]

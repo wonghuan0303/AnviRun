@@ -1,0 +1,14 @@
+[package]
+name = "build-agent-contracts"
+description = "Agent 侧的跨语言协议契约（与 packages/contracts 共享 JSON fixtures）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
