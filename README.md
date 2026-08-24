@@ -10,7 +10,7 @@
 
 ## 当前进度
 
-已完成 **T0.1 Monorepo 骨架** 与 **T0.2 公共业务契约**：Web、Server、TypeScript contracts 与 Rust Agent 均可安装、检查、测试和构建。登录、数据库、Agent 连接、动态表单业务页面与任务执行逻辑仍按实施计划在后续任务实现。
+已完成 **T0.1 Monorepo 骨架**、**T0.2 公共业务契约** 与 **T1.1 PostgreSQL/Prisma 数据层**：Web、Server、TypeScript contracts 与 Rust Agent 均可安装、检查、测试和构建。登录、Agent 连接、动态表单业务页面与任务执行逻辑仍按实施计划在后续任务实现。
 
 ## 目录结构
 
@@ -83,3 +83,19 @@ Rust Agent：
 ## 持续集成
 
 `.github/workflows/ci.yml` 包含 `node` 与 `agent` 两个作业，分别执行格式检查、静态检查、测试和构建。CI 与本地共用 `.nvmrc` 和 `packageManager` 中的版本声明。
+
+## PostgreSQL / Prisma 数据库（T1.1）
+
+```bash
+docker compose -f docker-compose.dev.yml up -d
+Copy-Item apps/server/.env.example apps/server/.env # PowerShell；Unix 使用 cp
+pnpm run db:generate
+pnpm run db:migrate
+pnpm run db:seed
+```
+
+部署使用 `pnpm run db:migrate:deploy`。数据库集成测试必须设置独立的
+`buildplatform_test` DATABASE_URL 后运行 `pnpm run db:test`，不得清空
+`buildplatform_dev`。完整 Docker、测试库重建和用户名规范化说明见[本地开发说明](docs/local-development.md)。
+
+根级数据库命令：`db:generate`、`db:migrate`、`db:migrate:deploy`、`db:seed`、`db:test`。

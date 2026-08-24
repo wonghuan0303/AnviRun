@@ -3,8 +3,7 @@
 本文档描述在全新环境中安装依赖、启动各子项目并执行检查的完整步骤。业务设计见
 [产品与系统设计](product-design.md)，任务拆分见 [分阶段实施计划](implementation-plan.md)。
 
-当前仓库处于 T0.1（Monorepo 骨架）完成状态：Web、Server、契约包与 Rust Agent 均可构建
-和运行，但尚未实现登录、数据库、Agent 协议、动态表单与任务逻辑。
+当前仓库已完成 T0.1、T0.2 和 T1.1：Web、Server、契约包与 Rust Agent 可构建，Server 已接入 PostgreSQL + Prisma 数据层。登录、Agent 协议、动态表单与任务逻辑仍按实施计划在后续任务实现。
 
 ## 1. 环境要求
 
@@ -101,7 +100,7 @@ pnpm run dev:web
 
 预期结果：终端输出本地地址（默认 `http://localhost:5173/`），页面顶部显示
 “通用构建任务平台”，正文卡片显示前端技术栈、共享契约包版本、API 基地址，以及
-“当前为 T0.1 工程骨架”的提示。
+“当前为 T1.1 数据层建设阶段”的提示。
 
 ### 4.4 Rust Agent
 
@@ -159,3 +158,43 @@ CI 使用 `.nvmrc` 指定 Node 版本，使用 `package.json` 的 `packageManage
 **Windows 上换行符导致 Prettier 格式检查失败**
 仓库统一使用 LF（`.editorconfig` 与 `.gitattributes` 已约束）。若本地历史配置了
 `core.autocrlf=true`，可在仓库内执行 `git config core.autocrlf false` 后重新检出。
+
+## 8. PostgreSQL 与 Prisma（T1.1）
+
+### 8.1 启动开发数据库
+
+```bash
+docker compose -f docker-compose.dev.yml up -d
+```
+
+容器名为 `buildplatform-postgres-t11`，健康检查通过后监听宿主
+`127.0.0.1:54329`。开发数据库为 `buildplatform_dev`，默认凭据只用于本地开发。
+复制 `apps/server/.env.example` 为 `apps/server/.env` 后即可使用示例 `DATABASE_URL`。
+
+### 8.2 Prisma 命令
+
+```bash
+pnpm run db:generate
+pnpm run db:migrate                 # 开发环境创建/应用新 migration
+pnpm run db:migrate:deploy          # 部署/CI 只应用已提交 migration
+pnpm run db:seed                    # 幂等开发种子，可重复执行
+```
+
+用户名写入策略是 Server 通过 `normalizeUsername` 规范化为 3-64 位 ASCII 小写
+`[a-z0-9_.-]`，数据库同时有 lowercase CHECK，防止绕过 Server 写入大小写变体。
+密码、Refresh Token、Agent Token 和任务租约均不保存明文；T1.1 seed 只创建禁用占位用户。
+
+### 8.3 独立数据库集成测试
+
+测试禁止连接开发数据库。先在同一 Docker PostgreSQL 容器中创建独立的
+`buildplatform_test` 数据库（只允许重置这个数据库），再设置：
+
+```powershell
+docker exec buildplatform-postgres-t11 psql -U buildplatform -d postgres -c "DROP DATABASE IF EXISTS buildplatform_test;"
+docker exec buildplatform-postgres-t11 psql -U buildplatform -d postgres -c "CREATE DATABASE buildplatform_test OWNER buildplatform;"
+$env:DATABASE_URL = 'postgresql://buildplatform:buildplatform_dev_only@127.0.0.1:54329/buildplatform_test?schema=public'
+pnpm run db:test
+```
+
+`db:test` 会从 migration deploy 开始，运行真实 PostgreSQL 测试，包括外键/唯一约束、软删除、
+稳定分页、BIGINT、Agent 执行槽 partial unique index 和两个并发领取事务。

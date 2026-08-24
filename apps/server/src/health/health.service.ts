@@ -24,7 +24,7 @@ export class HealthService {
   /**
    * 返回服务基础状态。
    *
-   * T0.1 不检查数据库与存储目录；`/health/ready` 依赖的就绪检查在 T1.1 与 T6.3 中补充。
+   * T1.1 已建立 Prisma 数据层，但本任务不新增 `/health/ready`；完整数据库与存储就绪探针留给 T6.3。
    */
   getStatus(): HealthStatus {
     const contracts = getContractsPackageInfo();

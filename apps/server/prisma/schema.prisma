@@ -1,0 +1,215 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  USER
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum AgentStatus {
+  ONLINE
+  OFFLINE
+  DISABLED
+}
+
+enum BuildTaskStatus {
+  CREATED
+  WAITING_AGENT
+  QUEUED
+  DISPATCHED
+  PREPARING
+  RUNNING
+  UPLOADING
+  SUCCEEDED
+  FAILED
+  CANCELING
+  CANCELED
+  AGENT_LOST
+}
+
+model User {
+  id                String          @id @default(uuid()) @db.Uuid
+  username          String          @unique @db.VarChar(64)
+  passwordHash      String          @db.VarChar(255)
+  role              UserRole        @default(USER)
+  status            UserStatus      @default(ACTIVE)
+  tokenVersion      Int             @default(0)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  refreshTokens     RefreshToken[]
+  createdTemplates  BuildTemplate[] @relation("BuildTemplateCreatedBy")
+  projects          Project[]       @relation("ProjectOwner")
+  createdTasks      BuildTask[]     @relation("BuildTaskCreatedBy")
+  auditLogs         AuditLog[]      @relation("AuditLogActor")
+
+  @@index([role])
+  @@index([status])
+  @@index([status, createdAt, id])
+}
+
+model RefreshToken {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @db.Uuid
+  tokenHash     String   @unique @db.VarChar(255)
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  clientSummary String?  @db.VarChar(255)
+  lastUsedAt    DateTime?
+  createdAt     DateTime @default(now())
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([revokedAt])
+  @@index([userId, revokedAt, expiresAt])
+}
+
+model Agent {
+  id            String          @id @default(uuid()) @db.Uuid
+  name          String          @unique @db.VarChar(128)
+  tokenHash     String?         @unique @db.VarChar(255)
+  enabled       Boolean         @default(true)
+  status        AgentStatus     @default(OFFLINE)
+  hostname      String?         @db.VarChar(255)
+  os            String?         @db.VarChar(64)
+  arch          String?         @db.VarChar(64)
+  version       String?         @db.VarChar(64)
+  lastSeenAt    DateTime?
+  activeTaskId  String?         @unique @db.Uuid
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  assignedTasks BuildTask[]     @relation("BuildTaskAgent")
+  activeTask    BuildTask?      @relation("AgentActiveTask", fields: [activeTaskId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  templates     BuildTemplate[]
+
+  @@index([status])
+  @@index([enabled, status])
+  @@index([lastSeenAt])
+}
+
+model BuildTemplate {
+  id             String        @id @default(uuid()) @db.Uuid
+  name           String         @db.VarChar(128)
+  description    String?        @db.Text
+  agentId        String         @db.Uuid
+  gitUrl         String         @db.Text
+  command        String         @db.Text
+  artifactDir    String         @db.VarChar(1024)
+  formSchema     Json
+  timeoutSeconds Int           @default(3600)
+  enabled        Boolean       @default(true)
+  createdBy      String         @db.Uuid
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  agent          Agent         @relation(fields: [agentId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  creator        User          @relation("BuildTemplateCreatedBy", fields: [createdBy], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  projects       Project[]     @relation("ProjectBuildTemplate")
+  tasks          BuildTask[]   @relation("BuildTaskTemplate")
+
+  @@unique([agentId, name])
+  @@index([agentId])
+  @@index([enabled, updatedAt])
+  @@index([createdBy])
+}
+
+model Project {
+  id              String        @id @default(uuid()) @db.Uuid
+  ownerId         String        @db.Uuid
+  buildTemplateId String        @db.Uuid
+  name            String        @db.VarChar(128)
+  description     String?       @db.Text
+  branch          String        @db.VarChar(512)
+  config          Json
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  deletedAt       DateTime?
+  owner           User          @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  buildTemplate   BuildTemplate @relation("ProjectBuildTemplate", fields: [buildTemplateId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  tasks           BuildTask[]   @relation("BuildTaskProject")
+
+  @@index([ownerId, deletedAt, createdAt, id])
+  @@index([buildTemplateId])
+  @@index([ownerId, name])
+}
+
+model BuildTask {
+  id                String          @id @default(uuid()) @db.Uuid
+  projectId         String          @db.Uuid
+  buildTemplateId   String          @db.Uuid
+  agentId           String          @db.Uuid
+  createdBy         String          @db.Uuid
+  status            BuildTaskStatus  @default(CREATED)
+  statusReason      String?         @db.Text
+  branch            String          @db.VarChar(512)
+  config            Json
+  sourceCommit      String?         @db.VarChar(128)
+  exitCode          Int?
+  queuedAt          DateTime?
+  startedAt         DateTime?
+  finishedAt         DateTime?
+  cancelRequestedAt DateTime?
+  leaseHash         String?         @db.VarChar(255)
+  leaseExpiresAt    DateTime?
+  logSize           BigInt         @default(0)
+  artifactCount     BigInt         @default(0)
+  artifactBytes     BigInt         @default(0)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  project           Project         @relation("BuildTaskProject", fields: [projectId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  buildTemplate     BuildTemplate   @relation("BuildTaskTemplate", fields: [buildTemplateId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  agent             Agent           @relation("BuildTaskAgent", fields: [agentId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  creator           User            @relation("BuildTaskCreatedBy", fields: [createdBy], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  activeForAgent    Agent?          @relation("AgentActiveTask")
+  artifacts         Artifact[]
+
+  @@index([projectId, createdAt, id])
+  @@index([agentId, status, createdAt, id])
+  @@index([status, createdAt, id])
+  @@index([buildTemplateId, status, createdAt, id])
+  @@index([createdBy, createdAt, id])
+}
+
+model Artifact {
+  id           String    @id @default(uuid()) @db.Uuid
+  taskId       String    @db.Uuid
+  relativePath String    @db.VarChar(2048)
+  fileName     String    @db.VarChar(512)
+  size         BigInt
+  sha256       String    @db.Char(64)
+  storagePath  String    @db.VarChar(4096)
+  createdAt    DateTime  @default(now())
+  deletedAt    DateTime?
+  task         BuildTask @relation(fields: [taskId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+
+  @@unique([taskId, relativePath])
+  @@index([taskId, deletedAt, createdAt, id])
+  @@index([deletedAt, createdAt])
+}
+
+model AuditLog {
+  id           String    @id @default(uuid()) @db.Uuid
+  actorId      String?   @db.Uuid
+  action       String    @db.VarChar(128)
+  resourceType String    @db.VarChar(128)
+  resourceId   String    @db.VarChar(128)
+  requestId    String?   @db.VarChar(128)
+  metadata     Json?
+  createdAt    DateTime  @default(now())
+  actor        User?     @relation("AuditLogActor", fields: [actorId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
+  @@index([actorId])
+  @@index([resourceType, resourceId])
+  @@index([createdAt])
+  @@index([resourceType, resourceId, createdAt])
+}

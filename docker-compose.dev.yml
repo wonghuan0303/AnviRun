@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: buildplatform-postgres-t11
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: buildplatform
+      POSTGRES_PASSWORD: buildplatform_dev_only
+      POSTGRES_DB: buildplatform_dev
+    ports:
+      - '${POSTGRES_PORT:-54329}:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U buildplatform -d buildplatform_dev']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    volumes:
+      - buildplatform_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  buildplatform_postgres_data:

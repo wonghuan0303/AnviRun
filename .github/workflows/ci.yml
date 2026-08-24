@@ -12,8 +12,24 @@ concurrency:
 
 jobs:
   node:
-    name: Web / Server / contracts
+    name: Web / Server / contracts / PostgreSQL
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: buildplatform
+          POSTGRES_PASSWORD: buildplatform_ci_only
+          POSTGRES_DB: buildplatform_test
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U buildplatform -d buildplatform_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://buildplatform:buildplatform_ci_only@127.0.0.1:54329/buildplatform_test?schema=public
     steps:
       - uses: actions/checkout@v4
 
@@ -28,6 +44,20 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma Client
+        run: pnpm run db:generate
+
+      - name: Apply database migrations
+        run: pnpm run db:migrate:deploy
+
+      - name: Seed database twice (idempotency)
+        run: |
+          pnpm run db:seed
+          pnpm run db:seed
+
+      - name: Database integration tests
+        run: pnpm run db:test
 
       - name: Lint (Prettier 格式检查 + ESLint 静态检查)
         run: pnpm run lint

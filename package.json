@@ -11,6 +11,11 @@
   },
   "scripts": {
     "contracts:build": "pnpm --filter @buildplatform/contracts run build",
+    "db:generate": "pnpm --filter @buildplatform/server run db:generate",
+    "db:migrate": "pnpm --filter @buildplatform/server run db:migrate",
+    "db:migrate:deploy": "pnpm --filter @buildplatform/server run db:migrate:deploy",
+    "db:seed": "pnpm --filter @buildplatform/server run db:seed",
+    "db:test": "pnpm --filter @buildplatform/server run db:test",
     "lint": "pnpm run lint:node && pnpm run format:check",
     "lint:node": "eslint .",
     "lint:fix": "eslint . --fix",
