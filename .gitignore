@@ -1,0 +1,35 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 构建产物
+dist/
+build/
+*.tsbuildinfo
+
+# Rust
+target/
+
+# 环境变量：只提交示例文件
+.env
+.env.*
+!.env.example
+
+# 测试与缓存
+coverage/
+.eslintcache
+.vite/
+.vitest/
+
+# 运行时数据（服务端日志与产物存储）
+storage/
+*.log
+
+# 本地工具的个人配置（团队共享配置仍可提交 .claude/settings.json）
+.claude/settings.local.json
+
+# 编辑器与操作系统
+.DS_Store
+Thumbs.db
+.idea/
+*.swp

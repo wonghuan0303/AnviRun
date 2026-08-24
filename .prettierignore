@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+target/
+pnpm-lock.yaml
+Cargo.lock
+
+# 本地工具配置
+.claude/
+
+# 产品与实施设计文档由人工维护，不参与自动格式化
+docs/product-design.md
+docs/implementation-plan.md

@@ -1,0 +1,11 @@
+# 强制工作区使用 LF，保证 Prettier / rustfmt 在 Windows 与 Linux 上结果一致
+* text=auto eol=lf
+
+# Windows 脚本必须保留 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 锁文件不参与差异审查
+pnpm-lock.yaml linguist-generated=true
+Cargo.lock linguist-generated=true

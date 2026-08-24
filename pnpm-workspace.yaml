@@ -1,0 +1,7 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# 只允许必要依赖执行安装脚本（Vite / Vitest 依赖 esbuild 的原生二进制）
+onlyBuiltDependencies:
+  - esbuild

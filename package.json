@@ -1,0 +1,42 @@
+{
+  "name": "buildplatform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "通用构建任务平台 Monorepo",
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@10.15.0",
+  "engines": {
+    "node": ">=20.19.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "contracts:build": "pnpm --filter @buildplatform/contracts run build",
+    "lint": "pnpm run lint:node && pnpm run format:check",
+    "lint:node": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "type-check": "pnpm run contracts:build && pnpm -r --workspace-concurrency=1 run type-check",
+    "test": "pnpm run contracts:build && pnpm -r --workspace-concurrency=1 run test",
+    "build": "pnpm -r --workspace-concurrency=1 run build",
+    "dev:web": "pnpm --filter @buildplatform/web run dev",
+    "dev:server": "pnpm --filter @buildplatform/server run dev",
+    "agent:fmt": "cargo fmt --all --manifest-path agent/Cargo.toml",
+    "agent:fmt:check": "cargo fmt --all --manifest-path agent/Cargo.toml -- --check",
+    "agent:lint": "cargo clippy --manifest-path agent/Cargo.toml --all-targets --all-features -- -D warnings",
+    "agent:test": "cargo test --manifest-path agent/Cargo.toml",
+    "agent:build": "cargo build --manifest-path agent/Cargo.toml",
+    "agent:run": "cargo run --manifest-path agent/Cargo.toml -p build-agent"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.20.0",
+    "eslint": "^9.20.0",
+    "eslint-config-prettier": "^10.0.0",
+    "eslint-plugin-vue": "^10.0.0",
+    "globals": "^16.0.0",
+    "prettier": "^3.5.0",
+    "typescript": "^5.8.0",
+    "typescript-eslint": "^8.24.0",
+    "vue-eslint-parser": "^10.0.0"
+  }
+}
