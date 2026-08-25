@@ -90,6 +90,10 @@
 
 #### T1.3 RBAC 与资源所有权
 
+**当前状态：已完成（权限基础设施）**
+
+已完成集中式授权服务、显式资源元数据 Decorator、Project Ownership Guard，以及基于真实 PostgreSQL 的权限矩阵测试。当前阶段只提供后续业务 Controller 可复用的授权基础设施，不提前实现 Project、BuildTask、日志、Artifact 等正式业务接口。
+
 **实施内容**
 
 - 建立 Admin Guard 和 Project Ownership Guard。

@@ -41,3 +41,37 @@ pnpm --filter @buildplatform/server run dev
 `AUTH_COOKIE_SECURE=true`。完整环境变量见 `apps/server/.env.example`，认证设计见
 `docs/authentication.md`。认证测试必须使用独立 `buildplatform_test`，不得清理
 `buildplatform_dev`。
+
+## T1.3 RBAC 与资源所有权
+
+服务端权限以 `Project.ownerId` 作为唯一业务所有权来源：
+
+- `ADMIN` 可以访问所有未软删除的 Project、BuildTask、任务日志和 Artifact。
+- `USER` 只能访问 `Project.ownerId` 等于当前用户 ID 的资源。
+- BuildTask、任务日志和 Artifact 分别沿 `BuildTask.project`、`taskId -> BuildTask.project`、`Artifact.task -> BuildTask.project` 继承 Project 权限。
+- `BuildTask.createdBy`、`BuildTemplate.createdBy`、Agent、Artifact 的 `storagePath` 和客户端传入的 `ownerId` 都不是权限依据。
+
+普通业务授权默认要求 Project 的 `deletedAt` 为 `null`；因此已软删除 Project 及其 Task、日志和 Artifact 对普通访问和默认管理员访问均不可见。将来管理接口如需查看已删除资源，必须显式设计独立的管理查询条件。
+
+后续资源 Controller 应先运行 `AccessTokenGuard`，再运行 `OwnershipGuard`，并用显式 Decorator 声明参数对应的资源类型：
+
+```ts
+@Get(':projectId')
+@UseGuards(AccessTokenGuard, OwnershipGuard)
+@OwnedResource('project', 'projectId')
+getProject() {
+  // OwnershipGuard 已完成统一的 Project.ownerId 与 deletedAt 校验
+}
+```
+
+可用资源类型包括 `project`、`task`、`taskLog` 和 `artifact`。授权查询统一通过 `AuthorizationService`：
+
+```ts
+const where = authorization.projectScope(actor, clientWhere);
+const taskWhere = authorization.taskScope(actor, clientWhere);
+const artifactWhere = authorization.artifactScope(actor, clientWhere);
+```
+
+这些方法返回可直接组合到 Prisma `where` 的数据库条件。客户端筛选只能作为额外的 AND 条件，不能覆盖服务端注入的 owner scope；列表接口不得先查询全部资源再在内存中过滤。单资源检查使用 `assertProjectAccess`、`assertTaskAccess`、`assertTaskLogAccess` 或 `assertArtifactAccess`。
+
+未认证请求仍由 `AccessTokenGuard` 返回既有认证错误，普通用户访问管理员接口仍由 `AdminGuard` 返回 `FORBIDDEN`。不存在、跨用户、已软删除和非法 UUID 的资源统一返回 `404 RESOURCE_NOT_FOUND`，不返回 owner、用户名、storagePath、Prisma/PostgreSQL 错误或堆栈，以避免资源枚举。

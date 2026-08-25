@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
+import { AuthorizationModule } from './authorization/authorization.module';
 import { AuthModule } from './auth/auth.module';
 import { CommonModule } from './common/common.module';
 import { ApiExceptionFilter } from './common/filters/api-exception.filter';
@@ -14,6 +15,7 @@ import { UsersModule } from './users/users.module';
     DatabaseModule,
     HealthModule,
     AuthModule,
+    AuthorizationModule,
     UsersModule,
   ],
   providers: [{ provide: APP_FILTER, useClass: ApiExceptionFilter }],
