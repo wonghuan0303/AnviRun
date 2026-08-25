@@ -1,7 +1,13 @@
 //! 通用构建任务平台 Agent 的公共库入口。
 //!
-//! T0.1 只提供可编译、可测试的骨架：暴露 Agent 的基础版本与运行环境信息。
-//! 与 Server 的连接、心跳、任务领取和构建执行分别在 T2.2、T4.2、T4.3 实现。
+//! T2.2 提供配置加载、Server WebSocket 连接、注册、心跳、重连和优雅退出。
+//! 任务领取、Git、命令执行、日志和产物上传保留到后续阶段。
+
+mod config;
+mod connection;
+
+pub use config::{AgentConfig, ConfigError};
+pub use connection::{Agent, AgentError, RunExit};
 
 /// Agent 的基础标识信息，用于启动日志与后续向 Server 上报。
 #[derive(Debug, Clone, PartialEq, Eq)]

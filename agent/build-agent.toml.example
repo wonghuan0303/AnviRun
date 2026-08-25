@@ -1,0 +1,8 @@
+# Copy to build-agent.toml and replace the one-time registration token.
+server_url = "http://127.0.0.1:3000"
+token = "bpa_replace_me"
+workspace_root = "C:/build-agent"
+log_level = "info"
+
+# Optional. Relative paths are resolved beside this file.
+# state_file = "agent-state.json"
