@@ -111,6 +111,10 @@
 
 #### T2.1 Server Agent 管理模块
 
+
+**当前状态：已完成（T2.1）**
+
+已完成 Agent 管理 API、一次性注册令牌、审计、原生 WebSocket 连接、hello/heartbeat、单实例连接注册表和心跳超时。任务领取、执行、日志、产物及 Rust Agent 逻辑保留到后续阶段。
 **实施内容**
 
 - 管理员 Agent CRUD、启停、一次性令牌生成和轮换。

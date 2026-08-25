@@ -75,3 +75,11 @@ const artifactWhere = authorization.artifactScope(actor, clientWhere);
 这些方法返回可直接组合到 Prisma `where` 的数据库条件。客户端筛选只能作为额外的 AND 条件，不能覆盖服务端注入的 owner scope；列表接口不得先查询全部资源再在内存中过滤。单资源检查使用 `assertProjectAccess`、`assertTaskAccess`、`assertTaskLogAccess` 或 `assertArtifactAccess`。
 
 未认证请求仍由 `AccessTokenGuard` 返回既有认证错误，普通用户访问管理员接口仍由 `AdminGuard` 返回 `FORBIDDEN`。不存在、跨用户、已软删除和非法 UUID 的资源统一返回 `404 RESOURCE_NOT_FOUND`，不返回 owner、用户名、storagePath、Prisma/PostgreSQL 错误或堆栈，以避免资源枚举。
+
+## T2.1 Agent 管理与连接
+
+Agent 管理接口位于 `/api/admin/agents`，全部要求 `AccessTokenGuard, AdminGuard`。管理员可以创建、分页查询、修改名称、启用、停用、轮换注册令牌和删除 Agent；普通用户统一返回 `FORBIDDEN`。创建或轮换响应中的 `registrationToken` 只显示一次，数据库、列表、详情、审计和错误响应只保存/展示 SHA-256 哈希之外的安全摘要，不返回明文令牌。
+
+Agent 使用原生 RFC 6455 连接 `/ws/agent`，令牌只放在握手 Header：`Authorization: Bearer <agent-token>`。Server 复用 `@buildplatform/contracts` 校验 protocol envelope、`agent.hello` 和 `agent.heartbeat`，合法 hello 后返回 `agent.registered`。心跳间隔为 15 秒，连续 45 秒未收到心跳后置为 `OFFLINE`；停用或轮换令牌会发送 `agent.token.revoked` 并断开旧连接。
+
+连接注册表为单 Server 实例内存结构，同一 Agent 只保留一个连接。后续 T2.2 Rust Agent 应直接复用上述公共协议；WSS、重连退避、任务领取和任务执行不属于 T2.1。详细流程见 `docs/agents.md`。

@@ -131,7 +131,7 @@ function idProperty(
   nullable = false,
 ): void {
   const raw = value[key];
-  if (nullable && raw === null) return;
+  if (nullable && (raw === null || raw === undefined)) return;
   if (!(isString(raw) && PROTOCOL_ID_PATTERN.test(raw)))
     issue(
       issues,

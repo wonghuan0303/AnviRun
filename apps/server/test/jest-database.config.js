@@ -1,6 +1,11 @@
 module.exports = {
   rootDir: '..',
-  roots: ['<rootDir>/test/database', '<rootDir>/test/auth', '<rootDir>/test/authorization'],
+  roots: [
+    '<rootDir>/test/database',
+    '<rootDir>/test/auth',
+    '<rootDir>/test/authorization',
+    '<rootDir>/test/agents',
+  ],
   moduleFileExtensions: ['js', 'json', 'ts'],
   testRegex: '.*\\.integration\\.spec\\.ts$',
   transform: {
