@@ -83,3 +83,13 @@ Agent 管理接口位于 `/api/admin/agents`，全部要求 `AccessTokenGuard, A
 Agent 使用原生 RFC 6455 连接 `/ws/agent`，令牌只放在握手 Header：`Authorization: Bearer <agent-token>`。Server 复用 `@buildplatform/contracts` 校验 protocol envelope、`agent.hello` 和 `agent.heartbeat`，合法 hello 后返回 `agent.registered`。心跳间隔为 15 秒，连续 45 秒未收到心跳后置为 `OFFLINE`；停用或轮换令牌会发送 `agent.token.revoked` 并断开旧连接。
 
 连接注册表为单 Server 实例内存结构，同一 Agent 只保留一个连接。后续 T2.2 Rust Agent 应直接复用上述公共协议；WSS、重连退避、任务领取和任务执行不属于 T2.1。详细流程见 `docs/agents.md`。
+
+## T3.1 构建模板后端
+
+管理员模板接口位于 `/api/admin/build-templates`，全部要求 `AccessTokenGuard, AdminGuard`。支持创建、分页筛选、详情、更新、启用、停用和删除；模板始终由服务端写入 `createdBy`，不接受客户端篡改。
+
+普通登录用户使用 `/api/build-templates` 读取已启用模板摘要和动态 `formSchema`，不能读取停用模板。公共响应不包含构建命令、产物目录、创建者或 Agent tokenHash。
+
+服务端复用 `@buildplatform/contracts` 的 `validateFormSchema`，校验 Git URL、Shell 命令、工作区内相对产物目录和正整数超时。绑定 Agent 必须存在且 `enabled=true`；OFFLINE 但启用的 Agent 可以绑定。删除被 Project 或 BuildTask 引用的模板返回 409。
+
+T3.1 不包含模板版本、Git 拉取、项目、任务派发或 Web 管理页面。

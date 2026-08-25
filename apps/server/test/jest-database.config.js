@@ -5,6 +5,7 @@ module.exports = {
     '<rootDir>/test/auth',
     '<rootDir>/test/authorization',
     '<rootDir>/test/agents',
+    '<rootDir>/test/build-templates',
   ],
   moduleFileExtensions: ['js', 'json', 'ts'],
   testRegex: '.*\\.integration\\.spec\\.ts$',

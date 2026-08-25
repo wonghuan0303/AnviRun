@@ -4,6 +4,7 @@ import { ConfigModule } from '@nestjs/config';
 import { AgentsModule } from './agents/agents.module';
 import { AuthorizationModule } from './authorization/authorization.module';
 import { AuthModule } from './auth/auth.module';
+import { BuildTemplatesModule } from './build-templates/build-templates.module';
 import { CommonModule } from './common/common.module';
 import { ApiExceptionFilter } from './common/filters/api-exception.filter';
 import { DatabaseModule } from './database/database.module';
@@ -18,6 +19,7 @@ import { UsersModule } from './users/users.module';
     AuthModule,
     AuthorizationModule,
     AgentsModule,
+    BuildTemplatesModule,
     UsersModule,
   ],
   providers: [{ provide: APP_FILTER, useClass: ApiExceptionFilter }],
