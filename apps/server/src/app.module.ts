@@ -11,6 +11,7 @@ import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { UsersModule } from './users/users.module';
 import { ProjectsModule } from './projects/projects.module';
+import { TasksModule } from './tasks/tasks.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, cache: true }),
@@ -22,6 +23,7 @@ import { ProjectsModule } from './projects/projects.module';
     AgentsModule,
     BuildTemplatesModule,
     ProjectsModule,
+    TasksModule,
     UsersModule,
   ],
   providers: [{ provide: APP_FILTER, useClass: ApiExceptionFilter }],

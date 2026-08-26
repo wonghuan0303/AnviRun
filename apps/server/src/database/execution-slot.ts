@@ -23,11 +23,33 @@ export class ExecutionSlotInputError extends Error {
   }
 }
 
+type LockedAgent = {
+  id: string;
+  enabled: boolean;
+  status: 'ONLINE' | 'OFFLINE' | 'DISABLED';
+  activeTaskId: string | null;
+};
+
+/** 锁定 Agent 行并读取执行槽指针，所有任务领取/回收都复用该顺序。 */
+export async function lockAgentExecutionSlot(
+  tx: Prisma.TransactionClient,
+  agentId: string,
+): Promise<LockedAgent | null> {
+  const lockedAgent = await tx.$queryRaw<Array<{ id: string }>>(
+    Prisma.sql`SELECT "id" FROM "Agent" WHERE "id" = CAST(${agentId} AS UUID) FOR UPDATE`,
+  );
+  if (lockedAgent.length === 0) return null;
+
+  return tx.agent.findUnique({
+    where: { id: agentId },
+    select: { id: true, enabled: true, status: true, activeTaskId: true },
+  });
+}
+
 /**
  * 以 Agent 行锁为入口，在同一可串行化事务中更新任务状态和 Agent.activeTaskId。
  *
- * T4.1 应把队列领取逻辑放在该原语之上：排队任务仍可为多条，只有领取进入
- * DISPATCHED 时占用执行槽。数据库 partial unique index 是最终兜底。
+ * T4.1 队列领取逻辑与该原语使用同样的 Agent 行锁和数据库 partial unique index。
  */
 export async function claimAgentExecutionSlot(
   prisma: PrismaClient,
@@ -35,20 +57,10 @@ export async function claimAgentExecutionSlot(
 ) {
   return prisma.$transaction(
     async (tx) => {
-      const lockedAgent = await tx.$queryRaw<Array<{ id: string }>>(
-        Prisma.sql`SELECT "id" FROM "Agent" WHERE "id" = CAST(${input.agentId} AS UUID) FOR UPDATE`,
-      );
+      const agent = await lockAgentExecutionSlot(tx, input.agentId);
+      if (!agent) throw new ExecutionSlotInputError('agent does not exist');
 
-      if (lockedAgent.length === 0) {
-        throw new ExecutionSlotInputError('agent does not exist');
-      }
-
-      const agent = await tx.agent.findUnique({
-        where: { id: input.agentId },
-        select: { activeTaskId: true },
-      });
-
-      if (agent?.activeTaskId !== null && agent?.activeTaskId !== undefined) {
+      if (agent.activeTaskId !== null) {
         throw new ExecutionSlotUnavailableError('agent already has an active task');
       }
 
@@ -94,16 +106,10 @@ export async function releaseAgentExecutionSlot(
 ) {
   return prisma.$transaction(
     async (tx) => {
-      await tx.$queryRaw(
-        Prisma.sql`SELECT "id" FROM "Agent" WHERE "id" = CAST(${input.agentId} AS UUID) FOR UPDATE`,
-      );
+      const agent = await lockAgentExecutionSlot(tx, input.agentId);
+      if (!agent) throw new ExecutionSlotInputError('agent does not exist');
 
-      const agent = await tx.agent.findUnique({
-        where: { id: input.agentId },
-        select: { activeTaskId: true },
-      });
-
-      if (agent?.activeTaskId !== input.taskId) {
+      if (agent.activeTaskId !== input.taskId) {
         throw new ExecutionSlotInputError('task is not the active task for agent');
       }
 

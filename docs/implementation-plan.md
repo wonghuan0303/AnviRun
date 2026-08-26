@@ -232,6 +232,8 @@
 
 #### T4.1 Server 任务创建与队列
 
+**当前状态：已完成（T4.1）**
+
 **实施内容**
 
 - 实现创建任务、任务列表、详情和状态历史。
@@ -239,12 +241,16 @@
 - Agent 离线进入 WAITING_AGENT，在线进入 QUEUED。
 - 使用数据库事务实现按 Agent、创建时间领取；每个 Agent 最多一个活动任务。
 - 建立租约令牌、幂等 claim 和派发超时回收。
+- 增加 `BuildTaskStatusHistory` 状态历史表；任务创建、排队、派发、确认和超时回收均在数据库事务中记录。
+- 增加 `/api/projects/:projectId/tasks` 创建/列表接口和 `/api/tasks/:taskId` 详情接口，复用 Project 所有权 scope。
+- Agent hello/disconnect、`task.available`、`task.claim`、`task.assignment`、`task.accepted` 已接入现有原生 WebSocket。
 
 **验收标准**
 
 - 同 Agent 串行、不同 Agent 并行。
 - 并发 claim 不会重复派发。
 - Server 重启后排队任务继续存在并可领取。
+- PostgreSQL 集成测试覆盖所有权、配置快照、状态历史、并发 claim、租约校验、超时回收和重启后的数据库队列语义。
 
 #### T4.2 Rust Agent 工作区与 Git 执行
 

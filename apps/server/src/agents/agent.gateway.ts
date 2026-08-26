@@ -1,8 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, Server as HttpServer } from 'node:http';
 import type { Socket } from 'node:net';
 import { Injectable, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
-import { HttpAdapterHost } from '@nestjs/core';
+import { HttpAdapterHost, ModuleRef } from '@nestjs/core';
 import {
   AGENT_HEARTBEAT_INTERVAL_SECONDS,
   AGENT_HEARTBEAT_TIMEOUT_SECONDS,
@@ -10,17 +10,23 @@ import {
   validateProtocolMessage,
 } from '@buildplatform/contracts';
 import type {
+  AgentCurrentTask,
   AgentHeartbeatMessage,
   AgentHelloMessage,
   AgentRegisteredMessage,
   AgentTokenRevokedMessage,
+  ServerToAgentMessage,
+  TaskAcceptedMessage,
+  TaskClaimMessage,
 } from '@buildplatform/contracts';
-import { AgentStatus } from '@prisma/client';
+import { AgentStatus, BuildTaskStatus } from '@prisma/client';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 
 import { PrismaService } from '../database/prisma.service';
+import { ApiException } from '../common/api-exception';
 import { AgentConnectionRegistry } from './agent-connection.registry';
 import { AgentTokenService, type AuthenticatedAgent } from './agent-token.service';
+import { TaskQueueService } from '../tasks/task-queue.service';
 
 interface ConnectionState {
   readonly agentId: string;
@@ -29,6 +35,14 @@ interface ConnectionState {
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ACTIVE_CONNECTION_TASK_STATUSES = [
+  BuildTaskStatus.DISPATCHED,
+  BuildTaskStatus.PREPARING,
+  BuildTaskStatus.RUNNING,
+  BuildTaskStatus.UPLOADING,
+  BuildTaskStatus.CANCELING,
+  BuildTaskStatus.AGENT_LOST,
+] as const;
 
 function bearerToken(value: string | string[] | undefined): string | undefined {
   const header = Array.isArray(value) ? value[0] : value;
@@ -110,6 +124,7 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
     private readonly prisma: PrismaService,
     private readonly tokens: AgentTokenService,
     private readonly registry: AgentConnectionRegistry,
+    private readonly moduleRef: ModuleRef,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -147,6 +162,7 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
       this.states.delete(socket);
     }
     if (options.markOffline !== false) await this.markOffline(agentId);
+    await this.taskQueue()?.onAgentDisconnected(agentId);
     if (!socket) return;
 
     try {
@@ -170,6 +186,7 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
       this.registry.unregister(agentId, socket);
       this.states.delete(socket);
       await this.markOffline(agentId);
+      await this.taskQueue()?.onAgentDisconnected(agentId);
       safeClose(socket, 1001, 'heartbeat timeout');
     }
   }
@@ -248,6 +265,36 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
         await this.handleHello(socket, state, result.value as AgentHelloMessage);
       } else if (result.value.type === 'agent.heartbeat') {
         await this.handleHeartbeat(socket, state, result.value as AgentHeartbeatMessage);
+      } else if (result.value.type === 'task.claim') {
+        if (!state.helloReceived) {
+          safeClose(socket, 1008, 'hello required');
+          return;
+        }
+        const queue = this.taskQueue();
+        if (!queue) return;
+        try {
+          const assignment = await queue.claim(
+            state.agentId,
+            (result.value as TaskClaimMessage).id,
+            (result.value as TaskClaimMessage).payload.taskId,
+          );
+          if (assignment) this.send(socket, assignment);
+        } catch (error) {
+          if (!(error instanceof ApiException)) throw error;
+        }
+      } else if (result.value.type === 'task.accepted') {
+        if (!state.helloReceived) {
+          safeClose(socket, 1008, 'hello required');
+          return;
+        }
+        const queue = this.taskQueue();
+        if (!queue) return;
+        try {
+          const accepted = result.value as TaskAcceptedMessage;
+          await queue.accept(state.agentId, accepted.payload.taskId, accepted.payload.leaseToken);
+        } catch (error) {
+          if (!(error instanceof ApiException)) throw error;
+        }
       } else {
         safeClose(socket, 1008, 'unsupported protocol message');
       }
@@ -287,7 +334,7 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
       await this.rejectConnection(socket, state.agentId, 'agent disabled');
       return;
     }
-    const activeTaskId = await this.validAgentTask(state.agentId, payload.currentTask?.taskId);
+    const activeTaskId = await this.validHelloTask(state.agentId, payload.currentTask);
     const updated = await this.prisma.agent.updateMany({
       where: { id: state.agentId, enabled: true },
       data: {
@@ -306,7 +353,9 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
     }
     state.helloReceived = true;
     state.lastHeartbeatAt = Date.now();
+    this.registry.markReady(state.agentId, socket);
     this.send(socket, registeredMessage(state.agentId, agent.name));
+    await this.taskQueue()?.onAgentReady(state.agentId);
   }
 
   private async handleHeartbeat(
@@ -318,7 +367,10 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
       await this.rejectConnection(socket, state.agentId, 'agent identity mismatch');
       return;
     }
-    const activeTaskId = await this.validAgentTask(state.agentId, message.payload.currentTaskId);
+    const activeTaskId = await this.validHeartbeatTask(
+      state.agentId,
+      message.payload.currentTaskId,
+    );
     const updated = await this.prisma.agent.updateMany({
       where: { id: state.agentId, enabled: true },
       data: {
@@ -334,27 +386,60 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
     state.lastHeartbeatAt = Date.now();
   }
 
-  private async validAgentTask(
+  private async validHelloTask(
     agentId: string,
-    taskId: string | null | undefined,
+    currentTask: AgentCurrentTask | null | undefined,
   ): Promise<string | null> {
-    if (!taskId || !UUID_PATTERN.test(taskId)) return null;
+    if (!currentTask || !UUID_PATTERN.test(currentTask.taskId)) return null;
+    const agent = await this.prisma.agent.findUnique({
+      where: { id: agentId },
+      select: { activeTaskId: true },
+    });
+    if (agent?.activeTaskId !== currentTask.taskId) return null;
     const task = await this.prisma.buildTask.findFirst({
-      where: { id: taskId, agentId },
+      where: {
+        id: currentTask.taskId,
+        agentId,
+        status: { in: [...ACTIVE_CONNECTION_TASK_STATUSES] },
+      },
+      select: { id: true, leaseHash: true, leaseExpiresAt: true },
+    });
+    if (!task?.leaseHash || !task.leaseExpiresAt || task.leaseExpiresAt.getTime() <= Date.now()) {
+      return null;
+    }
+    const actual = Buffer.from(createHash('sha256').update(currentTask.leaseToken).digest('hex'));
+    const expected = Buffer.from(task.leaseHash);
+    return actual.length === expected.length && timingSafeEqual(actual, expected) ? task.id : null;
+  }
+
+  private async validHeartbeatTask(agentId: string, taskId: string | null): Promise<string | null> {
+    if (!taskId || !UUID_PATTERN.test(taskId)) return null;
+    const agent = await this.prisma.agent.findUnique({
+      where: { id: agentId },
+      select: { activeTaskId: true },
+    });
+    if (agent?.activeTaskId !== taskId) return null;
+    const task = await this.prisma.buildTask.findFirst({
+      where: { id: taskId, agentId, status: { in: [...ACTIVE_CONNECTION_TASK_STATUSES] } },
       select: { id: true },
     });
     return task?.id ?? null;
   }
 
-  private send(
-    socket: WebSocket,
-    message: AgentRegisteredMessage | AgentTokenRevokedMessage,
-  ): void {
+  private send(socket: WebSocket, message: ServerToAgentMessage): void {
     if (socket.readyState !== WebSocket.OPEN) return;
     try {
       socket.send(JSON.stringify(message));
     } catch {
       safeClose(socket, 1011, 'message delivery failed');
+    }
+  }
+
+  private taskQueue(): TaskQueueService | undefined {
+    try {
+      return this.moduleRef.get(TaskQueueService, { strict: false });
+    } catch {
+      return undefined;
     }
   }
 
@@ -365,13 +450,20 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
   ): Promise<void> {
     const owned = this.registry.unregister(agentId, socket);
     this.states.delete(socket);
-    if (owned) await this.markOffline(agentId);
+    if (owned) {
+      await this.markOffline(agentId);
+      await this.taskQueue()?.onAgentDisconnected(agentId);
+    }
     safeClose(socket, 1008, reason);
   }
+
   private async handleClose(socket: WebSocket, agentId: string): Promise<void> {
     const owned = this.registry.unregister(agentId, socket);
     this.states.delete(socket);
-    if (owned) await this.markOffline(agentId);
+    if (owned) {
+      await this.markOffline(agentId);
+      await this.taskQueue()?.onAgentDisconnected(agentId);
+    }
   }
 
   private closeAndForget(socket: WebSocket, code: number, reason: string): void {

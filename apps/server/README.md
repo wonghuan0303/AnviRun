@@ -112,3 +112,16 @@ T3.1 不包含模板版本、Git 拉取、项目、任务派发或 Web 管理页
 项目配置保存在 Project 的单个 JSONB `config` 字段中。Server 使用 `@buildplatform/contracts` 的 `validateFormConfigValues` 过滤未知字段、校验控件值并应用默认值；`PUT /config` 才会持久化规范化结果。详情通过 `analyzeFormConfigCompatibility` 返回 `valid`、`effectiveConfig`、`missingFields`、`obsoleteFields`、`typeConflictFields`、`issues`、`templateEnabled`、`agentEnabled` 和 `buildable`，读取详情不会改写数据库。模板新增带默认值字段不会破坏旧配置，新增无默认值的必填字段、类型变化或 options 变化会使项目不可构建；模板/Agent 停用时项目仍可读但不可构建。 详情/创建/更新/配置保存响应包含当前模板 `formSchema`，便于项目配置页面渲染；分页列表只返回模板安全摘要，不携带 `formSchema`，避免无必要地扩大列表响应。
 
 T3.3 不包含 Web 项目页面、构建任务创建、Git 访问、Agent 派发、模板版本或配置加密。
+
+## T4.1 构建任务创建与数据库队列
+
+任务接口位于 `/api/projects/:projectId/tasks` 和 `/api/tasks/:taskId`，要求登录并复用
+`AccessTokenGuard -> OwnershipGuard`。用户只能创建和查看自己项目下的任务；ADMIN 可访问所有未软删除项目，跨用户、非法 UUID、已删除或不存在资源统一返回 `404 RESOURCE_NOT_FOUND`。
+
+- `POST /api/projects/:projectId/tasks` 创建任务；服务端复制项目当前 branch/config，并记录当前模板、Agent 和创建者，不接受客户端 ownerId、模板或配置覆盖。
+- `GET /api/projects/:projectId/tasks?page=&pageSize=&status=` 分页查询项目任务；`GET /api/tasks/:taskId` 返回安全详情和按时间排序的状态历史。
+- 创建前校验模板和 Agent 均启用、项目配置对模板当前 Schema 兼容；Agent 无可用连接时进入 `WAITING_AGENT`，Agent 已完成 WebSocket hello 时进入 `QUEUED`。
+- Agent hello 后会将该 Agent 的等待任务转为 `QUEUED` 并发送 `task.available`。`task.claim` 在 PostgreSQL 事务中先锁定 Agent 行，再按 `createdAt,id` FIFO 领取，写入派发租约并设置 `activeTaskId`；部分唯一索引和同一锁顺序保证一个 Agent 同时最多一个活动任务。
+- 租约明文只在 `task.assignment` 中短暂发送，数据库只保存 SHA-256 哈希和过期时间。Agent 以 `task.accepted` 确认后任务进入 `PREPARING`；未确认的 `DISPATCHED` 超过 30 秒会被回收至 `QUEUED` 或 `WAITING_AGENT`。Server 重启后队列、租约状态和历史仍以 PostgreSQL 为准。
+
+T4.1 只实现创建、查询、状态历史、Agent 可用通知、领取确认、租约和派发超时回收；任务执行、完成/失败上报、日志、产物、取消/重试和 Agent LOST 恢复留给后续阶段。
