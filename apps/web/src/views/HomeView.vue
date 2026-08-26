@@ -31,8 +31,11 @@ const apiBaseUrl = computed(
       </li>
     </ul>
     <el-alert type="info" :closable="false" show-icon>
-      当前为 T0.1 工程骨架，尚未实现登录、构建模板、项目与任务功能。
+      当前已提供登录入口和管理台基础能力；项目、构建任务、日志与产物功能将在后续阶段接入。
     </el-alert>
+    <div class="home-actions">
+      <RouterLink to="/login"><el-button type="primary">进入管理台</el-button></RouterLink>
+    </div>
   </el-card>
 </template>
 

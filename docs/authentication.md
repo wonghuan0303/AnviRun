@@ -32,7 +32,7 @@ ID 和 username。PostgreSQL advisory lock 保证并发执行最多创建一个�
 
 - Access Token 使用固定 HS256 签名，默认 15 分钟，claims 包含 `sub`、`role`、`tokenVersion`、`jti`、`typ`、`iat`、`exp`、`iss`、`aud`。
 - Refresh Token 使用 32 字节随机值，仅以 HMAC-SHA-256 摘要写入数据库，默认 7 天；刷新在事务中撤销旧记录并创建新记录，并发请求最多一个成功。
-- 开发环境 Refresh Cookie 使用 HttpOnly、SameSite=Strict、Path=/api/auth；生产环境使用 `__Host-` 前缀时必须 Secure=true、Path=/ 且不设置 Domain。登录、刷新和退出清除 Cookie 使用完全一致的 Path/Secure/SameSite 配置；CSRF Cookie 独立、非 HttpOnly，客户端需通过 `X-CSRF-Token` 回传。
+- 开发环境 Refresh Cookie 使用 HttpOnly、SameSite=Strict、Path=/api/auth；开发环境 CSRF Cookie 使用非 HttpOnly、Path=/，以便 /admin 页面读取并回传 X-CSRF-Token；生产环境使用 `__Host-` 前缀时必须 Secure=true、Path=/ 且不设置 Domain。登录、刷新和退出清除 Cookie 使用完全一致的 Path/Secure/SameSite 配置；CSRF Cookie 独立、非 HttpOnly，客户端需通过 `X-CSRF-Token` 回传。
 - 禁用用户和密码重置均在事务中递增 `tokenVersion` 并撤销全部 RefreshToken；AccessTokenGuard 每次查询数据库核对状态和版本。
 - 前端后续只应把 Access Token 放在内存中，不写入 localStorage。
 

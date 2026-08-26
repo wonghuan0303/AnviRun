@@ -5,7 +5,7 @@
 ## 认证接口
 
 - `POST /api/auth/login`：规范化用户名、Argon2id 密码验证，返回短期 Access Token，并设置 HttpOnly Refresh Cookie 与 CSRF Cookie。
-- `POST /api/auth/refresh`：校验 `X-CSRF-Token`，在数据库事务中轮换 Refresh Token。
+- `POST /api/auth/refresh`：校验 `X-CSRF-Token`，在数据库事务中轮换 Refresh Token；开发环境 CSRF Cookie 使用 Path=/ 供管理页面读取。
 - `POST /api/auth/logout`：校验 CSRF、撤销当前 Refresh Token、清除 Cookie，重复调用幂等。
 - `GET /api/auth/me`：Bearer Access Token Guard，返回 `id/username/role/status`。
 - `POST /api/admin/users`：ADMIN 创建 USER/ADMIN。

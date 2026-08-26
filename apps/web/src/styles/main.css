@@ -12,3 +12,153 @@ body {
     'Helvetica Neue', Helvetica, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', Arial,
     sans-serif;
 }
+
+.login-page {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+.login-card {
+  width: min(420px, 100%);
+}
+.login-card__title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 20px;
+  font-weight: 600;
+}
+.login-card__title small {
+  color: #909399;
+  font-size: 13px;
+  font-weight: 400;
+}
+.login-card__submit {
+  width: 100%;
+}
+.admin-shell {
+  min-height: 100%;
+}
+.admin-shell__aside {
+  background: #fff;
+  border-right: 1px solid #e4e7ed;
+}
+.admin-shell__brand {
+  height: 60px;
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  font-weight: 700;
+  color: #303133;
+}
+.admin-shell__header {
+  background: #fff;
+  border-bottom: 1px solid #e4e7ed;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.admin-shell__account {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.admin-shell__main {
+  padding: 24px;
+}
+.page-section {
+  max-width: 1600px;
+  margin: 0 auto;
+}
+.page-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.page-heading h1 {
+  margin: 0 0 6px;
+  font-size: 24px;
+}
+.page-heading p {
+  margin: 0;
+  color: #909399;
+}
+.page-heading__actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.page-alert {
+  margin: 16px 0;
+}
+.table-card {
+  margin-top: 16px;
+}
+.pagination-row {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 18px;
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 20px;
+}
+.full-width {
+  width: 100%;
+}
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.option-hint {
+  color: #e6a23c;
+  margin-left: 4px;
+}
+.subsection-title {
+  margin: 12px 0;
+  font-weight: 600;
+}
+.schema-editor__toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.schema-editor__issues {
+  margin: 0;
+  padding-left: 20px;
+}
+.schema-editor__issues li {
+  margin: 6px 0;
+}
+.schema-editor__issues small {
+  display: block;
+  color: #909399;
+}
+.schema-editor__preview {
+  margin-top: 18px;
+  padding-top: 8px;
+  border-top: 1px solid #ebeef5;
+}
+.home-actions {
+  margin-top: 16px;
+}
+@media (max-width: 800px) {
+  .admin-shell__aside {
+    width: 160px !important;
+  }
+  .admin-shell__main {
+    padding: 14px;
+  }
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+  .page-heading {
+    flex-direction: column;
+  }
+}

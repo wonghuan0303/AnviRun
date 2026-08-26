@@ -94,6 +94,9 @@ describe('T1.2 authentication PostgreSQL/API integration', () => {
     expect(cookies.some((value) => value.includes('SameSite=Strict'))).toBe(true);
     expect(cookies.some((value) => value.startsWith('buildplatform_csrf='))).toBe(true);
     expect(
+      cookies.some((value) => value.startsWith('buildplatform_csrf=') && value.includes('Path=/')),
+    ).toBe(true);
+    expect(
       cookies.some(
         (value) => value.includes('HttpOnly') && value.startsWith('buildplatform_csrf='),
       ),

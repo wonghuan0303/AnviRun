@@ -15,6 +15,7 @@ export interface AuthConfigValues {
   cookieName: string;
   csrfCookieName: string;
   cookiePath: string;
+  csrfCookiePath: string;
   loginRateLimitWindowMs: number;
   loginRateLimitMax: number;
   nodeEnv: string;
@@ -129,6 +130,7 @@ export function resolveAuthConfig(env: Record<string, string | undefined>): Auth
     cookieName,
     csrfCookieName,
     cookiePath: production ? '/' : '/api/auth',
+    csrfCookiePath: '/',
     loginRateLimitWindowMs: parseDuration(env.LOGIN_RATE_LIMIT_WINDOW, 300) * 1000,
     loginRateLimitMax: parsePositiveInteger(env.LOGIN_RATE_LIMIT_MAX, 5, 'LOGIN_RATE_LIMIT_MAX'),
     nodeEnv,

@@ -50,6 +50,7 @@ describe('T1.2 auth primitives', () => {
     expect(config.csrfCookieName).toMatch(/^__Host-/);
     expect(config.cookieSecure).toBe(true);
     expect(config.cookiePath).toBe('/');
+    expect(config.csrfCookiePath).toBe('/');
     const response = { cookie: jest.fn(), clearCookie: jest.fn() };
     const cookies = new CookieService({ values: config });
     cookies.setAuthCookies(response as never, 'refresh-value', 'csrf-value');
@@ -86,6 +87,10 @@ describe('T1.2 auth primitives', () => {
     expect(config.refreshTokenTtlSeconds).toBe(172800);
     expect(config.loginRateLimitWindowMs).toBe(30000);
     expect(config.loginRateLimitMax).toBe(3);
+
+    const development = resolveAuthConfig({ NODE_ENV: 'development' });
+    expect(development.cookiePath).toBe('/api/auth');
+    expect(development.csrfCookiePath).toBe('/');
     expect(() =>
       resolveAuthConfig({ NODE_ENV: 'test', AUTH_COOKIE_SECURE: 'sometimes' }),
     ).toThrow();

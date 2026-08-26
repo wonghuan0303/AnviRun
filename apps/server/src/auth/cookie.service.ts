@@ -56,22 +56,36 @@ export class CookieService {
   }
 
   setAuthCookies(response: Response, refreshToken: string, csrfToken: string): void {
-    response.cookie(this.authConfig.values.cookieName, refreshToken, this.options(true));
-    response.cookie(this.authConfig.values.csrfCookieName, csrfToken, this.options(false));
+    response.cookie(
+      this.authConfig.values.cookieName,
+      refreshToken,
+      this.options(true, this.authConfig.values.cookiePath),
+    );
+    response.cookie(
+      this.authConfig.values.csrfCookieName,
+      csrfToken,
+      this.options(false, this.authConfig.values.csrfCookiePath),
+    );
   }
 
   clearAuthCookies(response: Response): void {
-    response.clearCookie(this.authConfig.values.cookieName, this.options(true));
-    response.clearCookie(this.authConfig.values.csrfCookieName, this.options(false));
+    response.clearCookie(
+      this.authConfig.values.cookieName,
+      this.options(true, this.authConfig.values.cookiePath),
+    );
+    response.clearCookie(
+      this.authConfig.values.csrfCookieName,
+      this.options(false, this.authConfig.values.csrfCookiePath),
+    );
   }
 
-  private options(httpOnly: boolean): CookieOptions {
+  private options(httpOnly: boolean, path: string): CookieOptions {
     const config = this.authConfig.values;
     return {
       httpOnly,
       secure: config.cookieSecure,
       sameSite: config.cookieSameSite,
-      path: config.cookiePath,
+      path,
       maxAge: config.refreshTokenTtlSeconds * 1000,
     };
   }
