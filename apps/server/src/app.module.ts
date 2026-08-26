@@ -10,6 +10,7 @@ import { ApiExceptionFilter } from './common/filters/api-exception.filter';
 import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { UsersModule } from './users/users.module';
+import { ProjectsModule } from './projects/projects.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, cache: true }),
@@ -20,6 +21,7 @@ import { UsersModule } from './users/users.module';
     AuthorizationModule,
     AgentsModule,
     BuildTemplatesModule,
+    ProjectsModule,
     UsersModule,
   ],
   providers: [{ provide: APP_FILTER, useClass: ApiExceptionFilter }],

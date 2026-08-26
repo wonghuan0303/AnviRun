@@ -42,6 +42,16 @@ WebSocket 信封使用数字 `protocolVersion`，当前版本为 `1`。未知版
 
 Rust crate `agent/crates/build-agent-contracts` 通过 `src/lib_t02.rs` 中的 Serde DTO 读取 `packages/contracts/fixtures`，不维护副本。共享 fixtures 的路径按 `CARGO_MANIFEST_DIR` 相对解析，兼容 Windows、macOS 和 Linux。
 
+## 项目配置值校验
+
+`src/form-schema/values.ts` 提供 Project.config 与后续 Web 共用的确定性运行时能力：
+
+- `validateFormConfigValues(schema, input)`：要求普通 JSON 对象，按控件类型、required、长度/正则、数字范围/步长、options 和日期规则校验；成功结果已过滤未知字段并应用默认值。
+- `normalizeFormConfigValues(schema, input)`：返回规范化的 `FormConfigValues`，失败时抛出带 `path`/`pointer` 的 `ContractValidationError`。
+- `analyzeFormConfigCompatibility(schema, storedConfig)`：不写数据库，计算 `effectiveConfig`、`missingFields`、`obsoleteFields`、`typeConflictFields` 和字段级 `issues`。
+
+`input`、`textarea`、`password` 接收字符串，`number` 接收有限数字，`select/radio` 接收声明过的字符串或数字，`checkbox` 接收不重复的 options 数组，`switch` 接收布尔值，`date` 接收真实的 `YYYY-MM-DD`。可选字段的 `null` 表示未填写；required 缺失或为 null 会报错；disabled 字段只使用模板默认值。未知配置字段会被过滤，并在兼容性分析中列为 obsolete，但不会单独导致 invalid。校验 issue 只返回安全的类型/形状信息，不回显具体配置值。
+
 ## 构建产物
 
 本包同时输出 CommonJS (`dist/cjs`) 与 ESM (`dist/esm`)。Server 使用 `require`，Web 使用 ESM；两者都从包根入口导入，所有公共契约由 `src/index.ts` 统一导出。

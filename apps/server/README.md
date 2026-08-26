@@ -93,3 +93,22 @@ Agent 使用原生 RFC 6455 连接 `/ws/agent`，令牌只放在握手 Header：
 服务端复用 `@buildplatform/contracts` 的 `validateFormSchema`，校验 Git URL、Shell 命令、工作区内相对产物目录和正整数超时。绑定 Agent 必须存在且 `enabled=true`；OFFLINE 但启用的 Agent 可以绑定。删除被 Project 或 BuildTask 引用的模板返回 409。
 
 T3.1 不包含模板版本、Git 拉取、项目、任务派发或 Web 管理页面。
+
+## T3.3 项目后端与所有权
+
+项目接口位于 `/api/projects`，登录用户可创建、分页查询、查看详情、更新名称/说明/分支、通过专用接口保存配置以及软删除项目：
+
+- `POST /api/projects`
+- `GET /api/projects?page=&pageSize=&search=&buildTemplateId=&ownerId=`
+- `GET /api/projects/:projectId`
+- `PATCH /api/projects/:projectId`
+- `PUT /api/projects/:projectId/config`
+- `DELETE /api/projects/:projectId`
+
+服务端始终从认证用户写入 `ownerId`，请求体中的 `ownerId`、`deletedAt` 和受保护的模板/config 字段会被拒绝。创建只能绑定已启用模板；绑定 Agent 是否 OFFLINE 不影响创建。项目删除是软删除，默认列表、详情以及任务/日志/Artifact 的既有授权 scope 都会排除已删除项目。
+
+所有详情、更新、配置保存和删除接口先运行 `AccessTokenGuard`，再运行 `OwnershipGuard` 并声明 `@OwnedResource('project', 'projectId')`。USER 的 Prisma 查询通过 `AuthorizationService.projectScope` 强制注入当前用户和 `deletedAt: null`；ADMIN 可查看全部未删除项目，并可用 `ownerId` 作额外筛选。跨用户、已删除、非法 UUID 和不存在项目统一返回 `404 RESOURCE_NOT_FOUND`。
+
+项目配置保存在 Project 的单个 JSONB `config` 字段中。Server 使用 `@buildplatform/contracts` 的 `validateFormConfigValues` 过滤未知字段、校验控件值并应用默认值；`PUT /config` 才会持久化规范化结果。详情通过 `analyzeFormConfigCompatibility` 返回 `valid`、`effectiveConfig`、`missingFields`、`obsoleteFields`、`typeConflictFields`、`issues`、`templateEnabled`、`agentEnabled` 和 `buildable`，读取详情不会改写数据库。模板新增带默认值字段不会破坏旧配置，新增无默认值的必填字段、类型变化或 options 变化会使项目不可构建；模板/Agent 停用时项目仍可读但不可构建。
+
+T3.3 不包含 Web 项目页面、构建任务创建、Git 访问、Agent 派发、模板版本或配置加密。

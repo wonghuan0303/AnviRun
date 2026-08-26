@@ -30,7 +30,21 @@ export type {
   TextareaFormField,
 } from './field-types';
 
-export type { FormConfigValues, FormFieldValue } from './values';
+export {
+  FORM_CONFIG_ISSUE_CODES,
+  analyzeFormConfigCompatibility,
+  normalizeFormConfigValues,
+  validateFormConfigValues,
+} from './values';
+export type {
+  FormConfigCompatibility,
+  FormConfigIssue,
+  FormConfigIssueCode,
+  FormConfigValidationFailure,
+  FormConfigValidationResult,
+  FormConfigValues,
+  FormFieldValue,
+} from './values';
 
 export { FORM_SCHEMA_ISSUE_CODES, createFormSchemaIssue } from './issues';
 export type { FormSchemaIssue, FormSchemaIssueCode, FormSchemaIssueContext } from './issues';
