@@ -21,6 +21,7 @@ describe('AdminLayout', () => {
       global: { plugins: [ElementPlus], stubs: { RouterView: { template: '<div />' } } },
     });
 
+    expect(wrapper.text()).toContain('项目管理');
     expect(wrapper.text()).toContain('Agent 管理');
     expect(wrapper.text()).toContain('构建模板');
     expect(wrapper.text()).toContain('admin（ADMIN）');

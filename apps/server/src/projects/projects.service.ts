@@ -82,8 +82,12 @@ export interface ProjectCompatibilityView extends FormConfigCompatibility {
   readonly buildable: boolean;
 }
 
+type ProjectTemplateResponse = ProjectView['buildTemplate'] & {
+  readonly formSchema?: FormSchema;
+};
+
 export interface ProjectResponse extends Omit<ProjectView, 'buildTemplate'> {
-  readonly buildTemplate: ProjectView['buildTemplate'];
+  readonly buildTemplate: ProjectTemplateResponse;
   readonly configCompatibility: ProjectCompatibilityView;
 }
 
@@ -195,7 +199,7 @@ export class ProjectsService {
       return created;
     });
 
-    return { project: this.toResponse(project) };
+    return { project: this.toResponse(project, true) };
   }
 
   async listProjects(
@@ -246,7 +250,7 @@ export class ProjectsService {
     });
 
     if (!project) throw new ApiException('RESOURCE_NOT_FOUND');
-    return { project: this.toResponse(project) };
+    return { project: this.toResponse(project, true) };
   }
 
   async updateProject(
@@ -289,7 +293,7 @@ export class ProjectsService {
       return updated;
     });
 
-    return { project: this.toResponse(project) };
+    return { project: this.toResponse(project, true) };
   }
 
   async saveProjectConfig(
@@ -332,7 +336,7 @@ export class ProjectsService {
       return updated;
     });
 
-    return { project: this.toResponse(project) };
+    return { project: this.toResponse(project, true) };
   }
 
   async deleteProject(
@@ -384,13 +388,14 @@ export class ProjectsService {
     return result.project;
   }
 
-  private toResponse(project: ProjectWithSchemaView): ProjectResponse {
+  private toResponse(project: ProjectWithSchemaView, includeFormSchema = false): ProjectResponse {
     const template = project.buildTemplate as ProjectWithSchemaView['buildTemplate'] & {
       formSchema?: unknown;
     };
+    const schema = assertValidSchema(template.formSchema);
     const { formSchema: _formSchema, ...safeTemplate } = template;
     const compatibility = this.configCompatibility(
-      assertValidSchema(template.formSchema),
+      schema,
       project.config,
       template.enabled,
       template.agent.enabled,
@@ -398,7 +403,7 @@ export class ProjectsService {
 
     return {
       ...project,
-      buildTemplate: safeTemplate,
+      buildTemplate: includeFormSchema ? { ...safeTemplate, formSchema: schema } : safeTemplate,
       configCompatibility: compatibility,
     };
   }

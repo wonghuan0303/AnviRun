@@ -11,6 +11,16 @@
 - formSchema 支持本地 .json 上传（最大 1 MB）、文本编辑、格式化、重置、公共契约校验、JSON 行列定位和白名单动态预览。
 - 普通 USER 不能进入管理员路由；服务端 401/403 仍是最终权限边界。
 
+## T3.4 项目页面
+
+- `/projects` 提供项目分页、名称搜索、构建模板筛选、状态查看和软删除。
+- `/projects/new` 创建项目；`/projects/:projectId/edit` 编辑名称、说明和 Git 分支。
+- `/projects/:projectId` 查看所有权、模板/Agent 状态及配置兼容性；`/projects/:projectId/config` 独立保存项目配置。
+- 项目配置编辑器只显式渲染公共契约白名单控件，使用 `validateFormConfigValues`、`normalizeFormConfigValues` 和 `analyzeFormConfigCompatibility`，不会动态加载组件、HTML、事件或脚本。
+- ADMIN 和 USER 共用项目路由，最终所有权隔离由 Server 的 `Project.ownerId` 授权规则保证；ADMIN 额外显示 Agent 和构建模板菜单。
+
+T3.4 不包含构建任务创建、Git 访问、Agent 派发、模板版本或项目恢复；构建入口留给 T4.1。
+
 ## 本地运行
 
 ```bash
@@ -41,5 +51,5 @@ pnpm --filter @buildplatform/web run test
 ## 约定
 
 动态表单预览只使用 @buildplatform/contracts 的 validateFormSchema 和明确白名单控件，
-不会根据 JSON 动态加载 Vue 组件、HTML、事件或插槽。T3.2 不包含项目、任务、日志、产物和
-WebSocket 实时刷新；这些由后续计划负责。
+不会根据 JSON 动态加载 Vue 组件、HTML、事件或插槽。T3.4 不包含任务、日志、产物和
+WebSocket 实时刷新；构建任务由 T4.1 负责。

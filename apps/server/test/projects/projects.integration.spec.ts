@@ -598,6 +598,38 @@ describe('T3.3 project PostgreSQL/API integration', () => {
     ).toBeNull();
   });
 
+  it('returns an owned current formSchema without leaking template internals', async () => {
+    const created = await createProject(userAToken);
+    expect(created.status).toBe(201);
+    expect(created.body.project.buildTemplate.formSchema).toEqual(schema);
+
+    const list = await request(app.getHttpServer())
+      .get('/api/projects?pageSize=100')
+      .set('Authorization', `Bearer ${userAToken}`);
+    expect(list.status).toBe(200);
+    expect(list.body.items[0].buildTemplate).not.toHaveProperty('formSchema');
+
+    const crossUser = await getProject(userBToken, created.body.project.id);
+    expectSafeNotFound(crossUser);
+
+    await prisma.buildTemplate.update({
+      where: { id: templateId },
+      data: { enabled: false },
+    });
+    const disabledTemplateProject = await getProject(userAToken, created.body.project.id);
+    expect(disabledTemplateProject.status).toBe(200);
+    expect(disabledTemplateProject.body.project.buildTemplate.formSchema).toEqual(schema);
+    expect(disabledTemplateProject.body.project.configCompatibility.templateEnabled).toBe(false);
+
+    const serialized = JSON.stringify(disabledTemplateProject.body);
+    expect(serialized).not.toContain('command');
+    expect(serialized).not.toContain('artifactDir');
+    expect(serialized).not.toContain('createdBy');
+    expect(serialized).not.toContain('tokenHash');
+    expect(serialized).not.toContain('passwordHash');
+    expect(serialized).not.toContain('tokenVersion');
+  });
+
   it('keeps authentication and response boundaries unchanged', async () => {
     const unauthenticated = await request(app.getHttpServer()).get('/api/projects');
     expect(unauthenticated.status).toBe(401);

@@ -1,5 +1,5 @@
 import { apiRequest } from './client';
-import type { BuildTemplateAdminView, BuildTemplatePage } from './types';
+import type { BuildTemplateAdminView, BuildTemplatePage, BuildTemplatePublicView } from './types';
 
 export interface BuildTemplateListParams {
   page?: number;
@@ -67,4 +67,19 @@ export function disableBuildTemplate(id: string): Promise<{ template: BuildTempl
 
 export function deleteBuildTemplate(id: string): Promise<void> {
   return apiRequest<void>(`/admin/build-templates/${id}`, { method: 'DELETE' });
+}
+
+export interface PublicBuildTemplateListParams {
+  page?: number;
+  pageSize?: number;
+}
+
+export function listPublicBuildTemplates(
+  params: PublicBuildTemplateListParams = {},
+): Promise<BuildTemplatePage<BuildTemplatePublicView>> {
+  const query = new URLSearchParams();
+  if (params.page !== undefined) query.set('page', String(params.page));
+  if (params.pageSize !== undefined) query.set('pageSize', String(params.pageSize));
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return apiRequest<BuildTemplatePage<BuildTemplatePublicView>>(`/build-templates${suffix}`);
 }

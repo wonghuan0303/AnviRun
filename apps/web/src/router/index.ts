@@ -16,6 +16,43 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '登录' },
   },
   {
+    path: '/projects',
+    component: () => import('@/layouts/AppLayout.vue'),
+    meta: { requiresAuth: true },
+    children: [
+      {
+        path: '',
+        name: 'projects',
+        component: () => import('@/views/projects/ProjectsView.vue'),
+        meta: { title: '项目管理' },
+      },
+      {
+        path: 'new',
+        name: 'project-new',
+        component: () => import('@/views/projects/ProjectEditorView.vue'),
+        meta: { title: '新建项目' },
+      },
+      {
+        path: ':projectId',
+        name: 'project-detail',
+        component: () => import('@/views/projects/ProjectDetailView.vue'),
+        meta: { title: '项目详情' },
+      },
+      {
+        path: ':projectId/edit',
+        name: 'project-edit',
+        component: () => import('@/views/projects/ProjectEditorView.vue'),
+        meta: { title: '编辑项目' },
+      },
+      {
+        path: ':projectId/config',
+        name: 'project-config',
+        component: () => import('@/views/projects/ProjectConfigView.vue'),
+        meta: { title: '项目配置' },
+      },
+    ],
+  },
+  {
     path: '/admin',
     component: () => import('@/layouts/AdminLayout.vue'),
     meta: { requiresAuth: true, requiresAdmin: true },
@@ -65,13 +102,13 @@ router.beforeEach(async (to) => {
   await auth.restoreSession();
 
   if (to.name === 'login' && auth.isAuthenticated) {
-    return auth.isAdmin ? { name: 'admin-agents' } : { name: 'home' };
+    return auth.isAdmin ? { name: 'admin-agents' } : { name: 'projects' };
   }
   if (to.matched.some((record) => record.meta.requiresAuth) && !auth.isAuthenticated) {
     return { name: 'login', query: { redirect: to.fullPath } };
   }
   if (to.matched.some((record) => record.meta.requiresAdmin) && !auth.isAdmin) {
-    return { name: 'home' };
+    return { name: 'projects' };
   }
   return true;
 });

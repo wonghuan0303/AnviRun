@@ -1,3 +1,9 @@
+import type {
+  FormConfigCompatibility,
+  FormConfigValues,
+  FormSchema,
+} from '@buildplatform/contracts';
+
 export type UserRole = 'ADMIN' | 'USER';
 export type UserStatus = 'ACTIVE' | 'DISABLED';
 
@@ -77,7 +83,7 @@ export interface BuildTemplatePublicView {
   description: string | null;
   agentId: string;
   gitUrl: string;
-  formSchema: unknown;
+  formSchema: FormSchema;
   timeoutSeconds: number;
   enabled: true;
   agent: TemplateAgentSummary;
@@ -88,4 +94,63 @@ export interface BuildTemplatePage<T = BuildTemplateAdminView> {
   page: number;
   pageSize: number;
   total: number;
+}
+
+export interface ProjectTemplateSummary {
+  id: string;
+  name: string;
+  description: string | null;
+  agentId: string;
+  enabled: boolean;
+  agent: TemplateAgentSummary;
+  formSchema?: FormSchema;
+}
+
+export interface ProjectView {
+  id: string;
+  ownerId: string;
+  buildTemplateId: string;
+  name: string;
+  description: string | null;
+  branch: string;
+  config: FormConfigValues;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+  owner: AuthUser;
+  buildTemplate: ProjectTemplateSummary;
+  configCompatibility: FormConfigCompatibility & {
+    templateEnabled: boolean;
+    agentEnabled: boolean;
+    buildable: boolean;
+  };
+}
+
+export interface ProjectPage {
+  items: ProjectView[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+export interface ProjectListParams {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  buildTemplateId?: string;
+  ownerId?: string;
+}
+
+export interface ProjectCreateInput {
+  name: string;
+  description: string | null;
+  buildTemplateId: string;
+  branch: string;
+  config: FormConfigValues;
+}
+
+export interface ProjectUpdateInput {
+  name?: string;
+  description?: string | null;
+  branch?: string;
 }

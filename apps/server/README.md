@@ -109,6 +109,6 @@ T3.1 不包含模板版本、Git 拉取、项目、任务派发或 Web 管理页
 
 所有详情、更新、配置保存和删除接口先运行 `AccessTokenGuard`，再运行 `OwnershipGuard` 并声明 `@OwnedResource('project', 'projectId')`。USER 的 Prisma 查询通过 `AuthorizationService.projectScope` 强制注入当前用户和 `deletedAt: null`；ADMIN 可查看全部未删除项目，并可用 `ownerId` 作额外筛选。跨用户、已删除、非法 UUID 和不存在项目统一返回 `404 RESOURCE_NOT_FOUND`。
 
-项目配置保存在 Project 的单个 JSONB `config` 字段中。Server 使用 `@buildplatform/contracts` 的 `validateFormConfigValues` 过滤未知字段、校验控件值并应用默认值；`PUT /config` 才会持久化规范化结果。详情通过 `analyzeFormConfigCompatibility` 返回 `valid`、`effectiveConfig`、`missingFields`、`obsoleteFields`、`typeConflictFields`、`issues`、`templateEnabled`、`agentEnabled` 和 `buildable`，读取详情不会改写数据库。模板新增带默认值字段不会破坏旧配置，新增无默认值的必填字段、类型变化或 options 变化会使项目不可构建；模板/Agent 停用时项目仍可读但不可构建。
+项目配置保存在 Project 的单个 JSONB `config` 字段中。Server 使用 `@buildplatform/contracts` 的 `validateFormConfigValues` 过滤未知字段、校验控件值并应用默认值；`PUT /config` 才会持久化规范化结果。详情通过 `analyzeFormConfigCompatibility` 返回 `valid`、`effectiveConfig`、`missingFields`、`obsoleteFields`、`typeConflictFields`、`issues`、`templateEnabled`、`agentEnabled` 和 `buildable`，读取详情不会改写数据库。模板新增带默认值字段不会破坏旧配置，新增无默认值的必填字段、类型变化或 options 变化会使项目不可构建；模板/Agent 停用时项目仍可读但不可构建。 详情/创建/更新/配置保存响应包含当前模板 `formSchema`，便于项目配置页面渲染；分页列表只返回模板安全摘要，不携带 `formSchema`，避免无必要地扩大列表响应。
 
 T3.3 不包含 Web 项目页面、构建任务创建、Git 访问、Agent 派发、模板版本或配置加密。

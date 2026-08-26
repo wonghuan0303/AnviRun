@@ -15,7 +15,13 @@ const error = ref('');
 
 function safeRedirect(): string {
   const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '';
-  return redirect.startsWith('/admin/') ? redirect : auth.isAdmin ? '/admin/agents' : '/';
+  const isAdminRedirect = auth.isAdmin && (redirect === '/admin' || redirect.startsWith('/admin/'));
+  const isProjectRedirect = redirect === '/projects' || redirect.startsWith('/projects/');
+  return isAdminRedirect || isProjectRedirect
+    ? redirect
+    : auth.isAdmin
+      ? '/admin/agents'
+      : '/projects';
 }
 
 async function submit(): Promise<void> {

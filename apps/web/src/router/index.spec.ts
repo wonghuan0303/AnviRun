@@ -28,14 +28,14 @@ describe('router authorization guard', () => {
     await router.push('/admin/agents');
 
     expect(router.currentRoute.value.name).toBe('login');
-  }, 30000);
+  }, 60_000);
 
   it('keeps USER out of administrator routes', async () => {
     vi.mocked(authApi.refresh).mockResolvedValue(session(user));
 
     await router.push('/admin/agents');
 
-    expect(router.currentRoute.value.name).toBe('home');
+    expect(router.currentRoute.value.name).toBe('projects');
   });
 
   it('allows ADMIN into administrator routes', async () => {

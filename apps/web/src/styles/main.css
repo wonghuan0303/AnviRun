@@ -162,3 +162,105 @@ body {
     flex-direction: column;
   }
 }
+.app-shell {
+  min-height: 100%;
+}
+.app-shell__aside {
+  background: #fff;
+  border-right: 1px solid #e4e7ed;
+}
+.app-shell__brand {
+  height: 60px;
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  font-weight: 700;
+  color: #303133;
+}
+.app-shell__header {
+  background: #fff;
+  border-bottom: 1px solid #e4e7ed;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.app-shell__account {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.app-shell__main {
+  padding: 24px;
+}
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px 28px;
+}
+.detail-grid__wide {
+  grid-column: 1 / -1;
+  white-space: pre-wrap;
+}
+.detail-label {
+  display: block;
+  margin-bottom: 6px;
+  color: #909399;
+  font-size: 13px;
+}
+.detail-grid strong {
+  font-size: 18px;
+}
+.detail-grid code {
+  color: #606266;
+}
+.detail-grid + .detail-grid {
+  margin-top: 16px;
+}
+.status-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.compatibility-block {
+  margin: 10px 0;
+  color: #606266;
+}
+.issue-list {
+  margin: 12px 0 0;
+  padding-left: 20px;
+  color: #606266;
+}
+.muted-text,
+.form-help {
+  color: #909399;
+  font-size: 13px;
+}
+.option-secondary {
+  float: right;
+  margin-left: 16px;
+  color: #909399;
+}
+.project-form,
+.project-config-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.project-config-card .el-card__body {
+  padding-top: 12px;
+}
+@media (max-width: 800px) {
+  .app-shell__aside {
+    width: 160px !important;
+  }
+  .app-shell__main {
+    padding: 14px;
+  }
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+  .detail-grid__wide {
+    grid-column: auto;
+  }
+}
