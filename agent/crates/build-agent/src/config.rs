@@ -12,10 +12,13 @@ const SERVER_URL_ENV: &str = "BUILD_AGENT_SERVER_URL";
 const TOKEN_ENV: &str = "BUILD_AGENT_TOKEN";
 const WORKSPACE_ROOT_ENV: &str = "BUILD_AGENT_WORKSPACE_ROOT";
 const LOG_LEVEL_ENV: &str = "BUILD_AGENT_LOG_LEVEL";
+const MINIMUM_FREE_SPACE_ENV: &str = "BUILD_AGENT_MINIMUM_FREE_SPACE_BYTES";
 const STATE_FILE_ENV: &str = "BUILD_AGENT_STATE_FILE";
 
 const DEFAULT_RECONNECT_INITIAL: Duration = Duration::from_secs(1);
 const DEFAULT_RECONNECT_MAX: Duration = Duration::from_secs(60);
+const DEFAULT_MINIMUM_FREE_SPACE_BYTES: u64 = 1_073_741_824;
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -42,6 +45,7 @@ struct FileConfig {
     token: Option<String>,
     workspace_root: Option<String>,
     log_level: Option<String>,
+    minimum_free_space_bytes: Option<u64>,
     state_file: Option<String>,
 }
 
@@ -54,6 +58,7 @@ pub struct AgentConfig {
     pub token: String,
     pub workspace_root: PathBuf,
     pub log_level: String,
+    pub minimum_free_space_bytes: u64,
     pub state_file: PathBuf,
     pub(crate) reconnect_initial: Duration,
     pub(crate) reconnect_max: Duration,
@@ -67,6 +72,7 @@ impl fmt::Debug for AgentConfig {
             .field("token", &"[REDACTED]")
             .field("workspace_root", &self.workspace_root)
             .field("log_level", &self.log_level)
+            .field("minimum_free_space_bytes", &self.minimum_free_space_bytes)
             .field("state_file", &self.state_file)
             .field("reconnect_initial", &self.reconnect_initial)
             .field("reconnect_max", &self.reconnect_max)
@@ -114,6 +120,10 @@ impl AgentConfig {
         let workspace_root =
             required_value(WORKSPACE_ROOT_ENV, file.workspace_root, "workspace_root")?;
         validate_text(&workspace_root, "workspace_root", 4096)?;
+        let minimum_free_space_bytes = parse_minimum_free_space(
+            env_value(MINIMUM_FREE_SPACE_ENV)?,
+            file.minimum_free_space_bytes,
+        )?;
         let log_level =
             optional_value(LOG_LEVEL_ENV, file.log_level).unwrap_or_else(|| "info".to_string());
         validate_text(&log_level, "log_level", 32)?;
@@ -125,8 +135,9 @@ impl AgentConfig {
         Ok(Self {
             server_url,
             token,
-            workspace_root: PathBuf::from(workspace_root),
+            workspace_root: resolve_path(base_dir, workspace_root),
             log_level,
+            minimum_free_space_bytes,
             state_file,
             reconnect_initial: DEFAULT_RECONNECT_INITIAL,
             reconnect_max: DEFAULT_RECONNECT_MAX,
@@ -213,6 +224,26 @@ fn validate_text(value: &str, field: &'static str, maximum: usize) -> Result<(),
     Ok(())
 }
 
+fn parse_minimum_free_space(
+    environment_value: Option<String>,
+    file_value: Option<u64>,
+) -> Result<u64, ConfigError> {
+    let value = match environment_value {
+        Some(value) => value.parse::<u64>().map_err(|_| ConfigError::Invalid {
+            field: "minimum_free_space_bytes",
+            reason: "must be a non-negative safe integer".to_string(),
+        })?,
+        None => file_value.unwrap_or(DEFAULT_MINIMUM_FREE_SPACE_BYTES),
+    };
+    if value > MAX_SAFE_INTEGER {
+        return Err(ConfigError::Invalid {
+            field: "minimum_free_space_bytes",
+            reason: "must be a non-negative safe integer".to_string(),
+        });
+    }
+    Ok(value)
+}
+
 fn parse_server_url(value: &str) -> Result<Url, ConfigError> {
     Url::parse(value).map_err(|error| ConfigError::Invalid {
         field: "server_url",
@@ -251,6 +282,10 @@ mod tests {
             "wss://example.test/base/ws/agent"
         );
         assert_eq!(config.state_file, directory.path().join("state.json"));
+        assert_eq!(
+            config.minimum_free_space_bytes,
+            DEFAULT_MINIMUM_FREE_SPACE_BYTES
+        );
     }
 
     #[test]
@@ -279,5 +314,15 @@ mod tests {
         .expect("configuration file");
         let config = AgentConfig::load(Some(&path)).expect("configuration should load");
         assert!(config.websocket_url().is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_or_unsafe_disk_space_values() {
+        assert!(parse_minimum_free_space(Some("-1".to_string()), None).is_err());
+        assert!(parse_minimum_free_space(Some("9007199254740992".to_string()), None).is_err());
+        assert_eq!(
+            parse_minimum_free_space(Some("0".to_string()), None).unwrap(),
+            0
+        );
     }
 }

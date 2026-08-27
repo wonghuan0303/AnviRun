@@ -254,6 +254,8 @@
 
 #### T4.2 Rust Agent 工作区与 Git 执行
 
+**状态：已完成**
+
 **实施内容**
 
 - 安全创建 `<workspace>/tasks/<taskId>/source`。

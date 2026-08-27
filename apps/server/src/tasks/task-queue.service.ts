@@ -9,6 +9,8 @@ import {
   type FormConfigValues,
   type TaskAssignmentMessage,
   type TaskAvailableMessage,
+  type TaskFailedMessage,
+  type TaskStatusMessage,
 } from '@buildplatform/contracts';
 import { randomUUID } from 'node:crypto';
 
@@ -24,6 +26,8 @@ const CLAIM_RESULT_TTL_MS = 5 * 60_000;
 const QUEUE_SCAN_INTERVAL_MS = 1_000;
 const MAX_CLAIM_VALIDATION_SKIPS = 32;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SOURCE_COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+const MAX_AGENT_REASON_LENGTH = 1_024;
 
 const CLAIM_SELECT = {
   id: true,
@@ -56,6 +60,16 @@ interface StoredClaimResult {
   readonly expiresAt: number;
 }
 
+function safeAgentReason(value: string): string {
+  const sanitized = Array.from(value)
+    .filter((character) => {
+      const code = character.charCodeAt(0);
+      return code >= 32 && code !== 127;
+    })
+    .join('')
+    .trim();
+  return sanitized.slice(0, MAX_AGENT_REASON_LENGTH) || 'Agent task preparation failed';
+}
 function taskAvailableMessage(agentId: string, queuedTaskCount: number): TaskAvailableMessage {
   return {
     id: randomUUID(),
@@ -133,7 +147,9 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
     const pending = await this.prisma.buildTask.findMany({
       where: {
         agentId,
-        status: { in: [BuildTaskStatus.QUEUED, BuildTaskStatus.DISPATCHED] },
+        status: {
+          in: [BuildTaskStatus.QUEUED, BuildTaskStatus.DISPATCHED, BuildTaskStatus.PREPARING],
+        },
       },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       select: { id: true },
@@ -169,6 +185,34 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
               tx,
               current.id,
               'Agent disconnected before accepting task assignment',
+            );
+            await tx.agent.update({ where: { id: agentId }, data: { activeTaskId: null } });
+            return;
+          }
+
+          if (current.status === BuildTaskStatus.PREPARING && agent.activeTaskId === current.id) {
+            await this.state.transition(
+              tx,
+              current.id,
+              BuildTaskStatus.AGENT_LOST,
+              'SYSTEM',
+              'Agent disconnected while task was preparing',
+              {
+                leaseHash: null,
+                leaseExpiresAt: null,
+              },
+            );
+            await this.state.transition(
+              tx,
+              current.id,
+              BuildTaskStatus.FAILED,
+              'SYSTEM',
+              'Agent preparation was interrupted after disconnect',
+              {
+                leaseHash: null,
+                leaseExpiresAt: null,
+                finishedAt: new Date(),
+              },
             );
             await tx.agent.update({ where: { id: agentId }, data: { activeTaskId: null } });
           }
@@ -252,6 +296,106 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  async reportPreparationStatus(agentId: string, message: TaskStatusMessage): Promise<void> {
+    const payload = message.payload;
+    if (
+      !UUID_PATTERN.test(payload.taskId) ||
+      payload.status !== BuildTaskStatus.PREPARING ||
+      typeof payload.sourceCommit !== 'string' ||
+      !SOURCE_COMMIT_PATTERN.test(payload.sourceCommit)
+    ) {
+      throw new ApiException('VALIDATION_FAILED');
+    }
+    if (!this.registry.isReady(agentId)) throw new ApiException('TASK_LEASE_INVALID');
+    const sourceCommit = payload.sourceCommit.toLowerCase();
+
+    await this.prisma.$transaction(async (tx) => {
+      const agent = await this.lockAgent(tx, agentId);
+      if (!agent || !agent.enabled || agent.status !== AgentStatus.ONLINE) {
+        throw new ApiException('TASK_LEASE_INVALID');
+      }
+      const task = await tx.buildTask.findUnique({
+        where: { id: payload.taskId },
+        select: {
+          id: true,
+          agentId: true,
+          status: true,
+          sourceCommit: true,
+          leaseHash: true,
+          leaseExpiresAt: true,
+        },
+      });
+      if (
+        !task ||
+        task.agentId !== agentId ||
+        agent.activeTaskId !== task.id ||
+        !task.leaseHash ||
+        !task.leaseExpiresAt ||
+        task.leaseExpiresAt.getTime() <= Date.now() ||
+        !this.leases.verify(payload.leaseToken, task.leaseHash)
+      ) {
+        throw new ApiException('TASK_LEASE_INVALID');
+      }
+      if (task.status !== BuildTaskStatus.PREPARING) {
+        throw new ApiException('TASK_INVALID_STATE');
+      }
+      if (task.sourceCommit === sourceCommit) return;
+      if (task.sourceCommit !== null) throw new ApiException('TASK_INVALID_STATE');
+      await tx.buildTask.update({ where: { id: task.id }, data: { sourceCommit } });
+    });
+  }
+
+  async reportPreparationFailure(agentId: string, message: TaskFailedMessage): Promise<void> {
+    const payload = message.payload;
+    if (!UUID_PATTERN.test(payload.taskId)) throw new ApiException('TASK_LEASE_INVALID');
+    if (!this.registry.isReady(agentId)) throw new ApiException('TASK_LEASE_INVALID');
+    const reason = safeAgentReason(payload.reason);
+    let shouldNotify = false;
+
+    await this.prisma.$transaction(async (tx) => {
+      const agent = await this.lockAgent(tx, agentId);
+      if (!agent) throw new ApiException('TASK_LEASE_INVALID');
+      const task = await tx.buildTask.findUnique({
+        where: { id: payload.taskId },
+        select: {
+          id: true,
+          agentId: true,
+          status: true,
+          statusReason: true,
+          leaseHash: true,
+          leaseExpiresAt: true,
+        },
+      });
+      if (!task || task.agentId !== agentId) throw new ApiException('TASK_LEASE_INVALID');
+      if (
+        task.status === BuildTaskStatus.FAILED &&
+        agent.activeTaskId === null &&
+        task.statusReason === reason
+      ) {
+        return;
+      }
+      if (
+        task.status !== BuildTaskStatus.PREPARING ||
+        agent.activeTaskId !== task.id ||
+        !task.leaseHash ||
+        !task.leaseExpiresAt ||
+        task.leaseExpiresAt.getTime() <= Date.now() ||
+        !this.leases.verify(payload.leaseToken, task.leaseHash)
+      ) {
+        throw new ApiException('TASK_LEASE_INVALID');
+      }
+      await this.state.transition(tx, task.id, BuildTaskStatus.FAILED, 'AGENT', reason, {
+        leaseHash: null,
+        leaseExpiresAt: null,
+        finishedAt: new Date(),
+        statusReason: reason,
+      });
+      await tx.agent.update({ where: { id: agentId }, data: { activeTaskId: null } });
+      shouldNotify = true;
+    });
+
+    if (shouldNotify) await this.notifyAvailable(agentId);
+  }
   async reclaimTimedOutDispatches(now = new Date()): Promise<void> {
     const cutoff = new Date(now.getTime() - DISPATCH_CONFIRMATION_TIMEOUT_MS);
     const candidates = await this.prisma.buildTask.findMany({

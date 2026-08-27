@@ -1,13 +1,18 @@
 //! 通用构建任务平台 Agent 的公共库入口。
 //!
-//! T2.2 提供配置加载、Server WebSocket 连接、注册、心跳、重连和优雅退出。
-//! 任务领取、Git、命令执行、日志和产物上传保留到后续阶段。
+//! T2.2/T4.2 提供配置加载、Server WebSocket 连接、任务领取、心跳、重连、
+//! 安全工作区和 Git 准备。命令执行、日志和产物上传保留到后续阶段。
 
 mod config;
 mod connection;
+mod git;
+mod preparation;
+mod workspace;
 
 pub use config::{AgentConfig, ConfigError};
 pub use connection::{Agent, AgentError, RunExit};
+pub use git::{GitClient, GitError};
+pub use workspace::{TaskWorkspace, WorkspaceError, WorkspaceManager};
 
 /// Agent 的基础标识信息，用于启动日志与后续向 Server 上报。
 #[derive(Debug, Clone, PartialEq, Eq)]

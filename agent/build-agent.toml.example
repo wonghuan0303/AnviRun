@@ -3,6 +3,8 @@ server_url = "http://127.0.0.1:3000"
 token = "bpa_replace_me"
 workspace_root = "C:/build-agent"
 log_level = "info"
+# Minimum free space before accepting a task, in bytes. Default: 1073741824 (1 GiB).
+minimum_free_space_bytes = 1073741824
 
 # Optional. Relative paths are resolved beside this file.
 # state_file = "agent-state.json"

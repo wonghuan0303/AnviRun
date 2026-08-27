@@ -18,6 +18,8 @@ import type {
   ServerToAgentMessage,
   TaskAcceptedMessage,
   TaskClaimMessage,
+  TaskFailedMessage,
+  TaskStatusMessage,
 } from '@buildplatform/contracts';
 import { AgentStatus, BuildTaskStatus } from '@prisma/client';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
@@ -292,6 +294,30 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
         try {
           const accepted = result.value as TaskAcceptedMessage;
           await queue.accept(state.agentId, accepted.payload.taskId, accepted.payload.leaseToken);
+        } catch (error) {
+          if (!(error instanceof ApiException)) throw error;
+        }
+      } else if (result.value.type === 'task.status') {
+        if (!state.helloReceived) {
+          safeClose(socket, 1008, 'hello required');
+          return;
+        }
+        const queue = this.taskQueue();
+        if (!queue) return;
+        try {
+          await queue.reportPreparationStatus(state.agentId, result.value as TaskStatusMessage);
+        } catch (error) {
+          if (!(error instanceof ApiException)) throw error;
+        }
+      } else if (result.value.type === 'task.failed') {
+        if (!state.helloReceived) {
+          safeClose(socket, 1008, 'hello required');
+          return;
+        }
+        const queue = this.taskQueue();
+        if (!queue) return;
+        try {
+          await queue.reportPreparationFailure(state.agentId, result.value as TaskFailedMessage);
         } catch (error) {
           if (!(error instanceof ApiException)) throw error;
         }

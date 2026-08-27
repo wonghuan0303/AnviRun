@@ -76,3 +76,15 @@ build-agent.exe --config C:/build-agent/build-agent.toml
 \`\`\`
 
 Rust Agent 使用 rustls native roots 支持 WSS，避免依赖系统 OpenSSL；任务领取、Git、命令执行、日志和产物处理分别留给后续 T4/T5 阶段。
+
+## T4.2 Rust Agent 工作区与 Git 执行
+
+T4.2 在 T2.2 连接闭环上增加最小任务准备流程：Agent 收到 `task.available` 后仅在空闲时发送 `task.claim`，校验匹配的 `task.assignment`，先发送 `task.accepted`，再通过受控 Tokio 任务准备工作区。准备期间心跳持续发送 `currentTaskId`，单个 Agent 不会并行准备第二个任务；重复 assignment 不会创建第二份工作区或启动第二次 Git。
+
+工作区根目录在 Agent 启动时创建并规范化为绝对路径，不能是文件系统根目录。任务目录固定为 `<workspace_root>/tasks/<UUID>/source`，taskId 必须先解析为 UUID，路径创建前后检查边界、符号链接和 Windows reparse point。清理只接受已验证的 `TaskWorkspace`，安全递归删除不跟随仓库中的符号链接；连接断开或关闭时中止准备任务并清理部分工作区，当前阶段不做断线续传。
+
+Agent 启动和接收 assignment 时检查 workspace 可写性、`tasks` 目录写探针、最低可用磁盘空间和系统 Git。新增配置 `minimum_free_space_bytes` / `BUILD_AGENT_MINIMUM_FREE_SPACE_BYTES`，默认 `1073741824` 字节（1 GiB），必须是 0 到 JavaScript 安全整数范围内的非负整数，环境变量优先于 TOML。相对 `workspace_root` 按配置文件所在目录解析。
+
+Git 只调用系统 `git`，不使用 libgit2、Shell 或脚本解释器。clone 使用参数数组 `git clone --branch <branch> --single-branch -- <url> <source>`，设置 `GIT_TERMINAL_PROMPT=0`，超时受 assignment 的 `timeoutSeconds` 限制。成功后执行 `git -C <source> rev-parse --verify HEAD`，只接受 40/64 位十六进制 SHA 并以小写回传。工作区/Git 失败发送 `CODE: safe message` 格式的 `task.failed`，不包含 token、配置值、凭据或堆栈。
+
+Server 最小接收闭环只处理 `task.status` 且 status 为 `PREPARING` 的 sourceCommit，以及 `task.failed` 的 PREPARING 任务；它们会校验 Agent、activeTaskId、租约和状态，使用同一事务保存 SHA 或转为 FAILED 并清理执行槽。T4.2 不实现 platform.config.json、构建命令、日志/产物上传、任务完成/取消、断线续传或自动重试。

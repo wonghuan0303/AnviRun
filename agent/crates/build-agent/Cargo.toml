@@ -13,6 +13,7 @@ workspace = true
 build-agent-contracts.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
+fs2.workspace = true
 hostname.workspace = true
 serde.workspace = true
 serde_json.workspace = true
