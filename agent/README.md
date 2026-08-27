@@ -1,15 +1,16 @@
 # Build Agent
 
-Rust Agent 是一个长期运行的跨平台连接进程，负责连接 Server、注册、心跳、领取任务，以及在任务工作区中准备 Git 源码。
+Rust Agent 是一个长期运行的跨平台连接进程，负责连接 Server、注册、心跳、领取任务、准备 Git 源码并运行最小构建命令。
 
 当前能力：
 
 - 使用 `build-agent.toml` 或 `--config <path>` 读取配置，环境变量覆盖 TOML。
 - 通过原生 WebSocket/WSS 和 `Authorization: Bearer <agent token>` 连接 `/ws/agent`。
 - 接收 `task.available` 后在空闲时发送 `task.claim`，校验 `task.assignment` 并发送 `task.accepted`。
-- 在 `<workspace_root>/tasks/<taskId>/source` 中执行系统 Git 的参数数组 clone，读取 HEAD Commit SHA 并回传 `task.status`。
+- 在 `<workspace_root>/tasks/<taskId>/source` 中执行系统 Git 的参数数组 clone，读取 HEAD Commit SHA，并生成 `platform.config.json` 后运行模板命令。
 - Git 或工作区准备失败时发送结构化 `task.failed`，并仅清理经过验证的当前任务目录。
-- 心跳持续发送，`currentTaskId` 在 accepted/准备期间为任务 ID，空闲时为 `null`。
+- 心跳持续发送，`currentTaskId` 在 accepted/准备/执行/上传期间为任务 ID，空闲时为 `null`。
+- 命令使用 Windows `cmd.exe /D /S /C` 或 Unix `/bin/sh -lc`，stdout/stderr 以有界分片发送 `task.log`；成功发送 `RUNNING`、`UPLOADING`，失败发送带安全原因和可选退出码的 `task.failed`。
 - 连接断开使用指数退避重连；收到 `agent.token.revoked`、Ctrl+C 或 Unix SIGTERM 后优雅退出。
 
 ## 配置
@@ -42,11 +43,19 @@ build-agent.exe --config C:\build-agent\build-agent.toml
 
 工作区根目录启动时会创建并规范化为绝对路径；根目录不能是文件系统根。`tasks` 根目录必须位于工作区根目录内且可写。任务 ID 必须先解析为 UUID，再作为单一路径组件使用。任务目录和 source 创建前后都会检查路径边界与符号链接/reparse point；未知已存在的任务目录不会复用。
 
-所有清理都经过 `TaskWorkspace` 的集中验证，只删除 `<workspace_root>/tasks/<有效 UUID>`。递归清理不跟随仓库中的符号链接，因此不会通过链接越过任务目录。连接断开或进程关闭时，当前准备任务会被取消，部分工作区会安全清理；成功 Git 准备的工作区在连接保持期间保留，供 T4.3 后续写入配置和执行命令。
+所有清理都经过 `TaskWorkspace` 的集中验证，只删除 `<workspace_root>/tasks/<有效 UUID>`。递归清理不跟随仓库中的符号链接，因此不会通过链接越过任务目录。连接断开或进程关闭时，当前准备任务会被取消，部分工作区会安全清理；成功 Git 准备的工作区在连接保持期间保留，供 T4.3 写入配置并执行命令；命令成功后进入 `UPLOADING`，工作区继续保留给后续产物阶段。
 
 Git 使用系统 `git`，不依赖 libgit2，也不调用 shell。clone 使用 `git clone --branch <branch> --single-branch -- <url> <source>` 参数数组，设置 `GIT_TERMINAL_PROMPT=0`，超时受任务 `timeoutSeconds` 限制。Git 凭据必须由 Agent 主机已有配置提供，协议和日志不传递凭据。成功后使用 `git -C <source> rev-parse --verify HEAD`，只接受 40 或 64 位十六进制 SHA，并统一回传小写。
 
 失败原因使用稳定代码和安全消息，例如 `GIT_BRANCH_NOT_FOUND: requested Git branch was not found`、`GIT_TIMEOUT: Git operation timed out`；不会包含 token、完整 config、密码或堆栈。
+
+## T4.3 配置文件与构建命令
+
+收到有效 `task.assignment` 后，Agent 从 `payload.config` 完整生成 `<workspace_root>/tasks/<taskId>/source/platform.config.json`。配置只使用 assignment payload，不把配置插入命令、环境变量或参数；`sensitiveConfigKeys` 只用于 Agent 输出的敏感值遮蔽，不会删除或改变配置文件内容。文件使用 UTF-8、pretty JSON、恰好一个末尾换行；通过同一 source 目录内的唯一临时文件写入、`sync_all` 后替换，且拒绝 source 或目标文件的符号链接/reparse point。
+
+准备成功后按顺序发送 `PREPARING` 和 `RUNNING`。命令工作目录是 source，Windows 使用 `cmd.exe /D /S /C <command>`，Unix 使用 `/bin/sh -lc <command>`。stdout/stderr 并发读取，每个分片最多 4 KiB，采用 lossy UTF-8 和每任务从 1 开始的单调序号；Server 当前只做协议校验并安全忽略日志，完整日志持久化留给 T5.1。命令预算取模板 timeout 与“租约剩余时间减去最终状态上报余量”的较小值；直接 Shell 超时会主动取消两个 reader，正常退出后的管道排空也有有限宽限期。超时、启动失败、输出读取失败或非零退出都会发送 `task.failed` 并清理任务工作区。退出码为 0 时发送 `UPLOADING`，不发送 `task.completed`，也不上传产物。
+
+断线、token 撤销或进程退出会终止当前直接子进程、关闭输出读取任务并清理工作区；不实现完整进程树终止（由 T5.2 完成）、断线续传、取消协议或产物处理，这些属于 T5/T6。
 
 ## 手工 Git smoke
 
@@ -71,4 +80,4 @@ cargo test --all-features
 cargo build
 ```
 
-当前阶段未实现 platform.config.json、构建命令、日志/产物上传、任务完成/取消、断线续传和自动重试构建。
+当前 T4.3 已实现 platform.config.json、跨平台构建命令、最小 `task.log` 传输、`RUNNING`/`UPLOADING`/`FAILED` 生命周期上报。日志持久化、任务取消、进程树终止、产物上传、断线续传和自动重试构建属于 T5/T6。

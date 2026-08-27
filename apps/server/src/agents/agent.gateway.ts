@@ -305,10 +305,16 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
         const queue = this.taskQueue();
         if (!queue) return;
         try {
-          await queue.reportPreparationStatus(state.agentId, result.value as TaskStatusMessage);
+          await queue.reportTaskStatus(state.agentId, result.value as TaskStatusMessage);
         } catch (error) {
           if (!(error instanceof ApiException)) throw error;
         }
+      } else if (result.value.type === 'task.log') {
+        if (!state.helloReceived) {
+          safeClose(socket, 1008, 'hello required');
+          return;
+        }
+        // T4.3 only transports bounded best-effort logs. Durable log storage is a later stage.
       } else if (result.value.type === 'task.failed') {
         if (!state.helloReceived) {
           safeClose(socket, 1008, 'hello required');

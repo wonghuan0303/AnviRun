@@ -148,7 +148,13 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
       where: {
         agentId,
         status: {
-          in: [BuildTaskStatus.QUEUED, BuildTaskStatus.DISPATCHED, BuildTaskStatus.PREPARING],
+          in: [
+            BuildTaskStatus.QUEUED,
+            BuildTaskStatus.DISPATCHED,
+            BuildTaskStatus.PREPARING,
+            BuildTaskStatus.RUNNING,
+            BuildTaskStatus.UPLOADING,
+          ],
         },
       },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
@@ -190,13 +196,19 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
             return;
           }
 
-          if (current.status === BuildTaskStatus.PREPARING && agent.activeTaskId === current.id) {
+          if (
+            (current.status === BuildTaskStatus.PREPARING ||
+              current.status === BuildTaskStatus.RUNNING ||
+              current.status === BuildTaskStatus.UPLOADING) &&
+            agent.activeTaskId === current.id
+          ) {
+            const phase = current.status.toLowerCase();
             await this.state.transition(
               tx,
               current.id,
               BuildTaskStatus.AGENT_LOST,
               'SYSTEM',
-              'Agent disconnected while task was preparing',
+              `Agent disconnected while task was ${phase}`,
               {
                 leaseHash: null,
                 leaseExpiresAt: null,
@@ -207,7 +219,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
               current.id,
               BuildTaskStatus.FAILED,
               'SYSTEM',
-              'Agent preparation was interrupted after disconnect',
+              `Agent ${phase} was interrupted after disconnect`,
               {
                 leaseHash: null,
                 leaseExpiresAt: null,
@@ -296,18 +308,27 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  async reportPreparationStatus(agentId: string, message: TaskStatusMessage): Promise<void> {
+  async reportTaskStatus(agentId: string, message: TaskStatusMessage): Promise<void> {
     const payload = message.payload;
+    const supportedStatuses = [
+      BuildTaskStatus.PREPARING,
+      BuildTaskStatus.RUNNING,
+      BuildTaskStatus.UPLOADING,
+    ];
     if (
       !UUID_PATTERN.test(payload.taskId) ||
-      payload.status !== BuildTaskStatus.PREPARING ||
-      typeof payload.sourceCommit !== 'string' ||
-      !SOURCE_COMMIT_PATTERN.test(payload.sourceCommit)
+      !supportedStatuses.includes(payload.status) ||
+      (payload.status === BuildTaskStatus.PREPARING &&
+        (typeof payload.sourceCommit !== 'string' ||
+          !SOURCE_COMMIT_PATTERN.test(payload.sourceCommit))) ||
+      (payload.sourceCommit !== undefined &&
+        (typeof payload.sourceCommit !== 'string' ||
+          !SOURCE_COMMIT_PATTERN.test(payload.sourceCommit)))
     ) {
       throw new ApiException('VALIDATION_FAILED');
     }
     if (!this.registry.isReady(agentId)) throw new ApiException('TASK_LEASE_INVALID');
-    const sourceCommit = payload.sourceCommit.toLowerCase();
+    const sourceCommit = payload.sourceCommit?.toLowerCase();
 
     await this.prisma.$transaction(async (tx) => {
       const agent = await this.lockAgent(tx, agentId);
@@ -325,70 +346,106 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
           leaseExpiresAt: true,
         },
       });
-      if (
-        !task ||
-        task.agentId !== agentId ||
-        agent.activeTaskId !== task.id ||
-        !task.leaseHash ||
-        !task.leaseExpiresAt ||
-        task.leaseExpiresAt.getTime() <= Date.now() ||
-        !this.leases.verify(payload.leaseToken, task.leaseHash)
-      ) {
+      if (!task || task.agentId !== agentId || agent.activeTaskId !== task.id) {
         throw new ApiException('TASK_LEASE_INVALID');
       }
-      if (task.status !== BuildTaskStatus.PREPARING) {
+      if (!task.leaseHash || !task.leaseExpiresAt || task.leaseExpiresAt.getTime() <= Date.now()) {
+        throw new ApiException('TASK_LEASE_INVALID');
+      }
+      if (!this.leases.verify(payload.leaseToken, task.leaseHash)) {
+        throw new ApiException('TASK_LEASE_INVALID');
+      }
+
+      if (sourceCommit !== undefined) {
+        if (task.sourceCommit !== null && task.sourceCommit !== sourceCommit) {
+          throw new ApiException('TASK_INVALID_STATE');
+        }
+      }
+      if (task.status === payload.status) {
+        if (sourceCommit !== undefined && task.sourceCommit === null) {
+          await tx.buildTask.update({ where: { id: task.id }, data: { sourceCommit } });
+        }
+        return;
+      }
+      const expectedStatus =
+        payload.status === BuildTaskStatus.RUNNING
+          ? BuildTaskStatus.PREPARING
+          : payload.status === BuildTaskStatus.UPLOADING
+            ? BuildTaskStatus.RUNNING
+            : null;
+      if (expectedStatus === null || task.status !== expectedStatus) {
         throw new ApiException('TASK_INVALID_STATE');
       }
-      if (task.sourceCommit === sourceCommit) return;
-      if (task.sourceCommit !== null) throw new ApiException('TASK_INVALID_STATE');
-      await tx.buildTask.update({ where: { id: task.id }, data: { sourceCommit } });
+      await this.state.transition(
+        tx,
+        task.id,
+        payload.status,
+        'AGENT',
+        `Agent reported task ${payload.status}`,
+        {
+          ...(sourceCommit !== undefined && task.sourceCommit === null ? { sourceCommit } : {}),
+          statusReason: null,
+        },
+      );
     });
+  }
+
+  async reportPreparationStatus(agentId: string, message: TaskStatusMessage): Promise<void> {
+    await this.reportTaskStatus(agentId, message);
   }
 
   async reportPreparationFailure(agentId: string, message: TaskFailedMessage): Promise<void> {
     const payload = message.payload;
     if (!UUID_PATTERN.test(payload.taskId)) throw new ApiException('TASK_LEASE_INVALID');
+    if (
+      payload.exitCode !== undefined &&
+      (!Number.isInteger(payload.exitCode) ||
+        payload.exitCode < -2_147_483_648 ||
+        payload.exitCode > 2_147_483_647)
+    ) {
+      throw new ApiException('VALIDATION_FAILED');
+    }
     if (!this.registry.isReady(agentId)) throw new ApiException('TASK_LEASE_INVALID');
     const reason = safeAgentReason(payload.reason);
     let shouldNotify = false;
 
     await this.prisma.$transaction(async (tx) => {
       const agent = await this.lockAgent(tx, agentId);
-      if (!agent) throw new ApiException('TASK_LEASE_INVALID');
+      if (!agent || !agent.enabled || agent.status !== AgentStatus.ONLINE) {
+        throw new ApiException('TASK_LEASE_INVALID');
+      }
       const task = await tx.buildTask.findUnique({
         where: { id: payload.taskId },
         select: {
           id: true,
           agentId: true,
           status: true,
-          statusReason: true,
           leaseHash: true,
           leaseExpiresAt: true,
         },
       });
-      if (!task || task.agentId !== agentId) throw new ApiException('TASK_LEASE_INVALID');
-      if (
-        task.status === BuildTaskStatus.FAILED &&
-        agent.activeTaskId === null &&
-        task.statusReason === reason
-      ) {
-        return;
+      if (!task || task.agentId !== agentId || agent.activeTaskId !== task.id) {
+        throw new ApiException('TASK_LEASE_INVALID');
+      }
+      if (!task.leaseHash || !task.leaseExpiresAt || task.leaseExpiresAt.getTime() <= Date.now()) {
+        throw new ApiException('TASK_LEASE_INVALID');
+      }
+      if (!this.leases.verify(payload.leaseToken, task.leaseHash)) {
+        throw new ApiException('TASK_LEASE_INVALID');
       }
       if (
-        task.status !== BuildTaskStatus.PREPARING ||
-        agent.activeTaskId !== task.id ||
-        !task.leaseHash ||
-        !task.leaseExpiresAt ||
-        task.leaseExpiresAt.getTime() <= Date.now() ||
-        !this.leases.verify(payload.leaseToken, task.leaseHash)
+        task.status !== BuildTaskStatus.PREPARING &&
+        task.status !== BuildTaskStatus.RUNNING &&
+        task.status !== BuildTaskStatus.UPLOADING
       ) {
-        throw new ApiException('TASK_LEASE_INVALID');
+        throw new ApiException('TASK_INVALID_STATE');
       }
       await this.state.transition(tx, task.id, BuildTaskStatus.FAILED, 'AGENT', reason, {
         leaseHash: null,
         leaseExpiresAt: null,
         finishedAt: new Date(),
         statusReason: reason,
+        exitCode: payload.exitCode ?? null,
       });
       await tx.agent.update({ where: { id: agentId }, data: { activeTaskId: null } });
       shouldNotify = true;

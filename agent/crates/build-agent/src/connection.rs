@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use build_agent_contracts::{
     parse_message, AgentHeartbeatPayload, AgentHelloPayload, AgentRegisteredPayload,
-    BuildTaskStatus, DecodedMessage, MessageType, ProtocolEnvelope, ProtocolVersion,
+    BuildTaskStatus, DecodedMessage, LogStream, MessageType, ProtocolEnvelope, ProtocolVersion,
     RequiredNullable, TaskAcceptedPayload, TaskAssignmentPayload, TaskClaimPayload,
-    TaskFailedPayload, TaskStatusPayload,
+    TaskFailedPayload, TaskLogPayload, TaskStatusPayload,
 };
 use chrono::{DateTime, SecondsFormat, Utc};
 use futures_util::{SinkExt, StreamExt};
@@ -31,12 +31,15 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::config::ConfigError;
+use crate::execution::{start_command, ExecutionEvent, ExecutionResult};
 use crate::git::GitClient;
 use crate::preparation::{prepare_task, PreparationFailure, PreparationResult};
+use crate::task_config::write_platform_config;
 use crate::workspace::{WorkspaceError, WorkspaceManager};
 use crate::{AgentBuildInfo, AgentConfig};
 
 type AgentSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+const COMMAND_REPORT_RESERVE: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Error)]
 pub enum AgentError {
@@ -126,8 +129,15 @@ struct ActiveTask {
     lease_token: String,
     lease_expires_at: String,
     source_commit: Option<String>,
+    command: String,
+    config: serde_json::Map<String, Value>,
+    stdout_log_redactor: SensitiveLogRedactor,
+    stderr_log_redactor: SensitiveLogRedactor,
+    timeout_seconds: u64,
+    next_log_sequence: u64,
     workspace: Option<crate::workspace::TaskWorkspace>,
     preparation: Option<JoinHandle<()>>,
+    execution: Option<JoinHandle<()>>,
 }
 
 type PreparationEventResult = Result<PreparationResult, PreparationFailure>;
@@ -396,6 +406,7 @@ impl Agent {
     ) -> Result<ConnectionExit, AgentError> {
         let (result_sender, mut result_receiver) = mpsc::unbounded_channel::<PreparationEvent>();
         let mut active: Option<ActiveTask> = None;
+        let mut execution_receiver = None;
         let result = self
             .run_connected_loop(
                 socket,
@@ -404,13 +415,15 @@ impl Agent {
                 &result_sender,
                 &mut result_receiver,
                 &mut active,
+                &mut execution_receiver,
             )
             .await;
-        cancel_active_task(&mut active, &mut result_receiver).await;
+        cancel_active_task(&mut active, &mut result_receiver, &mut execution_receiver).await;
         drop(result_sender);
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_connected_loop(
         &self,
         socket: &mut AgentSocket,
@@ -419,6 +432,7 @@ impl Agent {
         result_sender: &mpsc::UnboundedSender<PreparationEvent>,
         result_receiver: &mut mpsc::UnboundedReceiver<PreparationEvent>,
         active: &mut Option<ActiveTask>,
+        execution_receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
     ) -> Result<ConnectionExit, AgentError> {
         let agent_id = self.agent_id.as_deref().ok_or_else(|| {
             AgentError::Protocol("agentId was not available after registration".to_string())
@@ -465,7 +479,10 @@ impl Agent {
                     }
                 }
                 Some(event) = result_receiver.recv(), if active.as_ref().is_some_and(|task| task.preparation.is_some()) => {
-                    self.handle_preparation_event(socket, active, event).await?;
+                    self.handle_preparation_event(socket, active, execution_receiver, event).await?;
+                }
+                event = receive_execution_event(execution_receiver), if execution_receiver.is_some() => {
+                    self.handle_execution_event(socket, active, execution_receiver, event).await?;
                 }
             }
         }
@@ -514,8 +531,21 @@ impl Agent {
             lease_token: lease_token.clone(),
             lease_expires_at: assignment.lease_expires_at.clone(),
             source_commit: None,
+            command: assignment.command.clone(),
+            config: assignment.config.clone(),
+            stdout_log_redactor: SensitiveLogRedactor::new(
+                &assignment.config,
+                &assignment.sensitive_config_keys,
+            ),
+            stderr_log_redactor: SensitiveLogRedactor::new(
+                &assignment.config,
+                &assignment.sensitive_config_keys,
+            ),
+            timeout_seconds: assignment.timeout_seconds,
+            next_log_sequence: 1,
             workspace: None,
             preparation: None,
+            execution: None,
         });
         let accepted = TaskAcceptedPayload {
             task_id: task_id.clone(),
@@ -557,6 +587,7 @@ impl Agent {
         &self,
         socket: &mut AgentSocket,
         active: &mut Option<ActiveTask>,
+        execution_receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
         event: PreparationEvent,
     ) -> Result<(), AgentError> {
         let Some(current) = active.as_mut() else {
@@ -580,13 +611,23 @@ impl Agent {
                     .map(|value| value.with_timezone(&Utc) <= Utc::now())
                     .unwrap_or(true)
                 {
-                    return Err(AgentError::Protocol(
-                        "task lease expired during preparation".to_string(),
-                    ));
+                    return self
+                        .fail_active_task(
+                            socket,
+                            active,
+                            "COMMAND_TIMEOUT: task lease expired before command start",
+                            None,
+                        )
+                        .await;
                 }
+
                 current.source_commit = Some(result.source_commit.clone());
                 current.workspace = Some(result.workspace);
-                debug!(task_id = %current.task_id, source_commit = %result.source_commit, "Git preparation completed");
+                debug!(
+                    task_id = %current.task_id,
+                    source_commit = %result.source_commit,
+                    "Git preparation completed"
+                );
                 let status = TaskStatusPayload {
                     task_id: current.task_id.clone(),
                     lease_token: current.lease_token.clone(),
@@ -600,24 +641,392 @@ impl Agent {
                     MessageType::TaskStatus,
                     serde_json::to_value(status)?,
                 )
-                .await
-            }
-            Err(error) => {
-                let failed = TaskFailedPayload {
+                .await?;
+
+                let source_path = current
+                    .workspace
+                    .as_ref()
+                    .expect("workspace was just stored")
+                    .source_path()
+                    .to_path_buf();
+                if let Err(error) = write_platform_config(&source_path, &current.config) {
+                    return self
+                        .fail_active_task(socket, active, &error.to_string(), None)
+                        .await;
+                }
+
+                let lease_remaining = DateTime::parse_from_rfc3339(&current.lease_expires_at)
+                    .ok()
+                    .and_then(|value| (value.with_timezone(&Utc) - Utc::now()).to_std().ok());
+                let Some(lease_remaining) = lease_remaining else {
+                    return self
+                        .fail_active_task(
+                            socket,
+                            active,
+                            "COMMAND_TIMEOUT: task lease expired before command start",
+                            None,
+                        )
+                        .await;
+                };
+                let command_budget = lease_remaining.saturating_sub(COMMAND_REPORT_RESERVE);
+                if command_budget.is_zero() {
+                    return self
+                        .fail_active_task(
+                            socket,
+                            active,
+                            "COMMAND_TIMEOUT: insufficient lease time for command and status reporting",
+                            None,
+                        )
+                        .await;
+                }
+                let command_timeout =
+                    Duration::from_secs(current.timeout_seconds).min(command_budget);
+                let shell = if cfg!(windows) {
+                    "cmd.exe /D /S /C"
+                } else {
+                    "/bin/sh -lc"
+                };
+                debug!(task_id = %current.task_id, shell, "Starting build command");
+                let execution = match start_command(&current.command, &source_path, command_timeout)
+                {
+                    Ok(execution) => execution,
+                    Err(error) => {
+                        return self
+                            .fail_active_task(socket, active, &error.to_string(), None)
+                            .await;
+                    }
+                };
+                *execution_receiver = Some(execution.receiver);
+                current.execution = Some(execution.task);
+                let running = TaskStatusPayload {
                     task_id: current.task_id.clone(),
                     lease_token: current.lease_token.clone(),
-                    reason: format!("{}: {}", error.code, error.message),
-                    failed_at: utc_now(),
-                    exit_code: None,
+                    status: BuildTaskStatus::Running,
+                    occurred_at: utc_now(),
+                    reason: None,
+                    source_commit: current.source_commit.clone(),
                 };
                 send_envelope(
                     socket,
-                    MessageType::TaskFailed,
-                    serde_json::to_value(failed)?,
+                    MessageType::TaskStatus,
+                    serde_json::to_value(running)?,
                 )
-                .await?;
-                active.take();
-                Ok(())
+                .await
+            }
+            Err(error) => {
+                self.fail_active_task(
+                    socket,
+                    active,
+                    &format!("{}: {}", error.code, error.message),
+                    None,
+                )
+                .await
+            }
+        }
+    }
+
+    async fn handle_execution_event(
+        &self,
+        socket: &mut AgentSocket,
+        active: &mut Option<ActiveTask>,
+        execution_receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
+        event: ExecutionEvent,
+    ) -> Result<(), AgentError> {
+        match event {
+            ExecutionEvent::Output { stream, chunk } => {
+                let Some(current) = active.as_mut() else {
+                    return Ok(());
+                };
+                let chunk = match stream {
+                    LogStream::Stdout => current.stdout_log_redactor.redact(&chunk),
+                    LogStream::Stderr => current.stderr_log_redactor.redact(&chunk),
+                };
+                if chunk.is_empty() {
+                    return Ok(());
+                }
+                let sequence = current.next_log_sequence;
+                current.next_log_sequence += 1;
+                let log = TaskLogPayload {
+                    task_id: current.task_id.clone(),
+                    lease_token: current.lease_token.clone(),
+                    sequence,
+                    stream,
+                    chunk,
+                    emitted_at: utc_now(),
+                };
+                send_log_best_effort(socket, log).await
+            }
+            ExecutionEvent::Finished(result) => {
+                let pending_logs = if let Some(current) = active.as_mut() {
+                    let mut pending_logs = Vec::new();
+                    let stdout_tail = current.stdout_log_redactor.finish();
+                    if !stdout_tail.is_empty() {
+                        let sequence = current.next_log_sequence;
+                        current.next_log_sequence += 1;
+                        pending_logs.push(TaskLogPayload {
+                            task_id: current.task_id.clone(),
+                            lease_token: current.lease_token.clone(),
+                            sequence,
+                            stream: LogStream::Stdout,
+                            chunk: stdout_tail,
+                            emitted_at: utc_now(),
+                        });
+                    }
+                    let stderr_tail = current.stderr_log_redactor.finish();
+                    if !stderr_tail.is_empty() {
+                        let sequence = current.next_log_sequence;
+                        current.next_log_sequence += 1;
+                        pending_logs.push(TaskLogPayload {
+                            task_id: current.task_id.clone(),
+                            lease_token: current.lease_token.clone(),
+                            sequence,
+                            stream: LogStream::Stderr,
+                            chunk: stderr_tail,
+                            emitted_at: utc_now(),
+                        });
+                    }
+                    pending_logs
+                } else {
+                    Vec::new()
+                };
+                if let Some(current) = active.as_mut() {
+                    if let Some(handle) = current.execution.take() {
+                        let _ = handle.await;
+                    }
+                }
+                execution_receiver.take();
+                for log in pending_logs {
+                    send_log_best_effort(socket, log).await?;
+                }
+
+                if result.output_failed {
+                    return self
+                        .fail_active_task(
+                            socket,
+                            active,
+                            "COMMAND_OUTPUT_FAILED: command output could not be read",
+                            None,
+                        )
+                        .await;
+                }
+                if result.timed_out {
+                    return self
+                        .fail_active_task(
+                            socket,
+                            active,
+                            "COMMAND_TIMEOUT: build command timed out",
+                            None,
+                        )
+                        .await;
+                }
+                match result.exit_code {
+                    Some(0) => {
+                        let Some(current) = active.as_ref() else {
+                            return Ok(());
+                        };
+                        let uploading = TaskStatusPayload {
+                            task_id: current.task_id.clone(),
+                            lease_token: current.lease_token.clone(),
+                            status: BuildTaskStatus::Uploading,
+                            occurred_at: utc_now(),
+                            reason: None,
+                            source_commit: current.source_commit.clone(),
+                        };
+                        send_envelope(
+                            socket,
+                            MessageType::TaskStatus,
+                            serde_json::to_value(uploading)?,
+                        )
+                        .await
+                    }
+                    Some(exit_code) => {
+                        self.fail_active_task(
+                            socket,
+                            active,
+                            "COMMAND_FAILED: build command exited with non-zero status",
+                            Some(exit_code),
+                        )
+                        .await
+                    }
+                    None => {
+                        self.fail_active_task(
+                            socket,
+                            active,
+                            "COMMAND_FAILED: build command ended without a normal exit code",
+                            None,
+                        )
+                        .await
+                    }
+                }
+            }
+        }
+    }
+
+    async fn fail_active_task(
+        &self,
+        socket: &mut AgentSocket,
+        active: &mut Option<ActiveTask>,
+        reason: &str,
+        exit_code: Option<i32>,
+    ) -> Result<(), AgentError> {
+        let Some(current) = active.as_ref() else {
+            return Ok(());
+        };
+        let failed = TaskFailedPayload {
+            task_id: current.task_id.clone(),
+            lease_token: current.lease_token.clone(),
+            reason: reason.to_string(),
+            failed_at: utc_now(),
+            exit_code,
+        };
+        send_envelope(
+            socket,
+            MessageType::TaskFailed,
+            serde_json::to_value(failed)?,
+        )
+        .await?;
+        active.take();
+        Ok(())
+    }
+}
+
+async fn send_log_best_effort(
+    socket: &mut AgentSocket,
+    log: TaskLogPayload,
+) -> Result<(), AgentError> {
+    let send = send_envelope(socket, MessageType::TaskLog, serde_json::to_value(log)?);
+    match time::timeout(Duration::from_millis(100), send).await {
+        Ok(result) => result,
+        Err(_) => Ok(()),
+    }
+}
+async fn receive_execution_event(
+    receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
+) -> ExecutionEvent {
+    match receiver.as_mut() {
+        Some(receiver) => {
+            receiver
+                .recv()
+                .await
+                .unwrap_or(ExecutionEvent::Finished(ExecutionResult {
+                    exit_code: None,
+                    timed_out: false,
+                    output_failed: true,
+                }))
+        }
+        None => std::future::pending::<ExecutionEvent>().await,
+    }
+}
+
+#[derive(Debug, Default)]
+struct SensitiveLogRedactor {
+    values: Vec<String>,
+    pending: String,
+}
+
+impl SensitiveLogRedactor {
+    fn new(config: &serde_json::Map<String, Value>, sensitive_config_keys: &[String]) -> Self {
+        let mut values = Vec::new();
+        for key in sensitive_config_keys {
+            if let Some(value) = config.get(key) {
+                collect_sensitive_representations(value, &mut values);
+            }
+        }
+        values.retain(|value| !value.is_empty());
+        values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+        values.dedup();
+        Self {
+            values,
+            pending: String::new(),
+        }
+    }
+
+    fn redact(&mut self, chunk: &str) -> String {
+        if self.values.is_empty() {
+            return chunk.to_string();
+        }
+
+        let mut combined = std::mem::take(&mut self.pending);
+        combined.push_str(chunk);
+        let max_value_len = self
+            .values
+            .iter()
+            .map(String::len)
+            .max()
+            .expect("redactor values are not empty");
+        if combined.len() <= max_value_len {
+            self.pending = combined;
+            return String::new();
+        }
+
+        let mut split = combined.len() - max_value_len;
+        while split > 0 && !combined.is_char_boundary(split) {
+            split -= 1;
+        }
+        let safe_prefix = &combined[..split];
+        let mut overlap = 0;
+        for value in &self.values {
+            for (prefix_len, _) in value.char_indices().skip(1) {
+                if prefix_len < value.len()
+                    && prefix_len <= safe_prefix.len()
+                    && safe_prefix.ends_with(&value[..prefix_len])
+                {
+                    overlap = overlap.max(prefix_len);
+                }
+            }
+        }
+        let process_end = split - overlap;
+        self.pending = combined[process_end..].to_string();
+        redact_text(&combined[..process_end], &self.values)
+    }
+
+    fn finish(&mut self) -> String {
+        redact_text(&std::mem::take(&mut self.pending), &self.values)
+    }
+}
+
+#[cfg(test)]
+fn redact_sensitive_output(
+    chunk: &str,
+    config: &serde_json::Map<String, Value>,
+    sensitive_config_keys: &[String],
+) -> String {
+    let mut redactor = SensitiveLogRedactor::new(config, sensitive_config_keys);
+    let mut redacted = redactor.redact(chunk);
+    redacted.push_str(&redactor.finish());
+    redacted
+}
+
+fn redact_text(text: &str, values: &[String]) -> String {
+    let mut redacted = text.to_string();
+    for value in values {
+        redacted = redacted.replace(value, "[REDACTED]");
+    }
+    redacted
+}
+
+fn collect_sensitive_representations(value: &Value, representations: &mut Vec<String>) {
+    match value {
+        Value::String(text) => {
+            representations.push(text.clone());
+            if let Ok(encoded) = serde_json::to_string(value) {
+                representations.push(encoded);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_sensitive_representations(value, representations);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values() {
+                collect_sensitive_representations(value, representations);
+            }
+        }
+        Value::Null => {}
+        _ => {
+            if let Ok(encoded) = serde_json::to_string(value) {
+                representations.push(encoded);
             }
         }
     }
@@ -684,13 +1093,19 @@ fn safe_relative_path(value: &str) -> bool {
 async fn cancel_active_task(
     active: &mut Option<ActiveTask>,
     result_receiver: &mut mpsc::UnboundedReceiver<PreparationEvent>,
+    execution_receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
 ) {
     if let Some(task) = active.as_mut() {
         if let Some(handle) = task.preparation.take() {
             handle.abort();
             let _ = handle.await;
         }
+        if let Some(handle) = task.execution.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
     }
+    execution_receiver.take();
     active.take();
     while let Ok(event) = result_receiver.try_recv() {
         drop(event);
@@ -879,6 +1294,62 @@ mod tests {
         assert!(!valid_protocol_id(&"a".repeat(129)));
     }
 
+    #[test]
+    fn assignment_config_is_materialized_completely_and_sensitive_output_is_redacted() {
+        let assignment = TaskAssignmentPayload {
+            task_id: Uuid::new_v4().to_string(),
+            lease_token: "lease-token-000001".to_string(),
+            lease_expires_at: "2099-08-30T03:00:00Z".to_string(),
+            agent_id: "agent-test".to_string(),
+            project_id: Uuid::new_v4().to_string(),
+            build_template_id: Uuid::new_v4().to_string(),
+            git: build_agent_contracts::TaskGitSource {
+                url: "https://example.test/repository.git".to_string(),
+                branch: "main".to_string(),
+            },
+            command: "echo test".to_string(),
+            artifact_dir: "dist".to_string(),
+            timeout_seconds: 10,
+            config: serde_json::json!({
+                "safe": "value",
+                "password": "secret-value"
+            })
+            .as_object()
+            .expect("object config")
+            .clone(),
+            sensitive_config_keys: vec!["password".to_string()],
+        };
+
+        let materialized = assignment.config.clone();
+        assert_eq!(
+            materialized.get("safe"),
+            Some(&Value::String("value".to_string()))
+        );
+        assert_eq!(
+            materialized.get("password"),
+            Some(&Value::String("secret-value".to_string()))
+        );
+        assert!(!serde_json::to_string(&materialized)
+            .expect("materialized config")
+            .contains("sensitiveConfigKeys"));
+
+        let log = redact_sensitive_output(
+            r#"{"safe":"value","password":"secret-value"}"#,
+            &materialized,
+            &assignment.sensitive_config_keys,
+        );
+        assert!(log.contains("value"));
+        assert!(!log.contains("secret-value"));
+        assert!(log.contains("[REDACTED]"));
+
+        let mut redactor =
+            SensitiveLogRedactor::new(&materialized, &assignment.sensitive_config_keys);
+        let mut split_log = redactor.redact("prefix secret-");
+        split_log.push_str(&redactor.redact("value suffix"));
+        split_log.push_str(&redactor.finish());
+        assert_eq!(split_log, "prefix [REDACTED] suffix");
+    }
+
     fn test_config(server_url: &str, state_file: PathBuf) -> AgentConfig {
         AgentConfig {
             server_url: url::Url::parse(server_url).expect("test server URL"),
@@ -1021,6 +1492,11 @@ mod tests {
         let project_id = Uuid::new_v4().to_string();
         let template_id = Uuid::new_v4().to_string();
         let source_url = source.path().to_string_lossy().into_owned();
+        let command_for_server = if cfg!(windows) {
+            "type platform.config.json"
+        } else {
+            "cat platform.config.json"
+        };
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("listener");
@@ -1074,11 +1550,11 @@ mod tests {
                             "projectId": project_id,
                             "buildTemplateId": template_id,
                             "git": { "url": source_url, "branch": "main" },
-                            "command": "echo test",
+                            "command": command_for_server,
                             "artifactDir": "dist",
                             "timeoutSeconds": 10,
-                            "config": {},
-                            "sensitiveConfigKeys": []
+                            "config": { "safe": "safe-value", "secret": "sensitive-value" },
+                            "sensitiveConfigKeys": ["secret"]
                         }
                     })
                     .to_string()
@@ -1088,6 +1564,10 @@ mod tests {
                 .expect("assignment");
 
             let mut accepted = false;
+            let mut preparing = false;
+            let mut running = false;
+            let mut output = String::new();
+            let mut last_log_sequence = 0_u64;
             loop {
                 let message = next_json(&mut socket).await;
                 match message["type"].as_str() {
@@ -1104,16 +1584,38 @@ mod tests {
                     Some("task.status") => {
                         assert!(accepted);
                         assert_eq!(message["payload"]["taskId"], task_id_for_asserts);
-                        assert_eq!(message["payload"]["status"], "PREPARING");
-                        let commit = message["payload"]["sourceCommit"]
-                            .as_str()
-                            .expect("commit SHA");
-                        assert_eq!(commit.len(), 40);
-                        status_sender
-                            .send(commit.to_string())
-                            .expect("status signal");
-                        return;
+                        match message["payload"]["status"].as_str() {
+                            Some("PREPARING") => {
+                                preparing = true;
+                                let commit = message["payload"]["sourceCommit"]
+                                    .as_str()
+                                    .expect("commit SHA");
+                                assert_eq!(commit.len(), 40);
+                            }
+                            Some("RUNNING") => {
+                                assert!(preparing);
+                                running = true;
+                            }
+                            Some("UPLOADING") => {
+                                assert!(running);
+                                assert!(output.contains("safe-value"));
+                                assert!(!output.contains("sensitive-value"));
+                                status_sender.send(output).expect("execution signal");
+                                return;
+                            }
+                            status => panic!("unexpected task status: {status:?}"),
+                        }
                     }
+                    Some("task.log") => {
+                        assert!(accepted);
+                        let sequence = message["payload"]["sequence"]
+                            .as_u64()
+                            .expect("log sequence");
+                        assert!(sequence > last_log_sequence);
+                        last_log_sequence = sequence;
+                        output.push_str(message["payload"]["chunk"].as_str().expect("log chunk"));
+                    }
+                    Some("task.failed") => panic!("unexpected task failure: {message:?}"),
                     _ => {}
                 }
             }
@@ -1127,10 +1629,34 @@ mod tests {
         let mut agent = Agent::from_config(config).expect("Agent should initialize");
         let (shutdown_sender, shutdown_receiver) = watch::channel(false);
         let run_task = tokio::spawn(async move { agent.run(shutdown_receiver).await });
-        tokio::time::timeout(Duration::from_secs(10), status_seen.1)
+        let output = tokio::time::timeout(Duration::from_secs(10), status_seen.1)
             .await
-            .expect("status timeout")
-            .expect("status signal");
+            .expect("execution status timeout")
+            .expect("execution signal");
+        assert!(output.contains("safe-value"));
+        assert!(!output.contains("sensitive-value"));
+        let task_directory = directory
+            .path()
+            .join("workspace")
+            .join("tasks")
+            .join(&task_id);
+        let config_contents =
+            fs::read_to_string(task_directory.join("source").join("platform.config.json"))
+                .expect("successful command should leave configuration available");
+        assert!(config_contents.ends_with('\n'));
+        assert!(config_contents.contains("safe-value"));
+        assert!(config_contents.contains("sensitive-value"));
+        assert!(!config_contents.contains("sensitiveConfigKeys"));
+        let materialized: Value =
+            serde_json::from_str(&config_contents).expect("materialized configuration JSON");
+        assert_eq!(
+            materialized,
+            serde_json::json!({
+                "safe": "safe-value",
+                "secret": "sensitive-value"
+            })
+        );
+        assert!(task_directory.is_dir());
         shutdown_sender.send(true).expect("shutdown signal");
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(5), run_task)

@@ -50,6 +50,7 @@ dependencies = [
  "fs2",
  "futures-util",
  "hostname",
+ "safe-write",
  "serde",
  "serde_json",
  "tempfile",
@@ -207,6 +208,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fs-err"
+version = "3.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b91aa448ca50d7e79433bdf3ee8d99215430d2ec02ade5aefab2a073a1822e8a"
+dependencies = [
+ "autocfg",
 ]
 
 [[package]]
@@ -763,6 +773,16 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "safe-write"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5a9dc0fc219eaa0265dbbee50170a469de86252d30b946c265c396b065b7f9f"
+dependencies = [
+ "fs-err",
+ "tempfile",
+]
 
 [[package]]
 name = "schannel"

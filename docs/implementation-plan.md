@@ -272,13 +272,15 @@
 
 #### T4.3 Rust Agent 配置与命令执行
 
+**当前状态：已完成（T4.3）**
+
 **实施内容**
 
-- 根据任务参数生成格式化 `platform.config.json`，临时文件后原子替换。
-- Windows 使用 `cmd.exe /D /S /C`，Unix 使用 `/bin/sh -lc`；记录具体 Shell。
-- 捕获 stdout/stderr、退出码和超时。
-- 用户配置不得插入命令字符串。
-- 实现任务生命周期上报。
+- 根据任务参数生成格式化 `platform.config.json`，过滤 `sensitiveConfigKeys`，在 source 内写临时文件并刷盘后替换。
+- Windows 使用 `cmd.exe /D /S /C`，Unix 使用 `/bin/sh -lc`，命令只来自 assignment 且配置不参与插值。
+- 有界并发捕获 stdout/stderr，处理 lossy UTF-8、每任务日志序号、退出码和超时。
+- 实现 `PREPARING`、`RUNNING`、`UPLOADING`、`FAILED` 生命周期上报；成功不发送 `task.completed`，不上传产物。
+- Server 统一校验状态、租约和执行槽；RUNNING/UPLOADING 断线按 `AGENT_LOST -> FAILED` 最小收尾。
 
 **验收标准**
 

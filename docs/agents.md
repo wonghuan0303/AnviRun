@@ -1,6 +1,6 @@
 # Agent 管理与连接
 
-T2.1 实现 Server 侧 Agent 管理 API 和单实例原生 RFC 6455 WebSocket 网关。当前阶段不处理任务领取、执行、日志或产物。
+T2.1 实现 Server 侧 Agent 管理 API 和单实例原生 RFC 6455 WebSocket 网关；T4.1～T4.3 已接入任务领取、Git 准备、配置写入和最小命令执行。日志持久化、取消与产物处理仍留给 T5/T6。
 
 ## 管理 API
 
@@ -75,7 +75,7 @@ log_level = "info"
 build-agent.exe --config C:/build-agent/build-agent.toml
 \`\`\`
 
-Rust Agent 使用 rustls native roots 支持 WSS，避免依赖系统 OpenSSL；任务领取、Git、命令执行、日志和产物处理分别留给后续 T4/T5 阶段。
+Rust Agent 使用 rustls native roots 支持 WSS，避免依赖系统 OpenSSL；任务领取、Git 准备和最小命令执行已由 T4.1～T4.3 接入，日志持久化、取消与产物处理仍留给 T5/T6。
 
 ## T4.2 Rust Agent 工作区与 Git 执行
 
@@ -85,6 +85,14 @@ T4.2 在 T2.2 连接闭环上增加最小任务准备流程：Agent 收到 `task
 
 Agent 启动和接收 assignment 时检查 workspace 可写性、`tasks` 目录写探针、最低可用磁盘空间和系统 Git。新增配置 `minimum_free_space_bytes` / `BUILD_AGENT_MINIMUM_FREE_SPACE_BYTES`，默认 `1073741824` 字节（1 GiB），必须是 0 到 JavaScript 安全整数范围内的非负整数，环境变量优先于 TOML。相对 `workspace_root` 按配置文件所在目录解析。
 
-Git 只调用系统 `git`，不使用 libgit2、Shell 或脚本解释器。clone 使用参数数组 `git clone --branch <branch> --single-branch -- <url> <source>`，设置 `GIT_TERMINAL_PROMPT=0`，超时受 assignment 的 `timeoutSeconds` 限制。成功后执行 `git -C <source> rev-parse --verify HEAD`，只接受 40/64 位十六进制 SHA 并以小写回传。工作区/Git 失败发送 `CODE: safe message` 格式的 `task.failed`，不包含 token、配置值、凭据或堆栈。
+Git 只调用系统 `git`，不使用 libgit2、Shell 或脚本解释器。clone 使用 `git clone --branch <branch> --single-branch -- <url> <source>` 参数数组，设置 `GIT_TERMINAL_PROMPT=0`，超时受任务 `timeoutSeconds` 限制。成功后执行 `git -C <source> rev-parse --verify HEAD`，只接受 40/64 位十六进制 SHA 并以小写回传。工作区/Git 失败发送 `CODE: safe message` 格式的 `task.failed`，不包含 token、配置值、凭据或堆栈。
 
-Server 最小接收闭环只处理 `task.status` 且 status 为 `PREPARING` 的 sourceCommit，以及 `task.failed` 的 PREPARING 任务；它们会校验 Agent、activeTaskId、租约和状态，使用同一事务保存 SHA 或转为 FAILED 并清理执行槽。T4.2 不实现 platform.config.json、构建命令、日志/产物上传、任务完成/取消、断线续传或自动重试。
+## T4.3 Rust Agent 配置与命令执行
+
+T4.3 在任务 source 目录写入 `platform.config.json`：完整保留 assignment `config` 的字段，按 UTF-8 pretty JSON 写入并保留一个末尾换行。`sensitiveConfigKeys` 不会删除或改变配置内容，只用于 Agent 输出中的敏感值遮蔽和诊断保护。写入使用 source 内 create-new 临时文件、刷盘后替换，拒绝 source/目标的符号链接或 Windows reparse point，不在错误和日志中输出完整配置。
+
+配置写入成功后 Agent 发送 `PREPARING`、启动模板 command 并发送 `RUNNING`。Windows 使用 `cmd.exe /D /S /C`，Unix 使用 `/bin/sh -lc`，工作目录固定为 source；配置不会插入 command、环境变量或参数。stdout/stderr 并发以有界分片读取，非 UTF-8 使用 lossy 解码，日志序号按任务从 1 递增；Server 当前只安全接收而不持久化日志。命令预算不超过“租约剩余时间减去最终状态上报余量”；直接 Shell 超时会取消两个 reader，正常退出后的管道排空也有有限宽限期。0 退出发送 `UPLOADING`，非零、超时、启动、配置或输出错误发送 `task.failed`，带可选 exitCode，并清理失败任务工作区。不发送 `task.completed`，不上传产物。
+
+断线、token 撤销和优雅退出会终止当前直接子进程并清理任务工作区。Server 对 RUNNING/UPLOADING 断线按 `-> AGENT_LOST -> FAILED` 收尾，清除租约和 activeTaskId；不实现完整进程树终止（由 T5.2 完成）、恢复对账、取消协议、日志持久化或产物上传。
+
+Server 接收 `task.status` 的 `PREPARING`、`RUNNING`、`UPLOADING` 状态，并按 Agent、activeTaskId、租约和当前状态顺序校验；合法转换统一经 TaskStateService，重复相同状态幂等。`task.failed` 可结束 PREPARING、RUNNING 或 UPLOADING，保存可选退出码、清理租约和执行槽。T4.3 的 `task.log` 仅做协议校验后安全忽略，持久化留给 T5.1。
