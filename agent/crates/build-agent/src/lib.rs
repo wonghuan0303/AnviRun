@@ -7,6 +7,7 @@ mod config;
 mod connection;
 mod execution;
 mod git;
+mod log_buffer;
 mod preparation;
 mod task_config;
 mod workspace;

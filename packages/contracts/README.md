@@ -42,6 +42,12 @@ WebSocket 信封使用数字 `protocolVersion`，当前版本为 `1`。未知版
 
 Rust crate `agent/crates/build-agent-contracts` 通过 `src/lib_t02.rs` 中的 Serde DTO 读取 `packages/contracts/fixtures`，不维护副本。共享 fixtures 的路径按 `CARGO_MANIFEST_DIR` 相对解析，兼容 Windows、macOS 和 Linux。
 
+## 任务日志协议
+
+Agent 到 Server 的 `task.log` 携带任务租约、每任务连续序号、流向和 UTF-8 分片；分片最大字节数由 `TASK_LOG_CHUNK_MAX_BYTES` 约束。Server 成功追加后发送 `task.log.ack`，ACK 只确认已持久化的连续序号和文件偏移；重复序号可安全重试，跳号不会被写入。Agent 端可使用有界本地缓冲支持短暂断线回放。
+
+浏览器日志订阅不是 Agent 协议：客户端先在 `/ws/client` 发送 access token 认证，再发送任务和 offset 订阅。Server 通过现有任务所有权服务授权，历史和实时 payload 均不携带租约哈希、令牌或配置秘密。
+
 ## 项目配置值校验
 
 `src/form-schema/values.ts` 提供 Project.config 与后续 Web 共用的确定性运行时能力：

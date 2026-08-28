@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -6,7 +7,7 @@ use build_agent_contracts::{
     parse_message, AgentHeartbeatPayload, AgentHelloPayload, AgentRegisteredPayload,
     BuildTaskStatus, DecodedMessage, LogStream, MessageType, ProtocolEnvelope, ProtocolVersion,
     RequiredNullable, TaskAcceptedPayload, TaskAssignmentPayload, TaskClaimPayload,
-    TaskFailedPayload, TaskLogPayload, TaskStatusPayload,
+    TaskFailedPayload, TaskLogAckPayload, TaskLogPayload, TaskStatusPayload,
 };
 use chrono::{DateTime, SecondsFormat, Utc};
 use futures_util::{SinkExt, StreamExt};
@@ -33,6 +34,7 @@ use uuid::Uuid;
 use crate::config::ConfigError;
 use crate::execution::{start_command, ExecutionEvent, ExecutionResult};
 use crate::git::GitClient;
+use crate::log_buffer::{BufferedLogEntry, LogBuffer, LogBufferError};
 use crate::preparation::{prepare_task, PreparationFailure, PreparationResult};
 use crate::task_config::write_platform_config;
 use crate::workspace::{WorkspaceError, WorkspaceManager};
@@ -73,6 +75,8 @@ pub enum AgentError {
     Git(#[from] crate::git::GitError),
     #[error(transparent)]
     Preparation(#[from] PreparationFailure),
+    #[error(transparent)]
+    LogBuffer(#[from] LogBufferError),
     #[error("Agent token was revoked by the Server")]
     TokenRevoked { reason: Option<String> },
 }
@@ -135,9 +139,17 @@ struct ActiveTask {
     stderr_log_redactor: SensitiveLogRedactor,
     timeout_seconds: u64,
     next_log_sequence: u64,
+    log_buffer: LogBuffer,
     workspace: Option<crate::workspace::TaskWorkspace>,
     preparation: Option<JoinHandle<()>>,
     execution: Option<JoinHandle<()>>,
+}
+
+#[derive(Debug)]
+struct PendingLog {
+    task_id: String,
+    lease_token: String,
+    log_buffer: LogBuffer,
 }
 
 type PreparationEventResult = Result<PreparationResult, PreparationFailure>;
@@ -180,6 +192,7 @@ pub struct Agent {
     agent_id: Option<String>,
     workspace: Option<WorkspaceManager>,
     git: GitClient,
+    pending_logs: HashMap<String, PendingLog>,
 }
 
 impl Agent {
@@ -198,6 +211,7 @@ impl Agent {
             agent_id,
             workspace: None,
             git: GitClient::new(),
+            pending_logs: HashMap::new(),
         })
     }
 
@@ -298,6 +312,7 @@ impl Agent {
             }
         };
         let heartbeat_seconds = self.record_registered(&registered)?;
+        self.replay_pending_logs(&mut socket).await?;
         retry_log_connected(self.agent_id.as_deref(), heartbeat_seconds);
         self.run_connected(&mut socket, &mut shutdown, heartbeat_seconds)
             .await
@@ -399,7 +414,7 @@ impl Agent {
         Ok(payload.heartbeat_interval_seconds)
     }
     async fn run_connected(
-        &self,
+        &mut self,
         socket: &mut AgentSocket,
         shutdown: &mut watch::Receiver<bool>,
         heartbeat_seconds: u64,
@@ -407,6 +422,7 @@ impl Agent {
         let (result_sender, mut result_receiver) = mpsc::unbounded_channel::<PreparationEvent>();
         let mut active: Option<ActiveTask> = None;
         let mut execution_receiver = None;
+        let mut pending_logs = std::mem::take(&mut self.pending_logs);
         let result = self
             .run_connected_loop(
                 socket,
@@ -416,9 +432,17 @@ impl Agent {
                 &mut result_receiver,
                 &mut active,
                 &mut execution_receiver,
+                &mut pending_logs,
             )
             .await;
-        cancel_active_task(&mut active, &mut result_receiver, &mut execution_receiver).await;
+        let pending =
+            cancel_active_task(&mut active, &mut result_receiver, &mut execution_receiver).await;
+        if matches!(&result, Ok(ConnectionExit::Disconnected) | Err(_)) {
+            if let Some(pending) = pending {
+                pending_logs.insert(pending.task_id.clone(), pending);
+            }
+        }
+        self.pending_logs = pending_logs;
         drop(result_sender);
         result
     }
@@ -433,6 +457,7 @@ impl Agent {
         result_receiver: &mut mpsc::UnboundedReceiver<PreparationEvent>,
         active: &mut Option<ActiveTask>,
         execution_receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
+        pending_logs: &mut HashMap<String, PendingLog>,
     ) -> Result<ConnectionExit, AgentError> {
         let agent_id = self.agent_id.as_deref().ok_or_else(|| {
             AgentError::Protocol("agentId was not available after registration".to_string())
@@ -458,6 +483,9 @@ impl Agent {
                                 return Err(AgentError::Protocol("token revocation message has a different agentId".to_string()));
                             }
                             return Ok(ConnectionExit::TokenRevoked { reason: envelope.payload.reason });
+                        }
+                        Some(DecodedMessage::TaskLogAck(envelope)) => {
+                            self.handle_log_ack(&envelope.payload, active, pending_logs).await?;
                         }
                         Some(DecodedMessage::TaskAvailable(envelope)) => {
                             let payload = envelope.payload;
@@ -526,6 +554,11 @@ impl Agent {
 
         let task_id = assignment.task_id.clone();
         let lease_token = assignment.lease_token.clone();
+        let log_buffer = LogBuffer::new(
+            &self.config.workspace_root,
+            &task_id,
+            self.config.log_buffer_max_bytes,
+        )?;
         *active = Some(ActiveTask {
             task_id: task_id.clone(),
             lease_token: lease_token.clone(),
@@ -543,6 +576,7 @@ impl Agent {
             ),
             timeout_seconds: assignment.timeout_seconds,
             next_log_sequence: 1,
+            log_buffer,
             workspace: None,
             preparation: None,
             execution: None,
@@ -745,7 +779,6 @@ impl Agent {
                     return Ok(());
                 }
                 let sequence = current.next_log_sequence;
-                current.next_log_sequence += 1;
                 let log = TaskLogPayload {
                     task_id: current.task_id.clone(),
                     lease_token: current.lease_token.clone(),
@@ -754,36 +787,18 @@ impl Agent {
                     chunk,
                     emitted_at: utc_now(),
                 };
-                send_log_best_effort(socket, log).await
+                self.persist_and_send_log(socket, current, log).await
             }
             ExecutionEvent::Finished(result) => {
                 let pending_logs = if let Some(current) = active.as_mut() {
                     let mut pending_logs = Vec::new();
                     let stdout_tail = current.stdout_log_redactor.finish();
                     if !stdout_tail.is_empty() {
-                        let sequence = current.next_log_sequence;
-                        current.next_log_sequence += 1;
-                        pending_logs.push(TaskLogPayload {
-                            task_id: current.task_id.clone(),
-                            lease_token: current.lease_token.clone(),
-                            sequence,
-                            stream: LogStream::Stdout,
-                            chunk: stdout_tail,
-                            emitted_at: utc_now(),
-                        });
+                        pending_logs.push((LogStream::Stdout, stdout_tail));
                     }
                     let stderr_tail = current.stderr_log_redactor.finish();
                     if !stderr_tail.is_empty() {
-                        let sequence = current.next_log_sequence;
-                        current.next_log_sequence += 1;
-                        pending_logs.push(TaskLogPayload {
-                            task_id: current.task_id.clone(),
-                            lease_token: current.lease_token.clone(),
-                            sequence,
-                            stream: LogStream::Stderr,
-                            chunk: stderr_tail,
-                            emitted_at: utc_now(),
-                        });
+                        pending_logs.push((LogStream::Stderr, stderr_tail));
                     }
                     pending_logs
                 } else {
@@ -795,8 +810,19 @@ impl Agent {
                     }
                 }
                 execution_receiver.take();
-                for log in pending_logs {
-                    send_log_best_effort(socket, log).await?;
+                for (stream, chunk) in pending_logs {
+                    if let Some(current) = active.as_mut() {
+                        let sequence = current.next_log_sequence;
+                        let log = TaskLogPayload {
+                            task_id: current.task_id.clone(),
+                            lease_token: current.lease_token.clone(),
+                            sequence,
+                            stream,
+                            chunk,
+                            emitted_at: utc_now(),
+                        };
+                        self.persist_and_send_log(socket, current, log).await?;
+                    }
                 }
 
                 if result.output_failed {
@@ -888,6 +914,95 @@ impl Agent {
         active.take();
         Ok(())
     }
+
+    async fn persist_and_send_log(
+        &self,
+        socket: &mut AgentSocket,
+        active: &mut ActiveTask,
+        log: TaskLogPayload,
+    ) -> Result<(), AgentError> {
+        let entry = BufferedLogEntry {
+            sequence: log.sequence,
+            stream: log.stream,
+            chunk: log.chunk.clone(),
+            emitted_at: log.emitted_at.clone(),
+        };
+        if !append_log_and_advance(
+            &mut active.log_buffer,
+            &mut active.next_log_sequence,
+            &entry,
+        )? {
+            warn!(
+                task_id = %active.task_id,
+                "task log buffer reached its configured limit; subsequent output is truncated"
+            );
+            return Ok(());
+        }
+        send_log_best_effort(socket, log).await?;
+        Ok(())
+    }
+
+    async fn replay_pending_logs(&mut self, socket: &mut AgentSocket) -> Result<(), AgentError> {
+        for pending in self.pending_logs.values_mut() {
+            let acknowledged = pending.log_buffer.acknowledged_sequence();
+            let mut reader = pending.log_buffer.pending_reader()?;
+            while let Some(entry) = reader.next()? {
+                if entry.sequence <= acknowledged {
+                    continue;
+                }
+                let payload = TaskLogPayload {
+                    task_id: pending.task_id.clone(),
+                    lease_token: pending.lease_token.clone(),
+                    sequence: entry.sequence,
+                    stream: entry.stream,
+                    chunk: entry.chunk,
+                    emitted_at: entry.emitted_at,
+                };
+                send_envelope(socket, MessageType::TaskLog, serde_json::to_value(payload)?).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_log_ack(
+        &self,
+        payload: &TaskLogAckPayload,
+        active: &mut Option<ActiveTask>,
+        pending_logs: &mut HashMap<String, PendingLog>,
+    ) -> Result<(), AgentError> {
+        if let Some(current) = active.as_mut() {
+            if current.task_id == payload.task_id {
+                current
+                    .log_buffer
+                    .acknowledge(payload.acknowledged_sequence)?;
+                return Ok(());
+            }
+        }
+        if let Some(pending) = pending_logs.get_mut(&payload.task_id) {
+            pending
+                .log_buffer
+                .acknowledge(payload.acknowledged_sequence)?;
+            if pending.log_buffer.is_empty() {
+                pending_logs.remove(&payload.task_id);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn append_log_and_advance(
+    buffer: &mut LogBuffer,
+    next_sequence: &mut u64,
+    entry: &BufferedLogEntry,
+) -> Result<bool, LogBufferError> {
+    if entry.sequence != *next_sequence {
+        return Err(LogBufferError::InvalidRecord);
+    }
+    let appended = buffer.append(entry)?;
+    if appended {
+        *next_sequence = (*next_sequence).saturating_add(1);
+    }
+    Ok(appended)
 }
 
 async fn send_log_best_effort(
@@ -1094,8 +1209,9 @@ async fn cancel_active_task(
     active: &mut Option<ActiveTask>,
     result_receiver: &mut mpsc::UnboundedReceiver<PreparationEvent>,
     execution_receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
-) {
-    if let Some(task) = active.as_mut() {
+) -> Option<PendingLog> {
+    let mut pending = None;
+    if let Some(mut task) = active.take() {
         if let Some(handle) = task.preparation.take() {
             handle.abort();
             let _ = handle.await;
@@ -1104,12 +1220,17 @@ async fn cancel_active_task(
             handle.abort();
             let _ = handle.await;
         }
+        pending = Some(PendingLog {
+            task_id: task.task_id,
+            lease_token: task.lease_token,
+            log_buffer: task.log_buffer,
+        });
     }
     execution_receiver.take();
-    active.take();
     while let Ok(event) = result_receiver.try_recv() {
         drop(event);
     }
+    pending
 }
 
 fn utc_now() -> String {
@@ -1350,6 +1471,50 @@ mod tests {
         assert_eq!(split_log, "prefix [REDACTED] suffix");
     }
 
+    #[test]
+    fn full_log_buffer_does_not_consume_sequence_before_ack_releases_space() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let task_id = Uuid::new_v4().to_string();
+        let mut buffer = LogBuffer::new(root.path(), &task_id, 1024).expect("buffer");
+        let mut next_sequence = 1;
+        let first = BufferedLogEntry {
+            sequence: next_sequence,
+            stream: LogStream::Stdout,
+            chunk: "x".repeat(700),
+            emitted_at: "2026-08-24T03:00:00.000Z".to_string(),
+        };
+        assert!(
+            append_log_and_advance(&mut buffer, &mut next_sequence, &first).expect("first append")
+        );
+        let dropped = BufferedLogEntry {
+            sequence: next_sequence,
+            stream: LogStream::Stdout,
+            chunk: "y".repeat(700),
+            emitted_at: "2026-08-24T03:00:01.000Z".to_string(),
+        };
+        assert!(
+            !append_log_and_advance(&mut buffer, &mut next_sequence, &dropped)
+                .expect("full buffer should be handled")
+        );
+        assert_eq!(next_sequence, 2);
+
+        buffer.acknowledge(1).expect("acknowledgement");
+        let next = BufferedLogEntry {
+            sequence: next_sequence,
+            stream: LogStream::Stdout,
+            chunk: "next".to_string(),
+            emitted_at: "2026-08-24T03:00:02.000Z".to_string(),
+        };
+        assert!(
+            append_log_and_advance(&mut buffer, &mut next_sequence, &next)
+                .expect("append after ack")
+        );
+        assert_eq!(next_sequence, 3);
+        let mut reader = buffer.pending_reader().expect("pending reader");
+        assert_eq!(reader.next().expect("next log").unwrap().sequence, 2);
+        assert!(reader.next().expect("end of logs").is_none());
+    }
+
     fn test_config(server_url: &str, state_file: PathBuf) -> AgentConfig {
         AgentConfig {
             server_url: url::Url::parse(server_url).expect("test server URL"),
@@ -1357,6 +1522,7 @@ mod tests {
             workspace_root: state_file.parent().expect("state parent").join("workspace"),
             log_level: "info".to_string(),
             minimum_free_space_bytes: 0,
+            log_buffer_max_bytes: 1024 * 1024,
             state_file,
             reconnect_initial: Duration::from_millis(10),
             reconnect_max: Duration::from_millis(30),

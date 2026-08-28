@@ -30,5 +30,12 @@ export {
 } from './task-status-transitions';
 export type { TaskStatusTransition } from './task-status-transitions';
 
-export { LOG_STREAMS, LOG_STREAM_INVALID_CODE, isLogStream, parseLogStream } from './task-log';
+export {
+  LOG_STREAMS,
+  LOG_STREAM_INVALID_CODE,
+  TASK_LOG_CHUNK_MAX_BYTES,
+  isLogStream,
+  parseLogStream,
+  utf8ByteLength,
+} from './task-log';
 export type { LogStream } from './task-log';

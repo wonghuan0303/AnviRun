@@ -1,6 +1,6 @@
 # Agent 管理与连接
 
-T2.1 实现 Server 侧 Agent 管理 API 和单实例原生 RFC 6455 WebSocket 网关；T4.1～T4.3 已接入任务领取、Git 准备、配置写入和最小命令执行。日志持久化、取消与产物处理仍留给 T5/T6。
+T2.1 实现 Server 侧 Agent 管理 API 和单实例原生 RFC 6455 WebSocket 网关；T4.1～T4.3 已接入任务领取、Git 准备、配置写入和最小命令执行，T5.1 已接入实时与历史日志。取消与产物处理仍留给后续阶段。
 
 ## 管理 API
 
@@ -75,7 +75,7 @@ log_level = "info"
 build-agent.exe --config C:/build-agent/build-agent.toml
 \`\`\`
 
-Rust Agent 使用 rustls native roots 支持 WSS，避免依赖系统 OpenSSL；任务领取、Git 准备和最小命令执行已由 T4.1～T4.3 接入，日志持久化、取消与产物处理仍留给 T5/T6。
+Rust Agent 使用 rustls native roots 支持 WSS，避免依赖系统 OpenSSL；任务领取、Git 准备、最小命令执行和 T5.1 日志链路已接入，取消与产物处理仍留给后续阶段。
 
 ## T4.2 Rust Agent 工作区与 Git 执行
 
@@ -95,4 +95,9 @@ T4.3 在任务 source 目录写入 `platform.config.json`：完整保留 assignm
 
 断线、token 撤销和优雅退出会终止当前直接子进程并清理任务工作区。Server 对 RUNNING/UPLOADING 断线按 `-> AGENT_LOST -> FAILED` 收尾，清除租约和 activeTaskId；不实现完整进程树终止（由 T5.2 完成）、恢复对账、取消协议、日志持久化或产物上传。
 
-Server 接收 `task.status` 的 `PREPARING`、`RUNNING`、`UPLOADING` 状态，并按 Agent、activeTaskId、租约和当前状态顺序校验；合法转换统一经 TaskStateService，重复相同状态幂等。`task.failed` 可结束 PREPARING、RUNNING 或 UPLOADING，保存可选退出码、清理租约和执行槽。T4.3 的 `task.log` 仅做协议校验后安全忽略，持久化留给 T5.1。
+Server 接收 `task.status` 的 `PREPARING`、`RUNNING`、`UPLOADING` 状态，并按 Agent、activeTaskId、租约和当前状态顺序校验；合法转换统一经 TaskStateService，重复相同状态幂等。`task.failed` 可结束 PREPARING、RUNNING 或 UPLOADING，保存可选退出码、清理租约和执行槽。T5.1 的 `task.log` 会在校验租约和连续序号后落盘，Server 返回 `task.log.ack`；浏览器日志订阅另行校验项目所有权。
+Server 接收 `task.status` 的 `PREPARING`、`RUNNING`、`UPLOADING` 状态，并按 Agent、activeTaskId、租约和当前状态顺序校验；合法转换统一经 TaskStateService，重复相同状态幂等。`task.failed` 可结束 PREPARING、RUNNING 或 UPLOADING，保存可选退出码、清理租约和执行槽。T5.1 的 `task.log` 会在校验租约和连续序号后落盘，Server 返回 `task.log.ack`；浏览器日志订阅另行校验项目所有权。
+
+## T5.1 任务日志
+
+日志正文存放在 Server 的 `TASK_LOG_ROOT` 文件目录中，路径按任务 UUID 分片并使用 NDJSON。PostgreSQL 只记录最后连续序号、文件偏移和短期日志租约；文件恢复时会截断残缺、非法或跳号尾部，并以已同步的连续文件记录对齐元数据。Agent 使用 `BUILD_AGENT_LOG_BUFFER_MAX_BYTES` 控制有界本地缓冲，ACK 先校验上限，达到压缩阈值或全部确认时才安全压缩已确认前缀；同一进程短暂重连时回放未确认日志。服务端 HTTP 历史读取和 `/ws/client` 浏览器订阅都复用任务所有权检查，浏览器历史按固定订阅尾分页并与实时 offset 去重衔接。完整取消、进程树终止和产物上传不属于 T5.1。

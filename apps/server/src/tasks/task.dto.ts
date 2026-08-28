@@ -6,6 +6,11 @@ export interface TaskListQuery {
   readonly status?: BuildTaskStatus;
 }
 
+export interface TaskLogQuery {
+  readonly offset: number;
+  readonly limit: number;
+}
+
 function objectInput(input: unknown): Record<string, unknown> {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) {
     throw new Error('body must be an object');
@@ -50,4 +55,23 @@ export function parseTaskListQuery(input: Record<string, unknown>): TaskListQuer
     pageSize: positiveInteger(queryValue(input, 'pageSize'), 20, 100),
     ...(rawStatus === undefined ? {} : { status: parseBuildTaskStatus(rawStatus) }),
   };
+}
+
+export function parseTaskLogQuery(input: Record<string, unknown>): TaskLogQuery {
+  onlyKeys(input, ['offset', 'limit']);
+  const offsetValue = queryValue(input, 'offset');
+  const limitValue = queryValue(input, 'limit');
+  const offset = offsetValue === undefined ? 0 : parseSafeInteger(offsetValue, false);
+  const limit = limitValue === undefined ? 65_536 : parseSafeInteger(limitValue, true);
+  if (limit > 1_048_576) throw new Error('log limit is invalid');
+  return { offset, limit };
+}
+
+function parseSafeInteger(value: string, positive: boolean): number {
+  if (!/^[0-9]+$/.test(value)) throw new Error('integer is invalid');
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || (positive ? parsed < 1 : parsed < 0)) {
+    throw new Error('integer is invalid');
+  }
+  return parsed;
 }

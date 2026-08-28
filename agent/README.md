@@ -23,6 +23,7 @@ Rust Agent 是一个长期运行的跨平台连接进程，负责连接 Server�
 | `log_level`                | `BUILD_AGENT_LOG_LEVEL`                | `info`                            | tracing 日志级别                                       |
 | `minimum_free_space_bytes` | `BUILD_AGENT_MINIMUM_FREE_SPACE_BYTES` | `1073741824`                      | 接受任务前要求的可用字节数，非负安全整数，环境变量优先 |
 | `state_file`               | `BUILD_AGENT_STATE_FILE`               | 配置文件目录下 `agent-state.json` | 只保存稳定 `agentId`                                   |
+| `log_buffer_max_bytes`     | `BUILD_AGENT_LOG_BUFFER_MAX_BYTES`     | `67108864`                        | 断线日志缓冲上限，最大 1 GiB                           |
 
 示例：
 
@@ -49,11 +50,13 @@ Git 使用系统 `git`，不依赖 libgit2，也不调用 shell。clone 使用 `
 
 失败原因使用稳定代码和安全消息，例如 `GIT_BRANCH_NOT_FOUND: requested Git branch was not found`、`GIT_TIMEOUT: Git operation timed out`；不会包含 token、完整 config、密码或堆栈。
 
+T5.1 日志链路：每个任务的 stdout/stderr 日志按 UTF-8 NDJSON 分片写入 `log-buffer/<taskId>.ndjson` 有界缓冲后发送 `task.log`；Server 持久化成功后返回 `task.log.ack`。`log_buffer_max_bytes` / `BUILD_AGENT_LOG_BUFFER_MAX_BYTES` 控制本地缓冲上限，短暂断线时同一 Agent 进程会从未确认的序号继续回放。Agent 发送和 Server 日志广播都会遮蔽敏感配置值，但 `platform.config.json` 仍完整保留 assignment config。
+
 ## T4.3 配置文件与构建命令
 
 收到有效 `task.assignment` 后，Agent 从 `payload.config` 完整生成 `<workspace_root>/tasks/<taskId>/source/platform.config.json`。配置只使用 assignment payload，不把配置插入命令、环境变量或参数；`sensitiveConfigKeys` 只用于 Agent 输出的敏感值遮蔽，不会删除或改变配置文件内容。文件使用 UTF-8、pretty JSON、恰好一个末尾换行；通过同一 source 目录内的唯一临时文件写入、`sync_all` 后替换，且拒绝 source 或目标文件的符号链接/reparse point。
 
-准备成功后按顺序发送 `PREPARING` 和 `RUNNING`。命令工作目录是 source，Windows 使用 `cmd.exe /D /S /C <command>`，Unix 使用 `/bin/sh -lc <command>`。stdout/stderr 并发读取，每个分片最多 4 KiB，采用 lossy UTF-8 和每任务从 1 开始的单调序号；Server 当前只做协议校验并安全忽略日志，完整日志持久化留给 T5.1。命令预算取模板 timeout 与“租约剩余时间减去最终状态上报余量”的较小值；直接 Shell 超时会主动取消两个 reader，正常退出后的管道排空也有有限宽限期。超时、启动失败、输出读取失败或非零退出都会发送 `task.failed` 并清理任务工作区。退出码为 0 时发送 `UPLOADING`，不发送 `task.completed`，也不上传产物。
+准备成功后按顺序发送 `PREPARING` 和 `RUNNING`。命令工作目录是 source，Windows 使用 `cmd.exe /D /S /C <command>`，Unix 使用 `/bin/sh -lc <command>`。stdout/stderr 并发读取，每个分片最多 4 KiB，采用 lossy UTF-8 和每任务从 1 开始的单调序号；日志先写入每任务有界 NDJSON 缓冲，再发送 `task.log`，Server 持久化成功后以 `task.log.ack` 确认。断线恢复时同一进程从未确认序号继续回放；缓冲上限由 `log_buffer_max_bytes` 控制。命令预算取模板 timeout 与“租约剩余时间减去最终状态上报余量”的较小值；直接 Shell 超时会主动取消两个 reader，正常退出后的管道排空也有有限宽限期。超时、启动失败、输出读取失败或非零退出都会发送 `task.failed` 并清理任务工作区。退出码为 0 时发送 `UPLOADING`，不发送 `task.completed`，也不上传产物。
 
 断线、token 撤销或进程退出会终止当前直接子进程、关闭输出读取任务并清理工作区；不实现完整进程树终止（由 T5.2 完成）、断线续传、取消协议或产物处理，这些属于 T5/T6。
 
@@ -80,4 +83,4 @@ cargo test --all-features
 cargo build
 ```
 
-当前 T4.3 已实现 platform.config.json、跨平台构建命令、最小 `task.log` 传输、`RUNNING`/`UPLOADING`/`FAILED` 生命周期上报。日志持久化、任务取消、进程树终止、产物上传、断线续传和自动重试构建属于 T5/T6。
+当前 T4.3 已实现 platform.config.json、跨平台构建命令和 `RUNNING`/`UPLOADING`/`FAILED` 生命周期上报；T5.1 已实现有界磁盘日志缓冲、连续序号、Server ACK、同进程短暂断线回放、文件持久化和浏览器订阅。任务取消、进程树终止、产物上传和自动重试构建属于后续 T5/T6。

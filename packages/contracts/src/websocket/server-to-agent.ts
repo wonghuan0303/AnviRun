@@ -36,6 +36,13 @@ export interface TaskAvailablePayload {
   readonly queuedTaskCount?: number;
 }
 
+/** 日志持久化确认。 */
+export interface TaskLogAckPayload {
+  readonly taskId: string;
+  readonly acknowledgedSequence: number;
+  readonly persistedOffset: number;
+}
+
 /** 任务需要拉取的 Git 仓库信息。**不包含任何凭据。** */
 export interface TaskGitSource {
   /** 仓库地址。凭据由 Agent 主机的 Git 配置提供，协议不传输。 */
@@ -108,6 +115,7 @@ export interface AgentTokenRevokedPayload {
 export interface ServerToAgentPayloadMap extends Record<ServerToAgentMessageType, unknown> {
   'agent.registered': AgentRegisteredPayload;
   'task.available': TaskAvailablePayload;
+  'task.log.ack': TaskLogAckPayload;
   'task.assignment': TaskAssignmentPayload;
   'task.cancel': TaskCancelPayload;
   'agent.token.revoked': AgentTokenRevokedPayload;
@@ -123,6 +131,7 @@ export type ServerToAgentMessageOf<TType extends ServerToAgentMessageType> = Pro
 export type AgentRegisteredMessage = ServerToAgentMessageOf<'agent.registered'>;
 /** 任务可领取通知消息。 */
 export type TaskAvailableMessage = ServerToAgentMessageOf<'task.available'>;
+export type TaskLogAckMessage = ServerToAgentMessageOf<'task.log.ack'>;
 /** 任务派发消息。 */
 export type TaskAssignmentMessage = ServerToAgentMessageOf<'task.assignment'>;
 /** 任务取消消息。 */
@@ -134,6 +143,7 @@ export type AgentTokenRevokedMessage = ServerToAgentMessageOf<'agent.token.revok
 export type ServerToAgentMessage =
   | AgentRegisteredMessage
   | TaskAvailableMessage
+  | TaskLogAckMessage
   | TaskAssignmentMessage
   | TaskCancelMessage
   | AgentTokenRevokedMessage;

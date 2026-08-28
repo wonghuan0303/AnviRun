@@ -19,6 +19,7 @@ import type {
   TaskAcceptedMessage,
   TaskClaimMessage,
   TaskFailedMessage,
+  TaskLogMessage,
   TaskStatusMessage,
 } from '@buildplatform/contracts';
 import { AgentStatus, BuildTaskStatus } from '@prisma/client';
@@ -29,6 +30,7 @@ import { ApiException } from '../common/api-exception';
 import { AgentConnectionRegistry } from './agent-connection.registry';
 import { AgentTokenService, type AuthenticatedAgent } from './agent-token.service';
 import { TaskQueueService } from '../tasks/task-queue.service';
+import { TaskLogsService } from '../task-logs/task-logs.service';
 
 interface ConnectionState {
   readonly agentId: string;
@@ -127,6 +129,7 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
     private readonly tokens: AgentTokenService,
     private readonly registry: AgentConnectionRegistry,
     private readonly moduleRef: ModuleRef,
+    private readonly logs: TaskLogsService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -314,7 +317,15 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
           safeClose(socket, 1008, 'hello required');
           return;
         }
-        // T4.3 only transports bounded best-effort logs. Durable log storage is a later stage.
+        try {
+          const ack = await this.logs.appendFromAgent(
+            state.agentId,
+            result.value as TaskLogMessage,
+          );
+          this.send(socket, ack);
+        } catch (error) {
+          if (!(error instanceof ApiException)) throw error;
+        }
       } else if (result.value.type === 'task.failed') {
         if (!state.helloReceived) {
           safeClose(socket, 1008, 'hello required');

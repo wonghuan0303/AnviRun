@@ -10,6 +10,19 @@ import { parseEnumValue } from '../validation/enum';
 /** 日志来源流，顺序稳定。 */
 export const LOG_STREAMS = ['stdout', 'stderr'] as const;
 
+/** 单个 task.log 分片的 UTF-8 字节上限。 */
+export const TASK_LOG_CHUNK_MAX_BYTES = 64 * 1024;
+
+/** 返回字符串编码为 UTF-8 后的字节数，不依赖 DOM/Node 运行时。 */
+export function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+  }
+  return bytes;
+}
+
 /** 日志来源流。 */
 export type LogStream = (typeof LOG_STREAMS)[number];
 

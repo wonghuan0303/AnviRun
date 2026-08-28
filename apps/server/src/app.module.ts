@@ -12,6 +12,7 @@ import { HealthModule } from './health/health.module';
 import { UsersModule } from './users/users.module';
 import { ProjectsModule } from './projects/projects.module';
 import { TasksModule } from './tasks/tasks.module';
+import { TaskLogsModule } from './task-logs/task-logs.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, cache: true }),
@@ -24,6 +25,7 @@ import { TasksModule } from './tasks/tasks.module';
     BuildTemplatesModule,
     ProjectsModule,
     TasksModule,
+    TaskLogsModule,
     UsersModule,
   ],
   providers: [{ provide: APP_FILTER, useClass: ApiExceptionFilter }],

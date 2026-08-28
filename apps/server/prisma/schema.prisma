@@ -162,6 +162,10 @@ model BuildTask {
   leaseHash         String?         @db.VarChar(255)
   leaseExpiresAt    DateTime?
   logSize           BigInt         @default(0)
+  lastLogSequence   BigInt         @default(0)
+  logLeaseHash      String?        @db.VarChar(255)
+  logLeaseExpiresAt DateTime?
+  logSensitiveKeys  Json?
   artifactCount     BigInt         @default(0)
   artifactBytes     BigInt         @default(0)
   createdAt         DateTime        @default(now())

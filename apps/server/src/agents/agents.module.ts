@@ -6,9 +6,10 @@ import { AgentConnectionRegistry } from './agent-connection.registry';
 import { AgentGateway } from './agent.gateway';
 import { AgentTokenService } from './agent-token.service';
 import { AgentsService } from './agents.service';
+import { TaskLogsModule } from '../task-logs/task-logs.module';
 
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, TaskLogsModule],
   controllers: [AdminAgentsController],
   providers: [AgentConnectionRegistry, AgentTokenService, AgentGateway, AgentsService],
   exports: [AgentConnectionRegistry, AgentGateway, AgentTokenService, AgentsService],

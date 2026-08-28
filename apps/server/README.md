@@ -125,3 +125,9 @@ T3.3 不包含 Web 项目页面、构建任务创建、Git 访问、Agent 派发
 - 租约明文只在 `task.assignment` 中短暂发送，数据库只保存 SHA-256 哈希和过期时间。Agent 以 `task.accepted` 确认后任务进入 `PREPARING`；未确认的 `DISPATCHED` 超过 30 秒会被回收至 `QUEUED` 或 `WAITING_AGENT`。Server 重启后队列、租约状态和历史仍以 PostgreSQL 为准。
 
 T4.1 只实现创建、查询、状态历史、Agent 可用通知、领取确认、租约和派发超时回收；任务执行、完成/失败上报、日志、产物、取消/重试和 Agent LOST 恢复留给后续阶段。
+
+### T5.1 任务日志
+
+Agent 的 `task.log` 由 `/ws/agent` 接收并按任务追加到文件型 NDJSON 日志，文件路径为 `<TASK_LOG_ROOT>/<taskId 前两位>/<taskId>.ndjson`。PostgreSQL 只保存 `lastLogSequence`、`logSize`、短期日志租约和敏感键快照，不保存日志正文。重复序号会返回当前 ACK，乱序序号不会写入；成功追加后 Server 返回 `task.log.ack`，其中包含连续序号和持久化偏移。
+
+已登录用户可通过 `GET /api/tasks/:taskId/logs?offset=&limit=` 增量读取历史日志，并通过 `/ws/client` 发送首条 `auth` 消息后订阅实时日志。订阅与 HTTP 查询均复用 `AuthorizationService.assertTaskLogAccess`，跨用户资源统一表现为 `404 RESOURCE_NOT_FOUND`。Server 和 Agent 都会遮蔽敏感配置值；敏感字段本身仍完整写入 Agent 的 `platform.config.json`。日志读取按偏移和有界大小流式处理，不把完整日志加载进 PostgreSQL 或内存。

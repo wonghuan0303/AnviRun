@@ -18,7 +18,8 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import { OwnedResource } from '../authorization/owned-resource.decorator';
 import { OwnershipGuard } from '../authorization/ownership.guard';
 import { ApiException } from '../common/api-exception';
-import { parseCreateTaskDto, parseTaskListQuery } from './task.dto';
+import { parseCreateTaskDto, parseTaskListQuery, parseTaskLogQuery } from './task.dto';
+import { TaskLogsService } from '../task-logs/task-logs.service';
 import { TasksService } from './tasks.service';
 
 function requestId(request: Request): string | undefined {
@@ -72,7 +73,27 @@ export class ProjectTasksController {
 
 @Controller('api/tasks')
 export class TasksController {
-  constructor(private readonly tasks: TasksService) {}
+  constructor(
+    private readonly tasks: TasksService,
+    private readonly logs: TaskLogsService,
+  ) {}
+
+  @Get(':taskId/logs')
+  @UseGuards(AccessTokenGuard, OwnershipGuard)
+  @OwnedResource('taskLog', 'taskId')
+  async logsHistory(
+    @Param('taskId') taskId: string,
+    @Query() query: Record<string, unknown>,
+    @CurrentUser() actor: AuthenticatedRequestUser,
+  ) {
+    try {
+      const parsed = parseTaskLogQuery(query);
+      return await this.logs.readHistory(actor, taskId, parsed.offset, parsed.limit);
+    } catch (error) {
+      if (error instanceof ApiException) throw error;
+      throw validationException();
+    }
+  }
 
   @Get(':taskId')
   @UseGuards(AccessTokenGuard, OwnershipGuard)

@@ -17,6 +17,8 @@ export const SERVER_TO_AGENT_MESSAGE_TYPES = [
   'agent.registered',
   /** 该 Agent 队列中出现可领取任务，Agent 应发起 `task.claim`。 */
   'task.available',
+  /** Server 已连续持久化的日志序号确认。 */
+  'task.log.ack',
   /** 派发任务并签发租约。 */
   'task.assignment',
   /** 请求取消任务，幂等（产品设计 5.5）。 */

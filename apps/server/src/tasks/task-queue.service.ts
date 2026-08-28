@@ -28,6 +28,7 @@ const MAX_CLAIM_VALIDATION_SKIPS = 32;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SOURCE_COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const MAX_AGENT_REASON_LENGTH = 1_024;
+const LOG_LEASE_WINDOW_MS = 10 * 60_000;
 
 const CLAIM_SELECT = {
   id: true,
@@ -600,7 +601,16 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
           BuildTaskStatus.DISPATCHED,
           'SERVER',
           'Task assigned to Agent',
-          { leaseHash: lease.hash, leaseExpiresAt: lease.expiresAt, statusReason: null },
+          {
+            leaseHash: lease.hash,
+            leaseExpiresAt: lease.expiresAt,
+            lastLogSequence: 0,
+            logSize: 0,
+            logLeaseHash: lease.hash,
+            logLeaseExpiresAt: new Date(lease.expiresAt.getTime() + LOG_LEASE_WINDOW_MS),
+            logSensitiveKeys: listSensitiveFormFieldNames(schema.value),
+            statusReason: null,
+          },
         );
         await tx.agent.update({ where: { id: agentId }, data: { activeTaskId: task.id } });
 

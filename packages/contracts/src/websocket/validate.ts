@@ -18,7 +18,7 @@ import {
   isString,
 } from '../validation/primitives';
 import { isAgentReportableTaskStatus } from '../task/task-status';
-import { isLogStream } from '../task/task-log';
+import { isLogStream, TASK_LOG_CHUNK_MAX_BYTES, utf8ByteLength } from '../task/task-log';
 import {
   isSupportedProtocolVersion,
   LEASE_TOKEN_PATTERN,
@@ -338,6 +338,12 @@ function serverPayload(
       idProperty(value, 'agentId', path, issues);
       nonNegativeInteger(value, 'queuedTaskCount', path, issues);
       return;
+    case 'task.log.ack':
+      unknownProperties(value, ['taskId', 'acknowledgedSequence', 'persistedOffset'], path, issues);
+      idProperty(value, 'taskId', path, issues);
+      nonNegativeInteger(value, 'acknowledgedSequence', path, issues, true);
+      nonNegativeInteger(value, 'persistedOffset', path, issues, true);
+      return;
     case 'task.assignment':
       unknownProperties(
         value,
@@ -466,7 +472,7 @@ function agentPayload(
       positiveInteger(value, 'sequence', path, issues);
       if (!isLogStream(value.stream))
         issue(issues, 'PROPERTY_INVALID', [...path, 'stream'], 'stream 必须是 stdout 或 stderr');
-      if (!isString(value.chunk))
+      if (!isString(value.chunk) || utf8ByteLength(value.chunk) > TASK_LOG_CHUNK_MAX_BYTES)
         issue(issues, 'PROPERTY_INVALID', [...path, 'chunk'], 'chunk 必须是字符串');
       timeProperty(value, 'emittedAt', path, issues);
       return;

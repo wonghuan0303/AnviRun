@@ -276,7 +276,7 @@
 
 **实施内容**
 
-- 根据任务参数生成格式化 `platform.config.json`，过滤 `sensitiveConfigKeys`，在 source 内写临时文件并刷盘后替换。
+- 根据任务参数生成格式化 `platform.config.json`，完整写入配置；`sensitiveConfigKeys` 仅用于敏感值遮蔽，在 source 内写临时文件并刷盘后替换。
 - Windows 使用 `cmd.exe /D /S /C`，Unix 使用 `/bin/sh -lc`，命令只来自 assignment 且配置不参与插值。
 - 有界并发捕获 stdout/stderr，处理 lossy UTF-8、每任务日志序号、退出码和超时。
 - 实现 `PREPARING`、`RUNNING`、`UPLOADING`、`FAILED` 生命周期上报；成功不发送 `task.completed`，不上传产物。
@@ -291,6 +291,8 @@
 ### P5：日志、取消与产物
 
 #### T5.1 实时与历史日志
+
+**当前状态：已完成（T5.1）**
 
 **实施内容**
 
@@ -468,4 +470,3 @@
 7. 后续任务需要知道的接口约束。
 
 禁止仅以“页面能打开”或“命令能运行”作为完成依据；必须满足对应任务的验收标准和自动化测试。
-

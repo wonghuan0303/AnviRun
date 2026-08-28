@@ -74,6 +74,8 @@ pub enum MessageType {
     AgentRegistered,
     #[serde(rename = "task.available")]
     TaskAvailable,
+    #[serde(rename = "task.log.ack")]
+    TaskLogAck,
     #[serde(rename = "task.assignment")]
     TaskAssignment,
     #[serde(rename = "task.cancel")]
@@ -130,6 +132,11 @@ dto!(AgentRegisteredPayload {
     server_time: String
 });
 dto!(TaskAvailablePayload { agent_id: String, queued_task_count: Option<u64> });
+dto!(TaskLogAckPayload {
+    task_id: String,
+    acknowledged_sequence: u64,
+    persisted_offset: u64
+});
 dto!(TaskGitSource {
     url: String,
     branch: String
@@ -223,6 +230,7 @@ pub struct ProtocolEnvelopeTyped<T> {
 pub enum DecodedMessage {
     AgentRegistered(ProtocolEnvelopeTyped<AgentRegisteredPayload>),
     TaskAvailable(ProtocolEnvelopeTyped<TaskAvailablePayload>),
+    TaskLogAck(ProtocolEnvelopeTyped<TaskLogAckPayload>),
     TaskAssignment(ProtocolEnvelopeTyped<TaskAssignmentPayload>),
     TaskCancel(ProtocolEnvelopeTyped<TaskCancelPayload>),
     AgentTokenRevoked(ProtocolEnvelopeTyped<AgentTokenRevokedPayload>),
@@ -405,6 +413,13 @@ pub fn parse_message(value: Value) -> Result<DecodedMessage, String> {
             raw.clone(),
             payload(&raw)?,
         ))),
+        MessageType::TaskLogAck => {
+            let value: TaskLogAckPayload = payload(&raw)?;
+            valid_id(&value.task_id, "taskId")?;
+            valid_safe_non_negative(value.acknowledged_sequence, "acknowledgedSequence")?;
+            valid_safe_non_negative(value.persisted_offset, "persistedOffset")?;
+            Ok(DecodedMessage::TaskLogAck(typed(raw, value)))
+        }
         MessageType::TaskAssignment => {
             let value: TaskAssignmentPayload = payload(&raw)?;
             valid_task(&value.task_id, &value.lease_token)?;
@@ -460,9 +475,10 @@ pub fn parse_message(value: Value) -> Result<DecodedMessage, String> {
         MessageType::TaskLog => {
             let value: TaskLogPayload = payload(&raw)?;
             valid_task(&value.task_id, &value.lease_token)?;
-            if value.sequence == 0 {
-                return Err("task.log sequence must be positive".to_string());
+            if value.sequence == 0 || value.chunk.len() > 64 * 1024 {
+                return Err("task.log sequence or chunk is invalid".to_string());
             }
+            valid_safe_non_negative(value.sequence, "sequence")?;
             valid_timestamp(&value.emitted_at, "emittedAt")?;
             Ok(DecodedMessage::TaskLog(typed(raw, value)))
         }

@@ -14,10 +14,13 @@ const WORKSPACE_ROOT_ENV: &str = "BUILD_AGENT_WORKSPACE_ROOT";
 const LOG_LEVEL_ENV: &str = "BUILD_AGENT_LOG_LEVEL";
 const MINIMUM_FREE_SPACE_ENV: &str = "BUILD_AGENT_MINIMUM_FREE_SPACE_BYTES";
 const STATE_FILE_ENV: &str = "BUILD_AGENT_STATE_FILE";
+const LOG_BUFFER_MAX_BYTES_ENV: &str = "BUILD_AGENT_LOG_BUFFER_MAX_BYTES";
 
 const DEFAULT_RECONNECT_INITIAL: Duration = Duration::from_secs(1);
 const DEFAULT_RECONNECT_MAX: Duration = Duration::from_secs(60);
 const DEFAULT_MINIMUM_FREE_SPACE_BYTES: u64 = 1_073_741_824;
+pub const DEFAULT_LOG_BUFFER_MAX_BYTES: u64 = 67_108_864;
+const MAX_LOG_BUFFER_MAX_BYTES: u64 = 1_073_741_824;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Error)]
@@ -47,6 +50,7 @@ struct FileConfig {
     log_level: Option<String>,
     minimum_free_space_bytes: Option<u64>,
     state_file: Option<String>,
+    log_buffer_max_bytes: Option<u64>,
 }
 
 /// Runtime configuration for one Agent process.
@@ -60,6 +64,7 @@ pub struct AgentConfig {
     pub log_level: String,
     pub minimum_free_space_bytes: u64,
     pub state_file: PathBuf,
+    pub log_buffer_max_bytes: u64,
     pub(crate) reconnect_initial: Duration,
     pub(crate) reconnect_max: Duration,
 }
@@ -74,6 +79,7 @@ impl fmt::Debug for AgentConfig {
             .field("log_level", &self.log_level)
             .field("minimum_free_space_bytes", &self.minimum_free_space_bytes)
             .field("state_file", &self.state_file)
+            .field("log_buffer_max_bytes", &self.log_buffer_max_bytes)
             .field("reconnect_initial", &self.reconnect_initial)
             .field("reconnect_max", &self.reconnect_max)
             .finish()
@@ -131,6 +137,10 @@ impl AgentConfig {
         let state_file = optional_value(STATE_FILE_ENV, file.state_file)
             .map(|value| resolve_path(base_dir, value))
             .unwrap_or_else(|| base_dir.join("agent-state.json"));
+        let log_buffer_max_bytes = parse_log_buffer_max_bytes(
+            env_value(LOG_BUFFER_MAX_BYTES_ENV)?,
+            file.log_buffer_max_bytes,
+        )?;
 
         Ok(Self {
             server_url,
@@ -139,6 +149,7 @@ impl AgentConfig {
             log_level,
             minimum_free_space_bytes,
             state_file,
+            log_buffer_max_bytes,
             reconnect_initial: DEFAULT_RECONNECT_INITIAL,
             reconnect_max: DEFAULT_RECONNECT_MAX,
         })
@@ -187,6 +198,26 @@ impl AgentConfig {
         self.reconnect_max = maximum.max(initial);
         self
     }
+}
+
+fn parse_log_buffer_max_bytes(
+    environment_value: Option<String>,
+    file_value: Option<u64>,
+) -> Result<u64, ConfigError> {
+    let value = match environment_value {
+        Some(value) => value.parse::<u64>().map_err(|_| ConfigError::Invalid {
+            field: "log_buffer_max_bytes",
+            reason: "must be a positive safe integer".to_string(),
+        })?,
+        None => file_value.unwrap_or(DEFAULT_LOG_BUFFER_MAX_BYTES),
+    };
+    if value == 0 || value > MAX_LOG_BUFFER_MAX_BYTES || value > MAX_SAFE_INTEGER {
+        return Err(ConfigError::Invalid {
+            field: "log_buffer_max_bytes",
+            reason: "must be a positive safe integer no larger than 1 GiB".to_string(),
+        });
+    }
+    Ok(value)
 }
 
 fn env_value(name: &str) -> Result<Option<String>, ConfigError> {
@@ -324,5 +355,15 @@ mod tests {
             parse_minimum_free_space(Some("0".to_string()), None).unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn validates_log_buffer_limit() {
+        assert_eq!(
+            parse_log_buffer_max_bytes(None, None).unwrap(),
+            DEFAULT_LOG_BUFFER_MAX_BYTES
+        );
+        assert!(parse_log_buffer_max_bytes(Some("0".to_string()), None).is_err());
+        assert!(parse_log_buffer_max_bytes(Some("1073741825".to_string()), None).is_err());
     }
 }

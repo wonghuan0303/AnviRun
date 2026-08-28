@@ -36,6 +36,17 @@
     }
   },
   {
+    "id": "invalid-log-ack-sequence",
+    "type": "task.log.ack",
+    "timestamp": "2026-08-24T03:02:02Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "acknowledgedSequence": -1,
+      "persistedOffset": 0
+    }
+  },
+  {
     "id": "git-credentials",
     "type": "task.assignment",
     "timestamp": "2026-08-24T03:02:03Z",
