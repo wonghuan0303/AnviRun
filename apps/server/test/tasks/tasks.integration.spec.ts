@@ -345,4 +345,51 @@ describe('T4.1 task REST PostgreSQL integration', () => {
     expect(projectBList.status).toBe(200);
     expect(projectBList.body.total).toBe(1);
   });
+
+  it('cancels a waiting task in one transaction and hides cancellation from other owners', async () => {
+    const created = await createTask(userAToken);
+    expect(created.status).toBe(201);
+    const taskId = created.body.task.id as string;
+
+    const canceled = await request(app.getHttpServer())
+      .post('/api/tasks/' + taskId + '/cancel')
+      .set('Authorization', 'Bearer ' + userAToken)
+      .send({ reason: 'no longer needed' });
+    expect(canceled.status).toBe(200);
+    expect(canceled.body.task.status).toBe('CANCELED');
+    expect(canceled.body.task.cancelRequestedAt).not.toBeNull();
+    expect(canceled.body.task.finishedAt).not.toBeNull();
+
+    const stored = await prisma.buildTask.findUniqueOrThrow({ where: { id: taskId } });
+    expect(stored.status).toBe(BuildTaskStatus.CANCELED);
+    expect(stored.leaseHash).toBeNull();
+    expect(stored.leaseExpiresAt).toBeNull();
+    const history = await prisma.buildTaskStatusHistory.findMany({
+      where: { taskId },
+      orderBy: { occurredAt: 'asc' },
+      select: { fromStatus: true, toStatus: true, source: true },
+    });
+    expect(history.map((item) => (item.fromStatus ?? 'null') + '->' + item.toStatus)).toEqual(
+      expect.arrayContaining([
+        'CREATED->WAITING_AGENT',
+        'WAITING_AGENT->CANCELING',
+        'CANCELING->CANCELED',
+      ]),
+    );
+    expect(history.slice(-2).every((item) => item.source === 'USER')).toBe(true);
+
+    const duplicate = await request(app.getHttpServer())
+      .post('/api/tasks/' + taskId + '/cancel')
+      .set('Authorization', 'Bearer ' + userAToken)
+      .send({ reason: 'duplicate cancellation' });
+    expect(duplicate.status).toBe(200);
+    expect(duplicate.body.task.status).toBe(BuildTaskStatus.CANCELED);
+
+    const crossOwner = await request(app.getHttpServer())
+      .post('/api/tasks/' + taskId + '/cancel')
+      .set('Authorization', 'Bearer ' + userBToken)
+      .send({});
+    expect(crossOwner.status).toBe(404);
+    expect(crossOwner.body.code).toBe('RESOURCE_NOT_FOUND');
+  });
 });

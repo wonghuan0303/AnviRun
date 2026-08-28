@@ -319,6 +319,17 @@ export class TasksService {
     return { task: toTaskResponse(task) };
   }
 
+  async cancelTask(
+    actor: AuthenticatedRequestUser,
+    taskId: string,
+    reason?: string,
+  ): Promise<{ task: TaskResponse }> {
+    this.assertUuid(taskId);
+    await this.authorization.assertTaskAccess(actor, taskId);
+    await this.queue.requestCancellation(taskId, reason);
+    return this.getTask(actor, taskId);
+  }
+
   private assertUuid(value: string): void {
     if (!UUID_PATTERN.test(value)) throw new ApiException('RESOURCE_NOT_FOUND');
   }

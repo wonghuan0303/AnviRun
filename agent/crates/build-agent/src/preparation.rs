@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use build_agent_contracts::TaskAssignmentPayload;
 use thiserror::Error;
+use tokio::sync::oneshot;
 use tracing::warn;
 
 use crate::git::{GitClient, GitError};
@@ -12,6 +13,8 @@ use crate::workspace::{TaskWorkspace, WorkspaceError, WorkspaceManager};
 pub struct PreparationFailure {
     pub code: &'static str,
     pub message: String,
+    pub canceled: bool,
+    pub workspace: Option<Box<TaskWorkspace>>,
 }
 
 #[derive(Debug)]
@@ -26,6 +29,8 @@ impl PreparationFailure {
         Self {
             code: error.code(),
             message: safe_workspace_message(&error),
+            canceled: false,
+            workspace: None,
         }
     }
 
@@ -33,40 +38,96 @@ impl PreparationFailure {
         Self {
             code: error.code(),
             message: safe_git_message(&error),
+            canceled: false,
+            workspace: None,
+        }
+    }
+
+    fn canceled(workspace: Option<TaskWorkspace>) -> Self {
+        Self {
+            code: "TASK_CANCELED",
+            message: "task preparation was canceled".to_string(),
+            canceled: true,
+            workspace: workspace.map(Box::new),
         }
     }
 }
 
+#[allow(dead_code)]
 pub async fn prepare_task(
     workspace_manager: WorkspaceManager,
     git: GitClient,
     assignment: TaskAssignmentPayload,
 ) -> Result<PreparationResult, PreparationFailure> {
+    prepare_task_inner(workspace_manager, git, assignment, None).await
+}
+
+pub async fn prepare_task_with_cancel(
+    workspace_manager: WorkspaceManager,
+    git: GitClient,
+    assignment: TaskAssignmentPayload,
+    cancel: &mut oneshot::Receiver<()>,
+) -> Result<PreparationResult, PreparationFailure> {
+    prepare_task_inner(workspace_manager, git, assignment, Some(cancel)).await
+}
+
+async fn prepare_task_inner(
+    workspace_manager: WorkspaceManager,
+    git: GitClient,
+    assignment: TaskAssignmentPayload,
+    mut cancel: Option<&mut oneshot::Receiver<()>>,
+) -> Result<PreparationResult, PreparationFailure> {
     workspace_manager
         .preflight()
         .map_err(PreparationFailure::workspace)?;
-    git.check_available()
-        .await
-        .map_err(PreparationFailure::git)?;
+    let availability = match cancel.as_mut() {
+        Some(cancel) => git.check_available_with_cancel(cancel).await,
+        None => git.check_available().await,
+    };
+    if let Err(error) = availability {
+        return Err(if matches!(error, GitError::Canceled) {
+            PreparationFailure::canceled(None)
+        } else {
+            PreparationFailure::git(error)
+        });
+    }
 
     let workspace = workspace_manager
         .create_task(&assignment.task_id)
         .map_err(PreparationFailure::workspace)?;
     let timeout = Duration::from_secs(assignment.timeout_seconds.max(1));
-    let result = async {
-        git.clone_repository(
-            &assignment.git.url,
-            &assignment.git.branch,
-            workspace.source_path(),
-            timeout,
-        )
-        .await
-        .map_err(PreparationFailure::git)?;
-        let source_commit = git
-            .rev_parse(workspace.source_path(), timeout)
-            .await
-            .map_err(PreparationFailure::git)?;
-        Ok::<String, PreparationFailure>(source_commit)
+    let result: Result<String, GitError> = async {
+        let clone = match cancel.as_mut() {
+            Some(cancel) => {
+                git.clone_repository_with_cancel(
+                    &assignment.git.url,
+                    &assignment.git.branch,
+                    workspace.source_path(),
+                    timeout,
+                    cancel,
+                )
+                .await
+            }
+            None => {
+                git.clone_repository(
+                    &assignment.git.url,
+                    &assignment.git.branch,
+                    workspace.source_path(),
+                    timeout,
+                )
+                .await
+            }
+        };
+        clone?;
+        let rev_parse = match cancel.as_mut() {
+            Some(cancel) => {
+                git.rev_parse_with_cancel(workspace.source_path(), timeout, cancel)
+                    .await
+            }
+            None => git.rev_parse(workspace.source_path(), timeout).await,
+        };
+        let source_commit = rev_parse?;
+        Ok::<String, GitError>(source_commit)
     }
     .await;
 
@@ -76,6 +137,7 @@ pub async fn prepare_task(
             workspace,
             source_commit,
         }),
+        Err(GitError::Canceled) => Err(PreparationFailure::canceled(Some(workspace))),
         Err(error) => {
             if let Err(cleanup_error) = workspace.cleanup() {
                 warn!(
@@ -85,7 +147,7 @@ pub async fn prepare_task(
                 );
             }
             drop(workspace);
-            Err(error)
+            Err(PreparationFailure::git(error))
         }
     }
 }
@@ -112,6 +174,7 @@ fn safe_git_message(error: &GitError) -> String {
         GitError::BranchNotFound { .. } => "requested Git branch was not found".to_string(),
         GitError::AuthFailed { .. } => "Git authentication or permission failed".to_string(),
         GitError::Timeout => "Git operation timed out".to_string(),
+        GitError::Canceled => "Git operation was canceled".to_string(),
         GitError::CommitInvalid => "Git returned an invalid commit SHA".to_string(),
     }
 }

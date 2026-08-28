@@ -1,6 +1,6 @@
 # Agent 管理与连接
 
-T2.1 实现 Server 侧 Agent 管理 API 和单实例原生 RFC 6455 WebSocket 网关；T4.1～T4.3 已接入任务领取、Git 准备、配置写入和最小命令执行，T5.1 已接入实时与历史日志。取消与产物处理仍留给后续阶段。
+T2.1 实现 Server 侧 Agent 管理 API 和单实例原生 RFC 6455 WebSocket 网关；T4.1～T4.3 已接入任务领取、Git 准备、配置写入和最小命令执行，T5.1 已接入实时与历史日志，T5.2 已接入取消与跨平台进程树终止。产物处理仍留给后续阶段。
 
 ## 管理 API
 
@@ -75,13 +75,13 @@ log_level = "info"
 build-agent.exe --config C:/build-agent/build-agent.toml
 \`\`\`
 
-Rust Agent 使用 rustls native roots 支持 WSS，避免依赖系统 OpenSSL；任务领取、Git 准备、最小命令执行和 T5.1 日志链路已接入，取消与产物处理仍留给后续阶段。
+Rust Agent 使用 rustls native roots 支持 WSS，避免依赖系统 OpenSSL；任务领取、Git 准备、最小命令执行、T5.1 日志链路和 T5.2 取消链路已接入，产物处理仍留给后续阶段。
 
 ## T4.2 Rust Agent 工作区与 Git 执行
 
 T4.2 在 T2.2 连接闭环上增加最小任务准备流程：Agent 收到 `task.available` 后仅在空闲时发送 `task.claim`，校验匹配的 `task.assignment`，先发送 `task.accepted`，再通过受控 Tokio 任务准备工作区。准备期间心跳持续发送 `currentTaskId`，单个 Agent 不会并行准备第二个任务；重复 assignment 不会创建第二份工作区或启动第二次 Git。
 
-工作区根目录在 Agent 启动时创建并规范化为绝对路径，不能是文件系统根目录。任务目录固定为 `<workspace_root>/tasks/<UUID>/source`，taskId 必须先解析为 UUID，路径创建前后检查边界、符号链接和 Windows reparse point。清理只接受已验证的 `TaskWorkspace`，安全递归删除不跟随仓库中的符号链接；连接断开或关闭时中止准备任务并清理部分工作区，当前阶段不做断线续传。
+工作区根目录在 Agent 启动时创建并规范化为绝对路径，不能是文件系统根目录。任务目录固定为 `<workspace_root>/tasks/<UUID>/source`，taskId 必须先解析为 UUID，路径创建前后检查边界、符号链接和 Windows reparse point。清理只接受已验证的 `TaskWorkspace`，安全递归删除不跟随仓库中的符号链接；连接断开或关闭时向准备中的 Git 操作发出取消并等待其进程组终止，再显式检查部分工作区清理结果，当前阶段不做断线续传。
 
 Agent 启动和接收 assignment 时检查 workspace 可写性、`tasks` 目录写探针、最低可用磁盘空间和系统 Git。新增配置 `minimum_free_space_bytes` / `BUILD_AGENT_MINIMUM_FREE_SPACE_BYTES`，默认 `1073741824` 字节（1 GiB），必须是 0 到 JavaScript 安全整数范围内的非负整数，环境变量优先于 TOML。相对 `workspace_root` 按配置文件所在目录解析。
 
@@ -93,11 +93,17 @@ T4.3 在任务 source 目录写入 `platform.config.json`：完整保留 assignm
 
 配置写入成功后 Agent 发送 `PREPARING`、启动模板 command 并发送 `RUNNING`。Windows 使用 `cmd.exe /D /S /C`，Unix 使用 `/bin/sh -lc`，工作目录固定为 source；配置不会插入 command、环境变量或参数。stdout/stderr 并发以有界分片读取，非 UTF-8 使用 lossy 解码，日志序号按任务从 1 递增；Server 当前只安全接收而不持久化日志。命令预算不超过“租约剩余时间减去最终状态上报余量”；直接 Shell 超时会取消两个 reader，正常退出后的管道排空也有有限宽限期。0 退出发送 `UPLOADING`，非零、超时、启动、配置或输出错误发送 `task.failed`，带可选 exitCode，并清理失败任务工作区。不发送 `task.completed`，不上传产物。
 
-断线、token 撤销和优雅退出会终止当前直接子进程并清理任务工作区。Server 对 RUNNING/UPLOADING 断线按 `-> AGENT_LOST -> FAILED` 收尾，清除租约和 activeTaskId；不实现完整进程树终止（由 T5.2 完成）、恢复对账、取消协议、日志持久化或产物上传。
+断线、token 撤销和优雅退出会终止当前任务进程树并清理任务工作区。Server 对 PREPARING/RUNNING/UPLOADING 断线按 `-> AGENT_LOST -> FAILED` 收尾；收到 task.cancel 后 Agent 校验 lease、终止进程组/Job Object、确认清理工作区成功后发送 task.canceled，Server 将 CANCELING 收尾为 CANCELED；清理失败或取消确认超时则以 `CANCELING -> FAILED` 释放执行槽。完整恢复对账和产物上传仍留给后续阶段。
 
 Server 接收 `task.status` 的 `PREPARING`、`RUNNING`、`UPLOADING` 状态，并按 Agent、activeTaskId、租约和当前状态顺序校验；合法转换统一经 TaskStateService，重复相同状态幂等。`task.failed` 可结束 PREPARING、RUNNING 或 UPLOADING，保存可选退出码、清理租约和执行槽。T5.1 的 `task.log` 会在校验租约和连续序号后落盘，Server 返回 `task.log.ack`；浏览器日志订阅另行校验项目所有权。
 Server 接收 `task.status` 的 `PREPARING`、`RUNNING`、`UPLOADING` 状态，并按 Agent、activeTaskId、租约和当前状态顺序校验；合法转换统一经 TaskStateService，重复相同状态幂等。`task.failed` 可结束 PREPARING、RUNNING 或 UPLOADING，保存可选退出码、清理租约和执行槽。T5.1 的 `task.log` 会在校验租约和连续序号后落盘，Server 返回 `task.log.ack`；浏览器日志订阅另行校验项目所有权。
 
 ## T5.1 任务日志
+
+## T5.2 取消协议
+
+Server 通过 POST /api/tasks/:taskId/cancel 发起取消。排队任务直接以 CANCELING -> CANCELED 收尾；执行任务发送 task.cancel，payload 携带 taskId、进程内短暂租约明文、requestedAt 和可选 reason。Agent 只接受与当前任务及租约完全匹配的请求，停止整个任务进程树、确认清理 workspace 后回传 task.canceled；清理失败回传带 `TASK_CANCEL_CLEANUP_FAILED` 的安全 task.failed。重复取消请求/回执不重复写历史，取消期间普通 status 不能覆盖 CANCELING；合法 Agent、任务、活动租约和 leaseToken 的普通 task.failed 可以将 CANCELING 收尾为 FAILED，断线、发送失败或超时未确认也由 Server 以 CANCELING -> FAILED 释放执行槽。
+
+Rust 侧使用 Windows Job Object 或 Unix process group；Unix 先发送 SIGTERM，短暂宽限后发送 SIGKILL，Windows 使用 Job Object 的组级终止。完整断线恢复、租约对账和恢复窗口留给 T6。
 
 日志正文存放在 Server 的 `TASK_LOG_ROOT` 文件目录中，路径按任务 UUID 分片并使用 NDJSON。PostgreSQL 只记录最后连续序号、文件偏移和短期日志租约；文件恢复时会截断残缺、非法或跳号尾部，并以已同步的连续文件记录对齐元数据。Agent 使用 `BUILD_AGENT_LOG_BUFFER_MAX_BYTES` 控制有界本地缓冲，ACK 先校验上限，达到压缩阈值或全部确认时才安全压缩已确认前缀；同一进程短暂重连时回放未确认日志。服务端 HTTP 历史读取和 `/ws/client` 浏览器订阅都复用任务所有权检查，浏览器历史按固定订阅尾分页并与实时 offset 去重衔接。完整取消、进程树终止和产物上传不属于 T5.1。

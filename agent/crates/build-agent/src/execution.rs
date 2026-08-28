@@ -5,16 +5,21 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use build_agent_contracts::LogStream;
+use command_group::{AsyncCommandGroup, AsyncGroupChild};
+#[cfg(unix)]
+use command_group::{Signal, UnixChildExt};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::process::{Child, Command};
-use tokio::sync::mpsc;
+use tokio::process::Command;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time;
 
 const OUTPUT_CHANNEL_CAPACITY: usize = 64;
 const OUTPUT_CHUNK_BYTES: usize = 4 * 1024;
 const DRAIN_GRACE_TIMEOUT: Duration = Duration::from_secs(1);
+#[cfg(unix)]
+const TERMINATION_GRACE_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Error)]
 pub enum ExecutionError {
@@ -43,6 +48,7 @@ pub enum ExecutionEvent {
 pub struct CommandExecution {
     pub receiver: mpsc::Receiver<ExecutionEvent>,
     pub task: JoinHandle<()>,
+    pub cancel: Option<oneshot::Sender<()>>,
 }
 
 pub fn start_command(
@@ -55,26 +61,41 @@ pub fn start_command(
         .current_dir(source)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let mut child = process.spawn().map_err(|error| {
+        .stderr(Stdio::piped());
+    let mut group = process.group();
+    group.kill_on_drop(true);
+    let mut child = group.spawn().map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             ExecutionError::ShellNotFound
         } else {
             ExecutionError::CommandStartFailed
         }
     })?;
-    let stdout = child.stdout.take().ok_or(ExecutionError::OutputFailed)?;
-    let stderr = child.stderr.take().ok_or(ExecutionError::OutputFailed)?;
+    let stdout = child
+        .inner()
+        .stdout
+        .take()
+        .ok_or(ExecutionError::OutputFailed)?;
+    let stderr = child
+        .inner()
+        .stderr
+        .take()
+        .ok_or(ExecutionError::OutputFailed)?;
     let (sender, receiver) = mpsc::channel(OUTPUT_CHANNEL_CAPACITY);
+    let (cancel, cancel_requested) = oneshot::channel();
     let task = tokio::spawn(run_child(
         child,
         stdout,
         stderr,
         sender,
         timeout.max(Duration::from_millis(1)),
+        cancel_requested,
     ));
-    Ok(CommandExecution { receiver, task })
+    Ok(CommandExecution {
+        receiver,
+        task,
+        cancel: Some(cancel),
+    })
 }
 
 #[cfg(windows)]
@@ -97,30 +118,58 @@ fn shell_command(_command: &str) -> Command {
 }
 
 async fn run_child<R1, R2>(
-    mut child: Child,
+    mut child: AsyncGroupChild,
     stdout: R1,
     stderr: R2,
     sender: mpsc::Sender<ExecutionEvent>,
     timeout: Duration,
+    cancel_requested: oneshot::Receiver<()>,
 ) where
     R1: AsyncRead + Unpin + Send + 'static,
     R2: AsyncRead + Unpin + Send + 'static,
 {
     let mut stdout_task = tokio::spawn(read_stream(stdout, LogStream::Stdout, sender.clone()));
     let mut stderr_task = tokio::spawn(read_stream(stderr, LogStream::Stderr, sender.clone()));
+    tokio::pin!(cancel_requested);
+    let timeout_sleep = time::sleep(timeout);
+    tokio::pin!(timeout_sleep);
 
-    let (exit_code, timed_out, output_failed) = match time::timeout(timeout, child.wait()).await {
-        Ok(Ok(status)) => {
+    enum ChildOutcome {
+        Finished(std::io::Result<std::process::ExitStatus>),
+        Canceled,
+        TimedOut,
+    }
+
+    let outcome = tokio::select! {
+        cancel = &mut cancel_requested => {
+            if cancel.is_ok() {
+                ChildOutcome::Canceled
+            } else {
+                ChildOutcome::Finished(child.wait().await)
+            }
+        }
+        result = child.wait() => ChildOutcome::Finished(result),
+        _ = &mut timeout_sleep => ChildOutcome::TimedOut,
+    };
+    let (exit_code, timed_out, output_failed) = match outcome {
+        ChildOutcome::Finished(Ok(status)) => {
             let output_failed = drain_readers(&mut stdout_task, &mut stderr_task).await;
             (status.code(), false, output_failed)
         }
-        Ok(Err(_)) => {
+        ChildOutcome::Finished(Err(_)) => {
             let output_failed = drain_readers(&mut stdout_task, &mut stderr_task).await;
             (None, false, output_failed)
         }
-        Err(_) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+        ChildOutcome::Canceled => {
+            terminate_process_tree(&mut child).await;
+            stdout_task.abort();
+            stderr_task.abort();
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            (None, false, false)
+        }
+        ChildOutcome::TimedOut => {
+            terminate_process_tree(&mut child).await;
             stdout_task.abort();
             stderr_task.abort();
             let _ = stdout_task.await;
@@ -135,6 +184,16 @@ async fn run_child<R1, R2>(
             output_failed,
         }))
         .await;
+}
+
+async fn terminate_process_tree(child: &mut AsyncGroupChild) {
+    #[cfg(unix)]
+    {
+        let _ = child.signal(Signal::SIGTERM);
+        time::sleep(TERMINATION_GRACE_TIMEOUT).await;
+    }
+    let _ = child.start_kill();
+    let _ = child.wait().await;
 }
 
 async fn drain_readers(
@@ -279,6 +338,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn explicit_cancellation_finishes_without_waiting_for_descendant_pipes() {
+        let directory = tempfile::tempdir().expect("source");
+        let command = if cfg!(windows) {
+            r#"start "" /B cmd.exe /C "ping 127.0.0.1 -n 30 >NUL 2>NUL" & ping 127.0.0.1 -n 30 >NUL 2>NUL"#
+        } else {
+            "sleep 30 & wait"
+        };
+        let execution =
+            start_command(command, directory.path(), Duration::from_secs(30)).expect("start");
+        let mut execution = execution;
+        execution
+            .cancel
+            .take()
+            .expect("cancel channel")
+            .send(())
+            .expect("cancel request");
+        let (_, result) =
+            tokio::time::timeout(Duration::from_secs(5), collect_until_finished(execution))
+                .await
+                .expect("cancellation should finish promptly");
+        assert!(!result.timed_out);
+        assert!(!result.output_failed);
+    }
+
+    #[tokio::test]
     async fn timeout_aborts_readers_when_descendant_holds_pipes() {
         let directory = tempfile::tempdir().expect("source");
         let command = if cfg!(windows) {
@@ -298,6 +382,111 @@ mod tests {
         assert!(result.timed_out);
         assert_eq!(result.exit_code, None);
         assert!(!result.output_failed);
+    }
+
+    fn process_tree_probe_command() -> &'static str {
+        "(trap '' TERM; while :; do printf x >> probe.txt; sleep 0.02; done) & wait"
+    }
+
+    fn write_windows_process_tree_probe(directory: &std::path::Path) {
+        if cfg!(windows) {
+            fs::write(
+                directory.join("probe-child.cmd"),
+                r#"@echo off
+:loop
+echo x>>probe.txt
+ping -n 2 127.0.0.1 >NUL
+goto loop
+"#,
+            )
+            .expect("probe child script");
+            fs::write(
+                directory.join("probe.cmd"),
+                r#"@echo off
+start "" /B cmd.exe /D /S /C call probe-child.cmd
+ping -n 100 127.0.0.1 >NUL
+"#,
+            )
+            .expect("probe script");
+        }
+    }
+
+    async fn wait_for_probe(path: &std::path::Path) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if fs::metadata(path)
+                .map(|metadata| metadata.len() > 0)
+                .unwrap_or(false)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("process tree probe did not start");
+    }
+
+    async fn assert_probe_stops(path: &std::path::Path) {
+        let size = fs::metadata(path).expect("probe metadata").len();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(fs::metadata(path).expect("probe metadata").len(), size);
+    }
+
+    #[tokio::test]
+    async fn cancellation_stops_parent_and_child_processes_without_killing_next_task() {
+        let directory = tempfile::tempdir().expect("source");
+        write_windows_process_tree_probe(directory.path());
+        let probe = directory.path().join("probe.txt");
+        let command = if cfg!(windows) {
+            "probe.cmd"
+        } else {
+            process_tree_probe_command()
+        };
+        let execution =
+            start_command(command, directory.path(), Duration::from_secs(30)).expect("start");
+        wait_for_probe(&probe).await;
+        let mut execution = execution;
+        execution
+            .cancel
+            .take()
+            .expect("cancel channel")
+            .send(())
+            .expect("cancel request");
+        let (_, result) =
+            tokio::time::timeout(Duration::from_secs(5), collect_until_finished(execution))
+                .await
+                .expect("cancellation should finish");
+        assert!(!result.timed_out);
+        assert!(!result.output_failed);
+        assert_probe_stops(&probe).await;
+
+        let next = start_command("echo next", directory.path(), Duration::from_secs(5))
+            .expect("next task should start");
+        let (output, result) = collect_until_finished(next).await;
+        assert_eq!(result.exit_code, Some(0));
+        assert!(output.iter().any(|(_, chunk)| chunk.contains("next")));
+        assert_probe_stops(&probe).await;
+    }
+
+    #[tokio::test]
+    async fn timeout_stops_parent_and_child_processes() {
+        let directory = tempfile::tempdir().expect("source");
+        write_windows_process_tree_probe(directory.path());
+        let probe = directory.path().join("probe.txt");
+        let command = if cfg!(windows) {
+            "probe.cmd"
+        } else {
+            process_tree_probe_command()
+        };
+        let execution =
+            start_command(command, directory.path(), Duration::from_millis(500)).expect("start");
+        wait_for_probe(&probe).await;
+        let (_, result) =
+            tokio::time::timeout(Duration::from_secs(5), collect_until_finished(execution))
+                .await
+                .expect("timeout should finish");
+        assert!(result.timed_out);
+        assert!(!result.output_failed);
+        assert_probe_stops(&probe).await;
     }
 
     #[cfg(unix)]

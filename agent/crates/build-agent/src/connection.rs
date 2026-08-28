@@ -6,8 +6,9 @@ use std::time::Duration;
 use build_agent_contracts::{
     parse_message, AgentHeartbeatPayload, AgentHelloPayload, AgentRegisteredPayload,
     BuildTaskStatus, DecodedMessage, LogStream, MessageType, ProtocolEnvelope, ProtocolVersion,
-    RequiredNullable, TaskAcceptedPayload, TaskAssignmentPayload, TaskClaimPayload,
-    TaskFailedPayload, TaskLogAckPayload, TaskLogPayload, TaskStatusPayload,
+    RequiredNullable, TaskAcceptedPayload, TaskAssignmentPayload, TaskCancelPayload,
+    TaskCanceledPayload, TaskClaimPayload, TaskFailedPayload, TaskLogAckPayload, TaskLogPayload,
+    TaskStatusPayload,
 };
 use chrono::{DateTime, SecondsFormat, Utc};
 use futures_util::{SinkExt, StreamExt};
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time;
 use tokio_tungstenite::{
@@ -35,13 +36,14 @@ use crate::config::ConfigError;
 use crate::execution::{start_command, ExecutionEvent, ExecutionResult};
 use crate::git::GitClient;
 use crate::log_buffer::{BufferedLogEntry, LogBuffer, LogBufferError};
-use crate::preparation::{prepare_task, PreparationFailure, PreparationResult};
+use crate::preparation::{prepare_task_with_cancel, PreparationFailure, PreparationResult};
 use crate::task_config::write_platform_config;
 use crate::workspace::{WorkspaceError, WorkspaceManager};
 use crate::{AgentBuildInfo, AgentConfig};
 
 type AgentSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 const COMMAND_REPORT_RESERVE: Duration = Duration::from_secs(2);
+const EXECUTION_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Error)]
 pub enum AgentError {
@@ -141,8 +143,15 @@ struct ActiveTask {
     next_log_sequence: u64,
     log_buffer: LogBuffer,
     workspace: Option<crate::workspace::TaskWorkspace>,
-    preparation: Option<JoinHandle<()>>,
+    preparation: Option<PreparationHandle>,
     execution: Option<JoinHandle<()>>,
+    execution_cancel: Option<oneshot::Sender<()>>,
+}
+
+#[derive(Debug)]
+struct PreparationHandle {
+    task: JoinHandle<()>,
+    cancel: Option<oneshot::Sender<()>>,
 }
 
 #[derive(Debug)]
@@ -435,12 +444,15 @@ impl Agent {
                 &mut pending_logs,
             )
             .await;
-        let pending =
-            cancel_active_task(&mut active, &mut result_receiver, &mut execution_receiver).await;
-        if matches!(&result, Ok(ConnectionExit::Disconnected) | Err(_)) {
-            if let Some(pending) = pending {
-                pending_logs.insert(pending.task_id.clone(), pending);
-            }
+        let pending = cancel_active_task(
+            &mut active,
+            &mut result_receiver,
+            &mut execution_receiver,
+            self.workspace.as_ref(),
+        )
+        .await;
+        if let Some(pending) = pending {
+            pending_logs.insert(pending.task_id.clone(), pending);
         }
         self.pending_logs = pending_logs;
         drop(result_sender);
@@ -497,6 +509,17 @@ impl Agent {
                         Some(DecodedMessage::TaskAssignment(envelope)) => {
                             self.handle_assignment(socket, active, result_sender, envelope.payload).await?;
                         }
+                        Some(DecodedMessage::TaskCancel(envelope)) => {
+                            self.handle_task_cancel(
+                                socket,
+                                active,
+                                result_receiver,
+                                execution_receiver,
+                                pending_logs,
+                                envelope.payload,
+                            )
+                            .await?;
+                        }
                         Some(DecodedMessage::AgentRegistered(_)) => {
                             debug!("received duplicate agent.registered message");
                         }
@@ -507,10 +530,22 @@ impl Agent {
                     }
                 }
                 Some(event) = result_receiver.recv(), if active.as_ref().is_some_and(|task| task.preparation.is_some()) => {
-                    self.handle_preparation_event(socket, active, execution_receiver, event).await?;
+                    self.handle_preparation_event(
+                        socket,
+                        active,
+                        execution_receiver,
+                        pending_logs,
+                        event,
+                    ).await?;
                 }
                 event = receive_execution_event(execution_receiver), if execution_receiver.is_some() => {
-                    self.handle_execution_event(socket, active, execution_receiver, event).await?;
+                    self.handle_execution_event(
+                        socket,
+                        active,
+                        execution_receiver,
+                        pending_logs,
+                        event,
+                    ).await?;
                 }
             }
         }
@@ -580,6 +615,7 @@ impl Agent {
             workspace: None,
             preparation: None,
             execution: None,
+            execution_cancel: None,
         });
         let accepted = TaskAcceptedPayload {
             task_id: task_id.clone(),
@@ -603,8 +639,10 @@ impl Agent {
         let git = self.git.clone();
         let result_sender = result_sender.clone();
         let event_task_id = task_id.clone();
+        let (cancel_sender, mut cancel_requested) = oneshot::channel();
         let handle = tokio::spawn(async move {
-            let result = prepare_task(manager, git, assignment).await;
+            let result =
+                prepare_task_with_cancel(manager, git, assignment, &mut cancel_requested).await;
             let _ = result_sender.send(PreparationEvent {
                 task_id: event_task_id,
                 result,
@@ -613,7 +651,120 @@ impl Agent {
         active
             .as_mut()
             .expect("active task was just initialized")
-            .preparation = Some(handle);
+            .preparation = Some(PreparationHandle {
+            task: handle,
+            cancel: Some(cancel_sender),
+        });
+        Ok(())
+    }
+
+    async fn handle_task_cancel(
+        &self,
+        socket: &mut AgentSocket,
+        active: &mut Option<ActiveTask>,
+        result_receiver: &mut mpsc::UnboundedReceiver<PreparationEvent>,
+        execution_receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
+        pending_logs: &mut HashMap<String, PendingLog>,
+        cancel: TaskCancelPayload,
+    ) -> Result<(), AgentError> {
+        let Some(current) = active.as_ref() else {
+            return Ok(());
+        };
+        if current.task_id != cancel.task_id
+            || !constant_time_equal(
+                current.lease_token.as_bytes(),
+                cancel.lease_token.as_bytes(),
+            )
+        {
+            warn!(task_id = %cancel.task_id, "ignored task cancellation for a different lease");
+            return Ok(());
+        }
+        let task_id = current.task_id.clone();
+
+        let preparation_cleanup_failed = {
+            let Some(current) = active.as_mut() else {
+                return Ok(());
+            };
+            stop_preparation(
+                &mut current.preparation,
+                result_receiver,
+                self.workspace.as_ref(),
+                &task_id,
+            )
+            .await
+        };
+
+        if let Some(current) = active.as_mut() {
+            if let Some(cancel_sender) = current.execution_cancel.take() {
+                let _ = cancel_sender.send(());
+            }
+        }
+        if execution_receiver.is_some() {
+            let stop = time::timeout(EXECUTION_STOP_TIMEOUT, async {
+                loop {
+                    match receive_execution_event(execution_receiver).await {
+                        ExecutionEvent::Output { stream, chunk } => {
+                            self.persist_execution_output(socket, active, stream, chunk)
+                                .await?;
+                        }
+                        ExecutionEvent::Finished(_) => break Ok::<(), AgentError>(()),
+                    }
+                }
+            })
+            .await;
+            if stop.is_err() {
+                if let Some(current) = active.as_mut() {
+                    if let Some(handle) = current.execution.take() {
+                        handle.abort();
+                        let _ = handle.await;
+                    }
+                }
+            }
+        }
+        execution_receiver.take();
+        if let Some(current) = active.as_mut() {
+            if let Some(handle) = current.execution.take() {
+                let _ = time::timeout(EXECUTION_STOP_TIMEOUT, handle).await;
+            }
+        }
+
+        self.flush_log_tails(socket, active).await?;
+        let workspace_cleanup_failed = if let Some(current) = active.as_mut() {
+            current
+                .workspace
+                .take()
+                .is_some_and(|workspace| workspace.cleanup().is_err())
+        } else {
+            true
+        };
+        let cleanup_failed = preparation_cleanup_failed || workspace_cleanup_failed;
+        if cleanup_failed {
+            self.fail_active_task(
+                socket,
+                active,
+                "TASK_CANCEL_CLEANUP_FAILED: task workspace cleanup failed",
+                None,
+                pending_logs,
+            )
+            .await?;
+        } else {
+            let Some(current) = active.as_ref() else {
+                return Ok(());
+            };
+            let canceled = TaskCanceledPayload {
+                task_id: current.task_id.clone(),
+                lease_token: current.lease_token.clone(),
+                canceled_at: utc_now(),
+                reason: Some("Agent confirmed task cancellation".to_string()),
+            };
+            send_envelope(
+                socket,
+                MessageType::TaskCanceled,
+                serde_json::to_value(canceled)?,
+            )
+            .await?;
+            preserve_active_log(active, pending_logs);
+        }
         Ok(())
     }
 
@@ -622,6 +773,7 @@ impl Agent {
         socket: &mut AgentSocket,
         active: &mut Option<ActiveTask>,
         execution_receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
+        pending_logs: &mut HashMap<String, PendingLog>,
         event: PreparationEvent,
     ) -> Result<(), AgentError> {
         let Some(current) = active.as_mut() else {
@@ -631,7 +783,7 @@ impl Agent {
             return Ok(());
         }
         if let Some(handle) = current.preparation.take() {
-            let _ = handle.await;
+            let _ = handle.task.await;
         }
 
         match event.result {
@@ -651,6 +803,7 @@ impl Agent {
                             active,
                             "COMMAND_TIMEOUT: task lease expired before command start",
                             None,
+                            pending_logs,
                         )
                         .await;
                 }
@@ -685,7 +838,7 @@ impl Agent {
                     .to_path_buf();
                 if let Err(error) = write_platform_config(&source_path, &current.config) {
                     return self
-                        .fail_active_task(socket, active, &error.to_string(), None)
+                        .fail_active_task(socket, active, &error.to_string(), None, pending_logs)
                         .await;
                 }
 
@@ -699,6 +852,7 @@ impl Agent {
                             active,
                             "COMMAND_TIMEOUT: task lease expired before command start",
                             None,
+                            pending_logs,
                         )
                         .await;
                 };
@@ -710,6 +864,7 @@ impl Agent {
                             active,
                             "COMMAND_TIMEOUT: insufficient lease time for command and status reporting",
                             None,
+                            pending_logs,
                         )
                         .await;
                 }
@@ -726,12 +881,19 @@ impl Agent {
                     Ok(execution) => execution,
                     Err(error) => {
                         return self
-                            .fail_active_task(socket, active, &error.to_string(), None)
+                            .fail_active_task(
+                                socket,
+                                active,
+                                &error.to_string(),
+                                None,
+                                pending_logs,
+                            )
                             .await;
                     }
                 };
                 *execution_receiver = Some(execution.receiver);
                 current.execution = Some(execution.task);
+                current.execution_cancel = execution.cancel;
                 let running = TaskStatusPayload {
                     task_id: current.task_id.clone(),
                     lease_token: current.lease_token.clone(),
@@ -753,6 +915,7 @@ impl Agent {
                     active,
                     &format!("{}: {}", error.code, error.message),
                     None,
+                    pending_logs,
                 )
                 .await
             }
@@ -764,43 +927,26 @@ impl Agent {
         socket: &mut AgentSocket,
         active: &mut Option<ActiveTask>,
         execution_receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
+        pending_logs: &mut HashMap<String, PendingLog>,
         event: ExecutionEvent,
     ) -> Result<(), AgentError> {
         match event {
             ExecutionEvent::Output { stream, chunk } => {
-                let Some(current) = active.as_mut() else {
-                    return Ok(());
-                };
-                let chunk = match stream {
-                    LogStream::Stdout => current.stdout_log_redactor.redact(&chunk),
-                    LogStream::Stderr => current.stderr_log_redactor.redact(&chunk),
-                };
-                if chunk.is_empty() {
-                    return Ok(());
-                }
-                let sequence = current.next_log_sequence;
-                let log = TaskLogPayload {
-                    task_id: current.task_id.clone(),
-                    lease_token: current.lease_token.clone(),
-                    sequence,
-                    stream,
-                    chunk,
-                    emitted_at: utc_now(),
-                };
-                self.persist_and_send_log(socket, current, log).await
+                self.persist_execution_output(socket, active, stream, chunk)
+                    .await
             }
             ExecutionEvent::Finished(result) => {
-                let pending_logs = if let Some(current) = active.as_mut() {
-                    let mut pending_logs = Vec::new();
+                let tail_logs = if let Some(current) = active.as_mut() {
+                    let mut tail_logs = Vec::new();
                     let stdout_tail = current.stdout_log_redactor.finish();
                     if !stdout_tail.is_empty() {
-                        pending_logs.push((LogStream::Stdout, stdout_tail));
+                        tail_logs.push((LogStream::Stdout, stdout_tail));
                     }
                     let stderr_tail = current.stderr_log_redactor.finish();
                     if !stderr_tail.is_empty() {
-                        pending_logs.push((LogStream::Stderr, stderr_tail));
+                        tail_logs.push((LogStream::Stderr, stderr_tail));
                     }
-                    pending_logs
+                    tail_logs
                 } else {
                     Vec::new()
                 };
@@ -810,7 +956,7 @@ impl Agent {
                     }
                 }
                 execution_receiver.take();
-                for (stream, chunk) in pending_logs {
+                for (stream, chunk) in tail_logs {
                     if let Some(current) = active.as_mut() {
                         let sequence = current.next_log_sequence;
                         let log = TaskLogPayload {
@@ -832,6 +978,7 @@ impl Agent {
                             active,
                             "COMMAND_OUTPUT_FAILED: command output could not be read",
                             None,
+                            pending_logs,
                         )
                         .await;
                 }
@@ -842,6 +989,7 @@ impl Agent {
                             active,
                             "COMMAND_TIMEOUT: build command timed out",
                             None,
+                            pending_logs,
                         )
                         .await;
                 }
@@ -871,6 +1019,7 @@ impl Agent {
                             active,
                             "COMMAND_FAILED: build command exited with non-zero status",
                             Some(exit_code),
+                            pending_logs,
                         )
                         .await
                     }
@@ -880,6 +1029,7 @@ impl Agent {
                             active,
                             "COMMAND_FAILED: build command ended without a normal exit code",
                             None,
+                            pending_logs,
                         )
                         .await
                     }
@@ -894,6 +1044,7 @@ impl Agent {
         active: &mut Option<ActiveTask>,
         reason: &str,
         exit_code: Option<i32>,
+        pending_logs: &mut HashMap<String, PendingLog>,
     ) -> Result<(), AgentError> {
         let Some(current) = active.as_ref() else {
             return Ok(());
@@ -911,7 +1062,62 @@ impl Agent {
             serde_json::to_value(failed)?,
         )
         .await?;
-        active.take();
+        preserve_active_log(active, pending_logs);
+        Ok(())
+    }
+
+    async fn persist_execution_output(
+        &self,
+        socket: &mut AgentSocket,
+        active: &mut Option<ActiveTask>,
+        stream: LogStream,
+        chunk: String,
+    ) -> Result<(), AgentError> {
+        let Some(current) = active.as_mut() else {
+            return Ok(());
+        };
+        let chunk = match stream {
+            LogStream::Stdout => current.stdout_log_redactor.redact(&chunk),
+            LogStream::Stderr => current.stderr_log_redactor.redact(&chunk),
+        };
+        if chunk.is_empty() {
+            return Ok(());
+        }
+        let sequence = current.next_log_sequence;
+        let log = TaskLogPayload {
+            task_id: current.task_id.clone(),
+            lease_token: current.lease_token.clone(),
+            sequence,
+            stream,
+            chunk,
+            emitted_at: utc_now(),
+        };
+        self.persist_and_send_log(socket, current, log).await
+    }
+
+    async fn flush_log_tails(
+        &self,
+        socket: &mut AgentSocket,
+        active: &mut Option<ActiveTask>,
+    ) -> Result<(), AgentError> {
+        let tails = if let Some(current) = active.as_mut() {
+            let mut tails = Vec::new();
+            let stdout = current.stdout_log_redactor.finish();
+            if !stdout.is_empty() {
+                tails.push((LogStream::Stdout, stdout));
+            }
+            let stderr = current.stderr_log_redactor.finish();
+            if !stderr.is_empty() {
+                tails.push((LogStream::Stderr, stderr));
+            }
+            tails
+        } else {
+            Vec::new()
+        };
+        for (stream, chunk) in tails {
+            self.persist_execution_output(socket, active, stream, chunk)
+                .await?;
+        }
         Ok(())
     }
 
@@ -1003,6 +1209,34 @@ fn append_log_and_advance(
         *next_sequence = (*next_sequence).saturating_add(1);
     }
     Ok(appended)
+}
+
+fn preserve_active_log(
+    active: &mut Option<ActiveTask>,
+    pending_logs: &mut HashMap<String, PendingLog>,
+) {
+    let Some(task) = active.take() else {
+        return;
+    };
+    pending_logs.insert(
+        task.task_id.clone(),
+        PendingLog {
+            task_id: task.task_id,
+            lease_token: task.lease_token,
+            log_buffer: task.log_buffer,
+        },
+    );
+}
+
+fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
+    let mut difference = (left.len() ^ right.len()) as u8;
+    let length = left.len().max(right.len());
+    for index in 0..length {
+        let left_byte = left.get(index).copied().unwrap_or_default();
+        let right_byte = right.get(index).copied().unwrap_or_default();
+        difference |= left_byte ^ right_byte;
+    }
+    difference == 0
 }
 
 async fn send_log_best_effort(
@@ -1205,32 +1439,110 @@ fn safe_relative_path(value: &str) -> bool {
             matches!(component, std::path::Component::Normal(_)) && component.as_os_str() != ".."
         })
 }
+
+async fn stop_preparation(
+    preparation: &mut Option<PreparationHandle>,
+    result_receiver: &mut mpsc::UnboundedReceiver<PreparationEvent>,
+    workspace_manager: Option<&WorkspaceManager>,
+    task_id: &str,
+) -> bool {
+    let mut stopped = true;
+    if let Some(mut handle) = preparation.take() {
+        if let Some(cancel) = handle.cancel.take() {
+            let _ = cancel.send(());
+        }
+        if time::timeout(EXECUTION_STOP_TIMEOUT, &mut handle.task)
+            .await
+            .is_err()
+        {
+            stopped = false;
+            handle.task.abort();
+            let _ = handle.task.await;
+        }
+    }
+    let mut cleanup_failed = drain_preparation_results(result_receiver);
+    if let Some(manager) = workspace_manager {
+        if manager.cleanup_task(task_id).is_err() {
+            cleanup_failed = true;
+        }
+    } else {
+        cleanup_failed = true;
+    }
+    !stopped || cleanup_failed
+}
+
+fn drain_preparation_results(
+    result_receiver: &mut mpsc::UnboundedReceiver<PreparationEvent>,
+) -> bool {
+    let mut cleanup_failed = false;
+    while let Ok(event) = result_receiver.try_recv() {
+        match event.result {
+            Ok(result) => {
+                if result.workspace.cleanup().is_err() {
+                    cleanup_failed = true;
+                }
+            }
+            Err(mut failure) => {
+                if let Some(workspace) = failure.workspace.take() {
+                    if workspace.cleanup().is_err() {
+                        cleanup_failed = true;
+                    }
+                }
+            }
+        }
+    }
+    cleanup_failed
+}
+
 async fn cancel_active_task(
     active: &mut Option<ActiveTask>,
     result_receiver: &mut mpsc::UnboundedReceiver<PreparationEvent>,
     execution_receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
+    workspace_manager: Option<&WorkspaceManager>,
 ) -> Option<PendingLog> {
-    let mut pending = None;
-    if let Some(mut task) = active.take() {
-        if let Some(handle) = task.preparation.take() {
-            handle.abort();
-            let _ = handle.await;
+    let task = if let Some(mut task) = active.take() {
+        let _ = stop_preparation(
+            &mut task.preparation,
+            result_receiver,
+            workspace_manager,
+            &task.task_id,
+        )
+        .await;
+        if let Some(cancel_sender) = task.execution_cancel.take() {
+            let _ = cancel_sender.send(());
         }
-        if let Some(handle) = task.execution.take() {
-            handle.abort();
-            let _ = handle.await;
+        if let Some(mut receiver) = execution_receiver.take() {
+            let finished = time::timeout(EXECUTION_STOP_TIMEOUT, async {
+                while let Some(event) = receiver.recv().await {
+                    if matches!(event, ExecutionEvent::Finished(_)) {
+                        break;
+                    }
+                }
+            })
+            .await
+            .is_ok();
+            if let Some(handle) = task.execution.take() {
+                if finished {
+                    let _ = time::timeout(EXECUTION_STOP_TIMEOUT, handle).await;
+                } else {
+                    handle.abort();
+                    let _ = handle.await;
+                }
+            }
+        } else if let Some(handle) = task.execution.take() {
+            let _ = time::timeout(EXECUTION_STOP_TIMEOUT, handle).await;
         }
-        pending = Some(PendingLog {
+        Some(PendingLog {
             task_id: task.task_id,
             lease_token: task.lease_token,
             log_buffer: task.log_buffer,
-        });
-    }
+        })
+    } else {
+        None
+    };
     execution_receiver.take();
-    while let Ok(event) = result_receiver.try_recv() {
-        drop(event);
-    }
-    pending
+    let _ = drain_preparation_results(result_receiver);
+    task
 }
 
 fn utc_now() -> String {

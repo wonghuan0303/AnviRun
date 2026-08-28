@@ -44,7 +44,7 @@ build-agent.exe --config C:\build-agent\build-agent.toml
 
 工作区根目录启动时会创建并规范化为绝对路径；根目录不能是文件系统根。`tasks` 根目录必须位于工作区根目录内且可写。任务 ID 必须先解析为 UUID，再作为单一路径组件使用。任务目录和 source 创建前后都会检查路径边界与符号链接/reparse point；未知已存在的任务目录不会复用。
 
-所有清理都经过 `TaskWorkspace` 的集中验证，只删除 `<workspace_root>/tasks/<有效 UUID>`。递归清理不跟随仓库中的符号链接，因此不会通过链接越过任务目录。连接断开或进程关闭时，当前准备任务会被取消，部分工作区会安全清理；成功 Git 准备的工作区在连接保持期间保留，供 T4.3 写入配置并执行命令；命令成功后进入 `UPLOADING`，工作区继续保留给后续产物阶段。
+所有清理都经过 `TaskWorkspace` 的集中验证，只删除 `<workspace_root>/tasks/<有效 UUID>`。递归清理不跟随仓库中的符号链接，因此不会通过链接越过任务目录。连接断开或进程关闭时，当前准备任务会收到取消信号并等待 Git 进程终止，再显式检查部分工作区清理结果；成功 Git 准备的工作区在连接保持期间保留，供 T4.3 写入配置并执行命令；命令成功后进入 `UPLOADING`，工作区继续保留给后续产物阶段。
 
 Git 使用系统 `git`，不依赖 libgit2，也不调用 shell。clone 使用 `git clone --branch <branch> --single-branch -- <url> <source>` 参数数组，设置 `GIT_TERMINAL_PROMPT=0`，超时受任务 `timeoutSeconds` 限制。Git 凭据必须由 Agent 主机已有配置提供，协议和日志不传递凭据。成功后使用 `git -C <source> rev-parse --verify HEAD`，只接受 40 或 64 位十六进制 SHA，并统一回传小写。
 
@@ -58,9 +58,15 @@ T5.1 日志链路：每个任务的 stdout/stderr 日志按 UTF-8 NDJSON 分片�
 
 准备成功后按顺序发送 `PREPARING` 和 `RUNNING`。命令工作目录是 source，Windows 使用 `cmd.exe /D /S /C <command>`，Unix 使用 `/bin/sh -lc <command>`。stdout/stderr 并发读取，每个分片最多 4 KiB，采用 lossy UTF-8 和每任务从 1 开始的单调序号；日志先写入每任务有界 NDJSON 缓冲，再发送 `task.log`，Server 持久化成功后以 `task.log.ack` 确认。断线恢复时同一进程从未确认序号继续回放；缓冲上限由 `log_buffer_max_bytes` 控制。命令预算取模板 timeout 与“租约剩余时间减去最终状态上报余量”的较小值；直接 Shell 超时会主动取消两个 reader，正常退出后的管道排空也有有限宽限期。超时、启动失败、输出读取失败或非零退出都会发送 `task.failed` 并清理任务工作区。退出码为 0 时发送 `UPLOADING`，不发送 `task.completed`，也不上传产物。
 
-断线、token 撤销或进程退出会终止当前直接子进程、关闭输出读取任务并清理工作区；不实现完整进程树终止（由 T5.2 完成）、断线续传、取消协议或产物处理，这些属于 T5/T6。
+断线、token 撤销或进程退出会终止当前任务进程树、关闭输出读取任务并清理工作区；Server 会对执行中的失联任务做最小失败收尾。完整断线恢复对账和恢复窗口仍留给后续 T6。
 
 ## 手工 Git smoke
+
+## T5.2 取消与跨平台进程树终止
+
+收到 task.cancel 后，Agent 仅接受与当前任务和租约完全匹配的请求。准备阶段会向 Git 操作发送取消信号，并等待 Windows Job Object 或 Unix 进程组确认终止；执行阶段同样终止整个任务进程树，Unix 先发送 SIGTERM，短暂宽限后发送 SIGKILL。停止后显式清理并检查任务工作区，再回传 task.canceled；清理失败仅回传不含敏感值的结构化 `TASK_CANCEL_CLEANUP_FAILED` task.failed。
+
+取消、超时、连接断开、token 撤销和优雅退出共用进程终止路径，输出 reader 的停止不会被误报为 COMMAND_OUTPUT_FAILED。取消期间保持心跳且不领取新任务；Server 等待固定取消确认期限，未确认时关闭连接并以失败收尾，避免 CANCELING 永久占用执行槽。任务日志缓冲仍按既有 T5.1 规则保留。完整断线恢复、租约对账和恢复窗口属于后续 T6，产物处理属于 T5.3。
 
 准备一个本地 Git 仓库后，在配置的 Server 和 Agent 环境中创建指向该仓库的构建模板与项目，连接 Agent，观察 `task.claim`、`task.accepted` 和带 `sourceCommit` 的 `task.status`。手工验证命令示例：
 

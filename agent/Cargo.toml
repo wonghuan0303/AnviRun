@@ -11,6 +11,7 @@ publish = false
 [workspace.dependencies]
 build-agent-contracts = { path = "crates/build-agent-contracts" }
 chrono = { version = "0.4.41", default-features = false, features = ["clock", "std"] }
+command-group = { version = "5.0.1", features = ["with-tokio"] }
 futures-util = "0.3.31"
 fs2 = "0.4.3"
 hostname = "0.4.1"

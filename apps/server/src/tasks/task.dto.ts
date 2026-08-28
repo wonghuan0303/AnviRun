@@ -11,6 +11,10 @@ export interface TaskLogQuery {
   readonly limit: number;
 }
 
+export interface TaskCancelDto {
+  readonly reason?: string;
+}
+
 function objectInput(input: unknown): Record<string, unknown> {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) {
     throw new Error('body must be an object');
@@ -45,6 +49,25 @@ export function parseCreateTaskDto(input: unknown): Record<never, never> {
   const body = objectInput(input);
   onlyKeys(body, []);
   return {};
+}
+
+export function parseCancelTaskDto(input: unknown): TaskCancelDto {
+  const body = objectInput(input);
+  onlyKeys(body, ['reason']);
+  const reason = body.reason;
+  if (reason === undefined) return {};
+  if (typeof reason !== 'string') throw new Error('reason is invalid');
+  const trimmed = reason.trim();
+  if (
+    trimmed.length > 1_024 ||
+    Array.from(trimmed).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127;
+    })
+  ) {
+    throw new Error('reason is invalid');
+  }
+  return trimmed ? { reason: trimmed } : {};
 }
 
 export function parseTaskListQuery(input: Record<string, unknown>): TaskListQuery {

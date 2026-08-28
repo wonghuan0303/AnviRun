@@ -9,6 +9,8 @@ import {
   type FormConfigValues,
   type TaskAssignmentMessage,
   type TaskAvailableMessage,
+  type TaskCancelMessage,
+  type TaskCanceledMessage,
   type TaskFailedMessage,
   type TaskStatusMessage,
 } from '@buildplatform/contracts';
@@ -22,6 +24,7 @@ import { TaskLeaseService } from './task-lease.service';
 import { TaskStateService } from './task-state.service';
 
 const DISPATCH_CONFIRMATION_TIMEOUT_MS = 30_000;
+const CANCELLATION_CONFIRMATION_TIMEOUT_MS = 30_000;
 const CLAIM_RESULT_TTL_MS = 5 * 60_000;
 const QUEUE_SCAN_INTERVAL_MS = 1_000;
 const MAX_CLAIM_VALIDATION_SKIPS = 32;
@@ -71,6 +74,18 @@ function safeAgentReason(value: string): string {
     .trim();
   return sanitized.slice(0, MAX_AGENT_REASON_LENGTH) || 'Agent task preparation failed';
 }
+
+function safeCancelReason(value?: string): string {
+  if (typeof value !== 'string') return 'Cancellation requested by user';
+  const sanitized = Array.from(value)
+    .filter((character) => {
+      const code = character.charCodeAt(0);
+      return code >= 32 && code !== 127;
+    })
+    .join('')
+    .trim();
+  return sanitized.slice(0, MAX_AGENT_REASON_LENGTH) || 'Cancellation requested by user';
+}
 function taskAvailableMessage(agentId: string, queuedTaskCount: number): TaskAvailableMessage {
   return {
     id: randomUUID(),
@@ -85,6 +100,8 @@ function taskAvailableMessage(agentId: string, queuedTaskCount: number): TaskAva
 export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
   private readonly inFlightClaims = new Map<string, Promise<ClaimResult>>();
   private readonly completedClaims = new Map<string, StoredClaimResult>();
+  /** 明文租约仅在单 Server 进程内保留，用于向持有该租约的 Agent 发送取消请求。 */
+  private readonly activeLeaseTokens = new Map<string, string>();
   private scanTimer?: NodeJS.Timeout;
 
   constructor(
@@ -106,6 +123,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
     if (this.scanTimer) clearInterval(this.scanTimer);
     this.inFlightClaims.clear();
     this.completedClaims.clear();
+    this.activeLeaseTokens.clear();
   }
 
   async notifyAvailable(agentId: string): Promise<void> {
@@ -155,6 +173,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
             BuildTaskStatus.PREPARING,
             BuildTaskStatus.RUNNING,
             BuildTaskStatus.UPLOADING,
+            BuildTaskStatus.CANCELING,
           ],
         },
       },
@@ -200,9 +219,26 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
           if (
             (current.status === BuildTaskStatus.PREPARING ||
               current.status === BuildTaskStatus.RUNNING ||
-              current.status === BuildTaskStatus.UPLOADING) &&
+              current.status === BuildTaskStatus.UPLOADING ||
+              current.status === BuildTaskStatus.CANCELING) &&
             agent.activeTaskId === current.id
           ) {
+            if (current.status === BuildTaskStatus.CANCELING) {
+              await this.state.transition(
+                tx,
+                current.id,
+                BuildTaskStatus.FAILED,
+                'SYSTEM',
+                'Agent disconnected before task cancellation was confirmed',
+                {
+                  leaseHash: null,
+                  leaseExpiresAt: null,
+                  finishedAt: new Date(),
+                },
+              );
+              await tx.agent.update({ where: { id: agentId }, data: { activeTaskId: null } });
+              return;
+            }
             const phase = current.status.toLowerCase();
             await this.state.transition(
               tx,
@@ -230,10 +266,168 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
             await tx.agent.update({ where: { id: agentId }, data: { activeTaskId: null } });
           }
         });
+        this.activeLeaseTokens.delete(task.id);
       } catch {
         // Continue recovering other queued tasks even if this task has inconsistent state.
       }
     }
+  }
+
+  async requestCancellation(taskId: string, reason?: string): Promise<void> {
+    if (!UUID_PATTERN.test(taskId)) throw new ApiException('RESOURCE_NOT_FOUND');
+    const safeReason = safeCancelReason(reason);
+    let cancelMessage: TaskCancelMessage | undefined;
+    let agentId: string | undefined;
+
+    await this.prisma.$transaction(async (tx) => {
+      const initial = await tx.buildTask.findUnique({
+        where: { id: taskId },
+        select: { agentId: true },
+      });
+      if (!initial) throw new ApiException('RESOURCE_NOT_FOUND');
+      const agent = await this.lockAgent(tx, initial.agentId);
+      if (!agent) throw new ApiException('RESOURCE_NOT_FOUND');
+      const task = await tx.buildTask.findUnique({
+        where: { id: taskId },
+        select: {
+          id: true,
+          agentId: true,
+          status: true,
+          leaseHash: true,
+          leaseExpiresAt: true,
+          cancelRequestedAt: true,
+        },
+      });
+      if (!task || task.agentId !== agent.id) throw new ApiException('RESOURCE_NOT_FOUND');
+      if (task.status === BuildTaskStatus.SUCCEEDED || task.status === BuildTaskStatus.FAILED) {
+        throw new ApiException('TASK_INVALID_STATE');
+      }
+      if (task.status === BuildTaskStatus.CANCELED) {
+        if (agent.activeTaskId === task.id) {
+          await tx.agent.update({ where: { id: agent.id }, data: { activeTaskId: null } });
+        }
+        return;
+      }
+
+      const now = new Date();
+      if (
+        task.status === BuildTaskStatus.CREATED ||
+        task.status === BuildTaskStatus.WAITING_AGENT ||
+        task.status === BuildTaskStatus.QUEUED
+      ) {
+        await this.state.transition(tx, task.id, BuildTaskStatus.CANCELING, 'USER', safeReason, {
+          cancelRequestedAt: now,
+          leaseHash: null,
+          leaseExpiresAt: null,
+        });
+        await this.state.transition(tx, task.id, BuildTaskStatus.CANCELED, 'USER', safeReason, {
+          cancelRequestedAt: now,
+          finishedAt: now,
+          leaseHash: null,
+          leaseExpiresAt: null,
+        });
+        if (agent.activeTaskId === task.id) {
+          await tx.agent.update({ where: { id: agent.id }, data: { activeTaskId: null } });
+        }
+        agentId = agent.id;
+        return;
+      }
+
+      if (
+        task.status !== BuildTaskStatus.DISPATCHED &&
+        task.status !== BuildTaskStatus.PREPARING &&
+        task.status !== BuildTaskStatus.RUNNING &&
+        task.status !== BuildTaskStatus.UPLOADING &&
+        task.status !== BuildTaskStatus.CANCELING
+      ) {
+        throw new ApiException('TASK_INVALID_STATE');
+      }
+      if (agent.activeTaskId !== task.id || !task.leaseHash || !task.leaseExpiresAt) {
+        throw new ApiException('TASK_INVALID_STATE');
+      }
+      if (task.status !== BuildTaskStatus.CANCELING) {
+        await this.state.transition(tx, task.id, BuildTaskStatus.CANCELING, 'USER', safeReason, {
+          cancelRequestedAt: now,
+        });
+      } else if (task.cancelRequestedAt === null) {
+        await tx.buildTask.update({
+          where: { id: task.id },
+          data: { cancelRequestedAt: now },
+        });
+      }
+      const leaseToken = this.activeLeaseTokens.get(task.id);
+      if (leaseToken) {
+        cancelMessage = {
+          id: randomUUID(),
+          type: 'task.cancel',
+          timestamp: new Date().toISOString(),
+          protocolVersion: PROTOCOL_VERSION,
+          payload: {
+            taskId: task.id,
+            leaseToken,
+            requestedAt: now.toISOString(),
+            ...(safeReason ? { reason: safeReason } : {}),
+          },
+        };
+      }
+      agentId = agent.id;
+    });
+
+    if (cancelMessage && agentId) this.registry.send(agentId, cancelMessage);
+  }
+
+  async reportTaskCanceled(agentId: string, message: TaskCanceledMessage): Promise<void> {
+    const payload = message.payload;
+    if (!UUID_PATTERN.test(payload.taskId)) throw new ApiException('TASK_LEASE_INVALID');
+    if (!this.registry.isReady(agentId)) throw new ApiException('TASK_LEASE_INVALID');
+    let shouldNotify = false;
+    await this.prisma.$transaction(async (tx) => {
+      const agent = await this.lockAgent(tx, agentId);
+      if (!agent) throw new ApiException('TASK_LEASE_INVALID');
+      const task = await tx.buildTask.findUnique({
+        where: { id: payload.taskId },
+        select: {
+          id: true,
+          agentId: true,
+          status: true,
+          leaseHash: true,
+          leaseExpiresAt: true,
+        },
+      });
+      if (!task || task.agentId !== agentId) throw new ApiException('TASK_LEASE_INVALID');
+      if (task.status === BuildTaskStatus.CANCELED) {
+        if (agent.activeTaskId === task.id) {
+          await tx.agent.update({ where: { id: agentId }, data: { activeTaskId: null } });
+        }
+        return;
+      }
+      if (
+        agent.activeTaskId !== task.id ||
+        !task.leaseHash ||
+        !this.leases.verify(payload.leaseToken, task.leaseHash)
+      ) {
+        throw new ApiException('TASK_LEASE_INVALID');
+      }
+      if (task.status !== BuildTaskStatus.CANCELING) {
+        throw new ApiException('TASK_INVALID_STATE');
+      }
+      await this.state.transition(
+        tx,
+        task.id,
+        BuildTaskStatus.CANCELED,
+        'AGENT',
+        safeCancelReason(payload.reason) || 'Agent confirmed task cancellation',
+        {
+          finishedAt: new Date(),
+          leaseHash: null,
+          leaseExpiresAt: null,
+        },
+      );
+      await tx.agent.update({ where: { id: agentId }, data: { activeTaskId: null } });
+      shouldNotify = true;
+    });
+    this.activeLeaseTokens.delete(payload.taskId);
+    if (shouldNotify) await this.notifyAvailable(agentId);
   }
 
   async claim(
@@ -257,6 +451,12 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
     if (!this.registry.isReady(agentId)) throw new ApiException('AGENT_OFFLINE');
     const promise = this.claimInTransaction(agentId, requestedTaskId)
       .then((outcome) => {
+        if (outcome.result) {
+          this.activeLeaseTokens.set(
+            outcome.result.payload.taskId,
+            outcome.result.payload.leaseToken,
+          );
+        }
         this.completedClaims.set(key, {
           result: outcome.result,
           expiresAt: Date.now() + CLAIM_RESULT_TTL_MS,
@@ -437,7 +637,8 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
       if (
         task.status !== BuildTaskStatus.PREPARING &&
         task.status !== BuildTaskStatus.RUNNING &&
-        task.status !== BuildTaskStatus.UPLOADING
+        task.status !== BuildTaskStatus.UPLOADING &&
+        task.status !== BuildTaskStatus.CANCELING
       ) {
         throw new ApiException('TASK_INVALID_STATE');
       }
@@ -452,6 +653,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
       shouldNotify = true;
     });
 
+    this.activeLeaseTokens.delete(payload.taskId);
     if (shouldNotify) await this.notifyAvailable(agentId);
   }
   async reclaimTimedOutDispatches(now = new Date()): Promise<void> {
@@ -499,12 +701,73 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
           );
         }
         await tx.agent.update({ where: { id: candidate.agentId }, data: { activeTaskId: null } });
+        this.activeLeaseTokens.delete(candidate.id);
         return next;
       });
 
       if (nextStatus === BuildTaskStatus.QUEUED) {
         await this.notifyAvailable(candidate.agentId);
       }
+    }
+    await this.reclaimTimedOutCancellations(now);
+  }
+
+  async reclaimTimedOutCancellations(now = new Date()): Promise<void> {
+    const cutoff = new Date(now.getTime() - CANCELLATION_CONFIRMATION_TIMEOUT_MS);
+    const candidates = await this.prisma.buildTask.findMany({
+      where: {
+        status: BuildTaskStatus.CANCELING,
+        cancelRequestedAt: { not: null, lt: cutoff },
+      },
+      select: { id: true, agentId: true },
+      orderBy: [{ cancelRequestedAt: 'asc' }, { id: 'asc' }],
+    });
+
+    for (const candidate of candidates) {
+      let recovered = false;
+      try {
+        recovered = await this.prisma.$transaction(async (tx) => {
+          const agent = await this.lockAgent(tx, candidate.agentId);
+          if (!agent) return false;
+          const task = await tx.buildTask.findUnique({
+            where: { id: candidate.id },
+            select: { id: true, status: true, cancelRequestedAt: true },
+          });
+          if (
+            !task ||
+            task.status !== BuildTaskStatus.CANCELING ||
+            !task.cancelRequestedAt ||
+            task.cancelRequestedAt.getTime() >= cutoff.getTime()
+          ) {
+            return false;
+          }
+          await this.state.transition(
+            tx,
+            task.id,
+            BuildTaskStatus.FAILED,
+            'SYSTEM',
+            'Agent did not confirm task cancellation before timeout',
+            {
+              leaseHash: null,
+              leaseExpiresAt: null,
+              finishedAt: new Date(),
+            },
+          );
+          if (agent.activeTaskId === task.id) {
+            await tx.agent.update({
+              where: { id: agent.id },
+              data: { activeTaskId: null, status: AgentStatus.OFFLINE },
+            });
+          }
+          return true;
+        });
+      } catch {
+        continue;
+      }
+      if (!recovered) continue;
+      this.activeLeaseTokens.delete(candidate.id);
+      this.registry.disconnect(candidate.agentId, 'task cancellation timeout');
+      await this.onAgentDisconnected(candidate.agentId);
     }
   }
 
@@ -632,6 +895,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
       leaseExpiresAt: null,
       statusReason: failureReason,
     });
+    this.activeLeaseTokens.delete(taskId);
   }
 
   private async moveDispatchedToWaiting(

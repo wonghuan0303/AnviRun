@@ -18,7 +18,12 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import { OwnedResource } from '../authorization/owned-resource.decorator';
 import { OwnershipGuard } from '../authorization/ownership.guard';
 import { ApiException } from '../common/api-exception';
-import { parseCreateTaskDto, parseTaskListQuery, parseTaskLogQuery } from './task.dto';
+import {
+  parseCancelTaskDto,
+  parseCreateTaskDto,
+  parseTaskListQuery,
+  parseTaskLogQuery,
+} from './task.dto';
 import { TaskLogsService } from '../task-logs/task-logs.service';
 import { TasksService } from './tasks.service';
 
@@ -100,5 +105,23 @@ export class TasksController {
   @OwnedResource('task', 'taskId')
   async get(@Param('taskId') taskId: string, @CurrentUser() actor: AuthenticatedRequestUser) {
     return this.tasks.getTask(actor, taskId);
+  }
+
+  @Post(':taskId/cancel')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(AccessTokenGuard, OwnershipGuard)
+  @OwnedResource('task', 'taskId')
+  async cancel(
+    @Param('taskId') taskId: string,
+    @Body() body: unknown,
+    @CurrentUser() actor: AuthenticatedRequestUser,
+  ) {
+    try {
+      const parsed = parseCancelTaskDto(body);
+      return await this.tasks.cancelTask(actor, taskId, parsed.reason);
+    } catch (error) {
+      if (error instanceof ApiException) throw error;
+      throw validationException();
+    }
   }
 }

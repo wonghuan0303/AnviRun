@@ -336,6 +336,23 @@ describe('T4.1/T4.2/T4.3 task WebSocket PostgreSQL integration', () => {
     );
   }
 
+  function sendTaskCanceled(socket: WebSocket, taskId: string, leaseToken: string): void {
+    socket.send(
+      JSON.stringify({
+        id: randomUUID(),
+        type: 'task.canceled',
+        timestamp: new Date().toISOString(),
+        protocolVersion: PROTOCOL_VERSION,
+        payload: {
+          taskId,
+          leaseToken,
+          canceledAt: new Date().toISOString(),
+          reason: 'cancelled by integration test',
+        },
+      }),
+    );
+  }
+
   function sendTaskLog(socket: WebSocket, taskId: string, leaseToken: string): void {
     socket.send(
       JSON.stringify({
@@ -1235,5 +1252,257 @@ describe('T4.1/T4.2/T4.3 task WebSocket PostgreSQL integration', () => {
     const nextAssignment = await claimTask(secondSocket, second.id);
     expect(nextAssignment.payload.taskId).toBe(second.id);
     await closeSocket(secondSocket);
+  });
+
+  it('cancels an accepted task after validating the lease and clears the execution slot', async () => {
+    const task = await createTask();
+    const socket = openSocket();
+    await waitForOpen(socket);
+    const available = waitForMessage(socket, 'task.available');
+    await sendHello(socket);
+    await available;
+    const assignment = await claimTask(socket, task.id);
+    sendAccepted(socket, task.id, assignment.payload.leaseToken);
+    await waitForTaskStatus(task.id, BuildTaskStatus.PREPARING);
+
+    const cancelMessagePromise = waitForMessage(socket, 'task.cancel');
+    const cancel = await request(app.getHttpServer())
+      .post('/api/tasks/' + task.id + '/cancel')
+      .set('Authorization', 'Bearer ' + adminToken)
+      .send({ reason: 'user requested cancellation' });
+    expect(cancel.status).toBe(200);
+    expect(cancel.body.task.status).toBe('CANCELING');
+    const cancelMessage = await cancelMessagePromise;
+    expect(cancelMessage.payload.taskId).toBe(task.id);
+    expect(cancelMessage.payload.leaseToken).toBe(assignment.payload.leaseToken);
+
+    sendTaskCanceled(socket, task.id, assignment.payload.leaseToken);
+    await waitForTaskStatus(task.id, BuildTaskStatus.CANCELED);
+    const stored = await prisma.buildTask.findUniqueOrThrow({ where: { id: task.id } });
+    expect(stored.leaseHash).toBeNull();
+    expect(stored.leaseExpiresAt).toBeNull();
+    expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toEqual(
+      expect.objectContaining({ activeTaskId: null }),
+    );
+    const history = await prisma.buildTaskStatusHistory.findMany({
+      where: { taskId: task.id },
+      select: { fromStatus: true, toStatus: true },
+    });
+    expect(taskTransitions(history)).toEqual(
+      expect.arrayContaining(['PREPARING->CANCELING', 'CANCELING->CANCELED']),
+    );
+
+    const historyCount = history.length;
+    sendTaskCanceled(socket, task.id, assignment.payload.leaseToken);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(await prisma.buildTaskStatusHistory.count({ where: { taskId: task.id } })).toBe(
+      historyCount,
+    );
+    await closeSocket(socket);
+  });
+
+  it('rejects a wrong cancellation confirmation while CANCELING and fails safely on disconnect', async () => {
+    const task = await createTask();
+    const socket = openSocket();
+    await waitForOpen(socket);
+    const available = waitForMessage(socket, 'task.available');
+    await sendHello(socket);
+    await available;
+    const assignment = await claimTask(socket, task.id);
+    sendAccepted(socket, task.id, assignment.payload.leaseToken);
+    await waitForTaskStatus(task.id, BuildTaskStatus.PREPARING);
+    const cancelMessagePromise = waitForMessage(socket, 'task.cancel');
+    const cancel = await request(app.getHttpServer())
+      .post('/api/tasks/' + task.id + '/cancel')
+      .set('Authorization', 'Bearer ' + adminToken)
+      .send({});
+    expect(cancel.body.task.status).toBe('CANCELING');
+    await cancelMessagePromise;
+
+    sendTaskCanceled(socket, task.id, assignment.payload.leaseToken + 'wrong');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect((await prisma.buildTask.findUniqueOrThrow({ where: { id: task.id } })).status).toBe(
+      BuildTaskStatus.CANCELING,
+    );
+    await closeSocket(socket);
+    await waitForTaskStatus(task.id, BuildTaskStatus.FAILED);
+    const history = await prisma.buildTaskStatusHistory.findMany({
+      where: { taskId: task.id },
+      select: { fromStatus: true, toStatus: true },
+    });
+    expect(taskTransitions(history)).toEqual(
+      expect.arrayContaining(['PREPARING->CANCELING', 'CANCELING->FAILED']),
+    );
+  });
+
+  it('serializes cancellation with natural failure and records only one terminal outcome', async () => {
+    const socket = openSocket();
+    await waitForOpen(socket);
+    await sendHello(socket);
+
+    const first = await createTask();
+    const firstAssignment = await claimTask(socket, first.id);
+    sendAccepted(socket, first.id, firstAssignment.payload.leaseToken);
+    await waitForTaskStatus(first.id, BuildTaskStatus.PREPARING);
+    const firstCancelMessage = waitForMessage(socket, 'task.cancel');
+    const firstCancel = await request(app.getHttpServer())
+      .post('/api/tasks/' + first.id + '/cancel')
+      .set('Authorization', 'Bearer ' + adminToken)
+      .send({});
+    expect(firstCancel.status).toBe(200);
+    await firstCancelMessage;
+    sendTaskFailure(
+      socket,
+      first.id,
+      firstAssignment.payload.leaseToken,
+      'COMMAND_FAILED: natural failure',
+    );
+    await waitForTaskStatus(first.id, BuildTaskStatus.FAILED);
+    const firstHistory = await prisma.buildTaskStatusHistory.findMany({
+      where: { taskId: first.id },
+      select: { fromStatus: true, toStatus: true },
+    });
+    expect(taskTransitions(firstHistory)).toEqual(
+      expect.arrayContaining(['PREPARING->CANCELING', 'CANCELING->FAILED']),
+    );
+    expect(
+      firstHistory.filter(
+        (item) =>
+          item.toStatus === BuildTaskStatus.FAILED || item.toStatus === BuildTaskStatus.CANCELED,
+      ),
+    ).toHaveLength(1);
+
+    const second = await createTask();
+    const secondAssignment = await claimTask(socket, second.id);
+    sendAccepted(socket, second.id, secondAssignment.payload.leaseToken);
+    await waitForTaskStatus(second.id, BuildTaskStatus.PREPARING);
+    sendTaskFailure(
+      socket,
+      second.id,
+      secondAssignment.payload.leaseToken,
+      'COMMAND_FAILED: natural failure first',
+    );
+    await waitForTaskStatus(second.id, BuildTaskStatus.FAILED);
+    const cancelAfterFailure = await request(app.getHttpServer())
+      .post('/api/tasks/' + second.id + '/cancel')
+      .set('Authorization', 'Bearer ' + adminToken)
+      .send({});
+    expect(cancelAfterFailure.status).toBe(409);
+    expect(cancelAfterFailure.body.code).toBe('TASK_INVALID_STATE');
+    const secondHistory = await prisma.buildTaskStatusHistory.findMany({
+      where: { taskId: second.id },
+      select: { fromStatus: true, toStatus: true },
+    });
+    expect(taskTransitions(secondHistory)).not.toContain('FAILED->CANCELING');
+    await closeSocket(socket);
+  });
+
+  it('reclaims a cancellation when the Agent does not confirm before timeout', async () => {
+    const task = await createTask();
+    const socket = openSocket();
+    await waitForOpen(socket);
+    await sendHello(socket);
+    const assignment = await claimTask(socket, task.id);
+    sendAccepted(socket, task.id, assignment.payload.leaseToken);
+    await waitForTaskStatus(task.id, BuildTaskStatus.PREPARING);
+
+    const cancelMessage = waitForMessage(socket, 'task.cancel');
+    const cancel = await request(app.getHttpServer())
+      .post('/api/tasks/' + task.id + '/cancel')
+      .set('Authorization', 'Bearer ' + adminToken)
+      .send({});
+    expect(cancel.status).toBe(200);
+    await cancelMessage;
+
+    const future = new Date(Date.now() + 31_000);
+    await queue.reclaimTimedOutCancellations(future);
+    await waitForTaskStatus(task.id, BuildTaskStatus.FAILED);
+    const stored = await prisma.buildTask.findUniqueOrThrow({ where: { id: task.id } });
+    expect(stored.leaseHash).toBeNull();
+    expect(stored.leaseExpiresAt).toBeNull();
+    expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toEqual(
+      expect.objectContaining({ activeTaskId: null, status: AgentStatus.OFFLINE }),
+    );
+    expect(app.get(AgentConnectionRegistry).isReady(agentId)).toBe(false);
+    const historyCount = await prisma.buildTaskStatusHistory.count({ where: { taskId: task.id } });
+    await queue.reclaimTimedOutCancellations(new Date(future.getTime() + 31_000));
+    expect(await prisma.buildTaskStatusHistory.count({ where: { taskId: task.id } })).toBe(
+      historyCount,
+    );
+
+    const waitingTask = await createTask();
+    expect(waitingTask.status).toBe(BuildTaskStatus.WAITING_AGENT);
+    expect(app.get(AgentConnectionRegistry).isReady(agentId)).toBe(false);
+
+    const reconnected = openSocket();
+    await waitForOpen(reconnected);
+    const available = waitForMessage(reconnected, 'task.available');
+    await sendHello(reconnected);
+    await available;
+    expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toEqual(
+      expect.objectContaining({ status: AgentStatus.ONLINE, activeTaskId: null }),
+    );
+    expect(await prisma.buildTask.findUniqueOrThrow({ where: { id: waitingTask.id } })).toEqual(
+      expect.objectContaining({ status: BuildTaskStatus.QUEUED }),
+    );
+    const reassigned = await claimTask(reconnected, waitingTask.id);
+    expect(reassigned.payload.taskId).toBe(waitingTask.id);
+    await closeSocket(reconnected);
+    await closeSocket(socket);
+  });
+
+  it('reclaims a cancellation when task.cancel cannot be sent', async () => {
+    const task = await createTask();
+    const socket = openSocket();
+    await waitForOpen(socket);
+    const available = waitForMessage(socket, 'task.available');
+    await sendHello(socket);
+    await available;
+    const assignment = await claimTask(socket, task.id);
+    sendAccepted(socket, task.id, assignment.payload.leaseToken);
+    await waitForTaskStatus(task.id, BuildTaskStatus.PREPARING);
+
+    const send = jest.spyOn(app.get(AgentConnectionRegistry), 'send').mockReturnValue(false);
+    try {
+      const cancel = await request(app.getHttpServer())
+        .post('/api/tasks/' + task.id + '/cancel')
+        .set('Authorization', 'Bearer ' + adminToken)
+        .send({});
+      expect(cancel.status).toBe(200);
+      expect(cancel.body.task.status).toBe('CANCELING');
+      await queue.reclaimTimedOutCancellations(new Date(Date.now() + 31_000));
+      await waitForTaskStatus(task.id, BuildTaskStatus.FAILED);
+    } finally {
+      send.mockRestore();
+    }
+    await closeSocket(socket);
+  });
+
+  it('reclaims a cancellation when the in-memory lease token is missing', async () => {
+    const task = await createTask();
+    const socket = openSocket();
+    await waitForOpen(socket);
+    const available = waitForMessage(socket, 'task.available');
+    await sendHello(socket);
+    await available;
+    const assignment = await claimTask(socket, task.id);
+    sendAccepted(socket, task.id, assignment.payload.leaseToken);
+    await waitForTaskStatus(task.id, BuildTaskStatus.PREPARING);
+
+    const activeLeaseTokens = Reflect.get(queue, 'activeLeaseTokens') as Map<string, string>;
+    expect(activeLeaseTokens.delete(task.id)).toBe(true);
+    const cancel = await request(app.getHttpServer())
+      .post('/api/tasks/' + task.id + '/cancel')
+      .set('Authorization', 'Bearer ' + adminToken)
+      .send({});
+    expect(cancel.status).toBe(200);
+    expect(cancel.body.task.status).toBe('CANCELING');
+
+    await queue.reclaimTimedOutCancellations(new Date(Date.now() + 31_000));
+    await waitForTaskStatus(task.id, BuildTaskStatus.FAILED);
+    const stored = await prisma.buildTask.findUniqueOrThrow({ where: { id: task.id } });
+    expect(stored.leaseHash).toBeNull();
+    expect(stored.leaseExpiresAt).toBeNull();
+    await closeSocket(socket);
   });
 });

@@ -148,6 +148,25 @@ impl WorkspaceManager {
         Ok(workspace)
     }
 
+    pub fn cleanup_task(&self, task_id: &str) -> Result<(), WorkspaceError> {
+        let canonical_id = Uuid::parse_str(task_id)
+            .map_err(|_| WorkspaceError::Invalid)?
+            .to_string();
+        let task_dir = self.tasks_root.join(&canonical_id);
+        match fs::symlink_metadata(&task_dir) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err(WorkspaceError::CleanupRefused),
+        }
+        TaskWorkspace {
+            task_id: canonical_id,
+            tasks_root: self.tasks_root.clone(),
+            source_path: task_dir.join("source"),
+            task_dir,
+        }
+        .cleanup()
+    }
+
     fn check_writable(&self) -> Result<(), WorkspaceError> {
         let probe_path = self
             .tasks_root

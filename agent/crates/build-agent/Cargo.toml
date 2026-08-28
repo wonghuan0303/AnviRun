@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 build-agent-contracts.workspace = true
 chrono.workspace = true
+command-group.workspace = true
 futures-util.workspace = true
 fs2.workspace = true
 hostname.workspace = true

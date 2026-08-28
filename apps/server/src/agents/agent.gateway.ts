@@ -17,6 +17,7 @@ import type {
   AgentTokenRevokedMessage,
   ServerToAgentMessage,
   TaskAcceptedMessage,
+  TaskCanceledMessage,
   TaskClaimMessage,
   TaskFailedMessage,
   TaskLogMessage,
@@ -335,6 +336,18 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
         if (!queue) return;
         try {
           await queue.reportPreparationFailure(state.agentId, result.value as TaskFailedMessage);
+        } catch (error) {
+          if (!(error instanceof ApiException)) throw error;
+        }
+      } else if (result.value.type === 'task.canceled') {
+        if (!state.helloReceived) {
+          safeClose(socket, 1008, 'hello required');
+          return;
+        }
+        const queue = this.taskQueue();
+        if (!queue) return;
+        try {
+          await queue.reportTaskCanceled(state.agentId, result.value as TaskCanceledMessage);
         } catch (error) {
           if (!(error instanceof ApiException)) throw error;
         }

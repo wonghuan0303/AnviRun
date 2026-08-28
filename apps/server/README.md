@@ -124,9 +124,17 @@ T3.3 不包含 Web 项目页面、构建任务创建、Git 访问、Agent 派发
 - Agent hello 后会将该 Agent 的等待任务转为 `QUEUED` 并发送 `task.available`。`task.claim` 在 PostgreSQL 事务中先锁定 Agent 行，再按 `createdAt,id` FIFO 领取，写入派发租约并设置 `activeTaskId`；部分唯一索引和同一锁顺序保证一个 Agent 同时最多一个活动任务。
 - 租约明文只在 `task.assignment` 中短暂发送，数据库只保存 SHA-256 哈希和过期时间。Agent 以 `task.accepted` 确认后任务进入 `PREPARING`；未确认的 `DISPATCHED` 超过 30 秒会被回收至 `QUEUED` 或 `WAITING_AGENT`。Server 重启后队列、租约状态和历史仍以 PostgreSQL 为准。
 
-T4.1 只实现创建、查询、状态历史、Agent 可用通知、领取确认、租约和派发超时回收；任务执行、完成/失败上报、日志、产物、取消/重试和 Agent LOST 恢复留给后续阶段。
+T4.1 只实现创建、查询、状态历史、Agent 可用通知、领取确认、租约和派发超时回收；任务执行、完成/失败上报、日志、产物和取消留给后续阶段。
 
 ### T5.1 任务日志
+
+### T5.2 任务取消与超时
+
+登录用户可通过 POST /api/tasks/:taskId/cancel 请求取消自己项目中的任务；ADMIN 可取消所有未软删除项目中的任务。接口复用 AccessTokenGuard -> OwnershipGuard，跨用户、非法 UUID、已删除和不存在任务统一返回 404 RESOURCE_NOT_FOUND。
+
+排队任务在同一事务中经由 CREATED/WAITING_AGENT/QUEUED -> CANCELING -> CANCELED 收尾；已派发或执行中的任务先锁定 Agent 行并进入 CANCELING，Server 使用进程内短暂保存的明文租约发送 task.cancel，只接受匹配 Agent、taskId、activeTaskId 和租约的 task.canceled 回执。租约明文不写入数据库、日志或 API 响应。
+
+取消完成会清除任务租约、Agent.activeTaskId 和 finishedAt，并保留任务日志租约；重复回执幂等，普通状态上报不能逆转 CANCELING，但在 Agent、任务、活动租约和 leaseToken 均校验通过时，普通 task.failed 可将 CANCELING 收尾为 FAILED。Agent 断线、task.cancel 未送达或超时未确认时，Server 以 CANCELING -> FAILED 做最小收尾，避免执行槽永久占用。Rust Agent 使用 Windows Job Object 或 Unix 进程组终止任务进程树，确认工作区清理成功后发送 task.canceled；完整恢复对账仍不属于本阶段。
 
 Agent 的 `task.log` 由 `/ws/agent` 接收并按任务追加到文件型 NDJSON 日志，文件路径为 `<TASK_LOG_ROOT>/<taskId 前两位>/<taskId>.ndjson`。PostgreSQL 只保存 `lastLogSequence`、`logSize`、短期日志租约和敏感键快照，不保存日志正文。重复序号会返回当前 ACK，乱序序号不会写入；成功追加后 Server 返回 `task.log.ack`，其中包含连续序号和持久化偏移。
 
