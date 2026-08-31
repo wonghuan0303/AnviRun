@@ -1,8 +1,9 @@
 //! 通用构建任务平台 Agent 的公共库入口。
 //!
 //! T2.2/T4.2/T4.3 提供配置加载、Server WebSocket 连接、任务领取、心跳、重连、
-//! 安全工作区、Git 准备和最小构建命令执行。日志持久化与产物上传保留到后续阶段。
+//! 安全工作区、Git 准备、构建命令执行、日志持久化与产物上传。
 
+mod artifacts;
 mod config;
 mod connection;
 mod execution;

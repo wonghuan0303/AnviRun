@@ -6,8 +6,9 @@ use std::time::Duration;
 use build_agent_contracts::{
     parse_message, AgentHeartbeatPayload, AgentHelloPayload, AgentRegisteredPayload,
     BuildTaskStatus, DecodedMessage, LogStream, MessageType, ProtocolEnvelope, ProtocolVersion,
-    RequiredNullable, TaskAcceptedPayload, TaskAssignmentPayload, TaskCancelPayload,
-    TaskCanceledPayload, TaskClaimPayload, TaskFailedPayload, TaskLogAckPayload, TaskLogPayload,
+    RequiredNullable, TaskAcceptedPayload, TaskArtifactManifestAckPayload,
+    TaskArtifactManifestPayload, TaskAssignmentPayload, TaskCancelPayload, TaskCanceledPayload,
+    TaskClaimPayload, TaskCompletedPayload, TaskFailedPayload, TaskLogAckPayload, TaskLogPayload,
     TaskStatusPayload,
 };
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -32,6 +33,7 @@ use tokio_tungstenite::{
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::artifacts::{scan_artifacts, upload_manifest, ArtifactError, ArtifactManifest};
 use crate::config::ConfigError;
 use crate::execution::{start_command, ExecutionEvent, ExecutionResult};
 use crate::git::GitClient;
@@ -146,6 +148,9 @@ struct ActiveTask {
     preparation: Option<PreparationHandle>,
     execution: Option<JoinHandle<()>>,
     execution_cancel: Option<oneshot::Sender<()>>,
+    artifact_dir: String,
+    artifact_manifest: Option<ArtifactManifest>,
+    artifact_upload: Option<JoinHandle<Result<(), ArtifactError>>>,
 }
 
 #[derive(Debug)]
@@ -202,6 +207,7 @@ pub struct Agent {
     workspace: Option<WorkspaceManager>,
     git: GitClient,
     pending_logs: HashMap<String, PendingLog>,
+    http_client: reqwest::Client,
 }
 
 impl Agent {
@@ -221,6 +227,7 @@ impl Agent {
             workspace: None,
             git: GitClient::new(),
             pending_logs: HashMap::new(),
+            http_client: reqwest::Client::new(),
         })
     }
 
@@ -499,6 +506,9 @@ impl Agent {
                         Some(DecodedMessage::TaskLogAck(envelope)) => {
                             self.handle_log_ack(&envelope.payload, active, pending_logs).await?;
                         }
+                        Some(DecodedMessage::TaskArtifactManifestAck(envelope)) => {
+                            self.handle_artifact_manifest_ack(socket, active, pending_logs, envelope.payload).await?;
+                        }
                         Some(DecodedMessage::TaskAvailable(envelope)) => {
                             let payload = envelope.payload;
                             if payload.agent_id != agent_id || active.is_some() {
@@ -546,6 +556,9 @@ impl Agent {
                         pending_logs,
                         event,
                     ).await?;
+                }
+                upload_result = receive_artifact_upload(active), if active.as_ref().is_some_and(|task| task.artifact_upload.is_some()) => {
+                    self.handle_artifact_upload_result(socket, active, pending_logs, upload_result).await?;
                 }
             }
         }
@@ -616,6 +629,9 @@ impl Agent {
             preparation: None,
             execution: None,
             execution_cancel: None,
+            artifact_dir: assignment.artifact_dir.clone(),
+            artifact_manifest: None,
+            artifact_upload: None,
         });
         let accepted = TaskAcceptedPayload {
             task_id: task_id.clone(),
@@ -693,6 +709,14 @@ impl Agent {
             )
             .await
         };
+
+        let artifact_upload = active
+            .as_mut()
+            .and_then(|current| current.artifact_upload.take());
+        if let Some(handle) = artifact_upload {
+            handle.abort();
+            let _ = handle.await;
+        }
 
         if let Some(current) = active.as_mut() {
             if let Some(cancel_sender) = current.execution_cancel.take() {
@@ -1011,6 +1035,48 @@ impl Agent {
                             MessageType::TaskStatus,
                             serde_json::to_value(uploading)?,
                         )
+                        .await?;
+                        let source_path = active
+                            .as_ref()
+                            .and_then(|task| task.workspace.as_ref())
+                            .map(|workspace| workspace.source_path().to_path_buf())
+                            .ok_or_else(|| {
+                                AgentError::Protocol(
+                                    "task workspace was missing before artifact scan".to_string(),
+                                )
+                            })?;
+                        let artifact_dir = active
+                            .as_ref()
+                            .map(|task| task.artifact_dir.clone())
+                            .ok_or_else(|| {
+                                AgentError::Protocol(
+                                    "active task disappeared before artifact scan".to_string(),
+                                )
+                            })?;
+                        let manifest = match scan_artifacts(&source_path, &artifact_dir).await {
+                            Ok(manifest) => manifest,
+                            Err(error) => {
+                                return self
+                                    .fail_active_task(
+                                        socket,
+                                        active,
+                                        &safe_artifact_failure(&error),
+                                        None,
+                                        pending_logs,
+                                    )
+                                    .await;
+                            }
+                        };
+                        let Some(current) = active.as_mut() else {
+                            return Ok(());
+                        };
+                        let manifest_payload = build_artifact_manifest_payload(current, &manifest);
+                        current.artifact_manifest = Some(manifest);
+                        send_envelope(
+                            socket,
+                            MessageType::TaskArtifactManifest,
+                            serde_json::to_value(manifest_payload)?,
+                        )
                         .await
                     }
                     Some(exit_code) => {
@@ -1036,6 +1102,121 @@ impl Agent {
                 }
             }
         }
+    }
+
+    async fn handle_artifact_manifest_ack(
+        &self,
+        socket: &mut AgentSocket,
+        active: &mut Option<ActiveTask>,
+        pending_logs: &mut HashMap<String, PendingLog>,
+        payload: TaskArtifactManifestAckPayload,
+    ) -> Result<(), AgentError> {
+        let Some(current) = active.as_ref() else {
+            return Ok(());
+        };
+        if current.task_id != payload.task_id {
+            return Err(AgentError::Protocol(
+                "artifact manifest ACK taskId did not match active task".to_string(),
+            ));
+        }
+        let Some(manifest) = current.artifact_manifest.as_ref() else {
+            return Err(AgentError::Protocol(
+                "received artifact manifest ACK before manifest was sent".to_string(),
+            ));
+        };
+        if !payload.accepted
+            || payload.artifact_count != manifest.files.len() as u64
+            || payload.artifact_bytes != manifest.total_bytes
+        {
+            return self
+                .fail_active_task(
+                    socket,
+                    active,
+                    "ARTIFACT_UPLOAD_FAILED: Server rejected artifact manifest",
+                    None,
+                    pending_logs,
+                )
+                .await;
+        }
+        if current.artifact_upload.is_some() {
+            return Ok(());
+        }
+        let client = self.http_client.clone();
+        let server_url = self.config.server_url.clone();
+        let task_id = current.task_id.clone();
+        let lease_token = current.lease_token.clone();
+        let manifest = manifest.clone();
+        let upload = tokio::spawn(async move {
+            upload_manifest(&client, &server_url, &task_id, &lease_token, &manifest).await
+        });
+        if let Some(current) = active.as_mut() {
+            current.artifact_upload = Some(upload);
+        }
+        Ok(())
+    }
+
+    async fn handle_artifact_upload_result(
+        &self,
+        socket: &mut AgentSocket,
+        active: &mut Option<ActiveTask>,
+        pending_logs: &mut HashMap<String, PendingLog>,
+        result: Option<Result<Result<(), ArtifactError>, tokio::task::JoinError>>,
+    ) -> Result<(), AgentError> {
+        let upload_result = match result {
+            Some(Ok(result)) => result,
+            Some(Err(_)) => Err(ArtifactError::UploadFailed),
+            None => return Ok(()),
+        };
+        if let Some(current) = active.as_mut() {
+            current.artifact_upload = None;
+        }
+        if let Err(error) = upload_result {
+            return self
+                .fail_active_task(
+                    socket,
+                    active,
+                    &safe_artifact_failure(&error),
+                    None,
+                    pending_logs,
+                )
+                .await;
+        }
+        let Some(current) = active.as_ref() else {
+            return Ok(());
+        };
+        let Some(manifest) = current.artifact_manifest.as_ref() else {
+            return Err(AgentError::Protocol(
+                "artifact upload completed before manifest was available".to_string(),
+            ));
+        };
+        let completed = TaskCompletedPayload {
+            task_id: current.task_id.clone(),
+            lease_token: current.lease_token.clone(),
+            exit_code: 0,
+            finished_at: utc_now(),
+            artifact_count: manifest.files.len() as u64,
+            artifact_bytes: manifest.total_bytes,
+            source_commit: current.source_commit.clone(),
+        };
+        send_envelope(
+            socket,
+            MessageType::TaskCompleted,
+            serde_json::to_value(completed)?,
+        )
+        .await?;
+        if let Some(current) = active.as_mut() {
+            if let Some(workspace) = current.workspace.take() {
+                if let Err(error) = workspace.cleanup() {
+                    warn!(
+                        task_id = %current.task_id,
+                        error_code = error.code(),
+                        "completed task workspace cleanup failed"
+                    );
+                }
+            }
+        }
+        preserve_active_log(active, pending_logs);
+        Ok(())
     }
 
     async fn fail_active_task(
@@ -1211,6 +1392,42 @@ fn append_log_and_advance(
     Ok(appended)
 }
 
+fn build_artifact_manifest_payload(
+    task: &ActiveTask,
+    manifest: &ArtifactManifest,
+) -> TaskArtifactManifestPayload {
+    TaskArtifactManifestPayload {
+        task_id: task.task_id.clone(),
+        lease_token: task.lease_token.clone(),
+        artifact_dir: task.artifact_dir.clone(),
+        total_bytes: manifest.total_bytes,
+        files: manifest.entries(),
+    }
+}
+
+fn safe_artifact_failure(error: &ArtifactError) -> String {
+    match error {
+        ArtifactError::ScanInvalid => {
+            "ARTIFACT_SCAN_FAILED: artifact directory is invalid or empty".to_string()
+        }
+        ArtifactError::ScanUnsafe => {
+            "ARTIFACT_SCAN_FAILED: artifact directory contains an unsafe entry".to_string()
+        }
+        ArtifactError::ScanChanged => {
+            "ARTIFACT_SCAN_FAILED: artifact data changed while being read".to_string()
+        }
+        ArtifactError::SizeLimit => {
+            "ARTIFACT_SIZE_LIMIT_EXCEEDED: artifact output is too large".to_string()
+        }
+        ArtifactError::UploadFailed => {
+            "ARTIFACT_UPLOAD_FAILED: artifact upload was not accepted".to_string()
+        }
+        ArtifactError::UploadTimeout => {
+            "ARTIFACT_UPLOAD_TIMEOUT: artifact upload timed out".to_string()
+        }
+    }
+}
+
 fn preserve_active_log(
     active: &mut Option<ActiveTask>,
     pending_logs: &mut HashMap<String, PendingLog>,
@@ -1265,6 +1482,13 @@ async fn receive_execution_event(
         }
         None => std::future::pending::<ExecutionEvent>().await,
     }
+}
+
+async fn receive_artifact_upload(
+    active: &mut Option<ActiveTask>,
+) -> Option<Result<Result<(), ArtifactError>, tokio::task::JoinError>> {
+    let handle = active.as_mut()?.artifact_upload.as_mut()?;
+    Some(handle.await)
 }
 
 #[derive(Debug, Default)]
@@ -1508,6 +1732,10 @@ async fn cancel_active_task(
             &task.task_id,
         )
         .await;
+        if let Some(handle) = task.artifact_upload.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
         if let Some(cancel_sender) = task.execution_cancel.take() {
             let _ = cancel_sender.send(());
         }
@@ -1960,7 +2188,9 @@ mod tests {
         git(&["config", "user.name", "Build Agent Test"]);
         git(&["config", "user.email", "build-agent@example.test"]);
         fs::write(source.path().join("README.md"), "fixture").expect("fixture file");
-        git(&["add", "README.md"]);
+        fs::create_dir(source.path().join("dist")).expect("artifact directory");
+        fs::write(source.path().join("dist/output.txt"), "artifact").expect("artifact file");
+        git(&["add", "README.md", "dist/output.txt"]);
         git(&["commit", "-m", "fixture"]);
         git(&["branch", "-M", "main"]);
 
@@ -1980,7 +2210,9 @@ mod tests {
             .expect("listener");
         let address = listener.local_addr().expect("listener address");
         let status_seen = tokio::sync::oneshot::channel::<String>();
-        let status_sender = status_seen.0;
+        let mut status_sender = Some(status_seen.0);
+        let (release_sender, release_receiver) = tokio::sync::oneshot::channel::<()>();
+        let mut release_receiver = Some(release_receiver);
         let server_task = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("Agent TCP connection");
             let mut socket = tokio_tungstenite::accept_async(stream)
@@ -2078,11 +2310,37 @@ mod tests {
                                 assert!(running);
                                 assert!(output.contains("safe-value"));
                                 assert!(!output.contains("sensitive-value"));
-                                status_sender.send(output).expect("execution signal");
-                                return;
                             }
                             status => panic!("unexpected task status: {status:?}"),
                         }
+                    }
+                    Some("task.artifact-manifest") => {
+                        assert_eq!(message["payload"]["taskId"], task_id_for_asserts);
+                        if let Some(sender) = status_sender.take() {
+                            sender.send(output.clone()).expect("execution signal");
+                        }
+                        if let Some(receiver) = release_receiver.take() {
+                            receiver.await.expect("configuration inspection");
+                        }
+                        socket
+                            .send(Message::Text(
+                                serde_json::json!({
+                                    "id": "server-artifact-rejected",
+                                    "type": "task.artifact-manifest-ack",
+                                    "timestamp": "2026-08-24T03:00:01.000Z",
+                                    "protocolVersion": 1,
+                                    "payload": {
+                                        "taskId": task_id_for_asserts,
+                                        "accepted": false,
+                                        "artifactCount": 0,
+                                        "artifactBytes": 0
+                                    }
+                                })
+                                .to_string()
+                                .into(),
+                            ))
+                            .await
+                            .expect("artifact rejection");
                     }
                     Some("task.log") => {
                         assert!(accepted);
@@ -2093,7 +2351,9 @@ mod tests {
                         last_log_sequence = sequence;
                         output.push_str(message["payload"]["chunk"].as_str().expect("log chunk"));
                     }
-                    Some("task.failed") => panic!("unexpected task failure: {message:?}"),
+                    Some("task.failed") => {
+                        return;
+                    }
                     _ => {}
                 }
             }
@@ -2135,6 +2395,8 @@ mod tests {
             })
         );
         assert!(task_directory.is_dir());
+        release_sender.send(()).expect("release artifact rejection");
+        server_task.await.expect("server task");
         shutdown_sender.send(true).expect("shutdown signal");
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(5), run_task)
@@ -2144,7 +2406,6 @@ mod tests {
                 .expect("Agent run"),
             RunExit::Shutdown
         );
-        server_task.await.expect("server task");
         assert!(!directory
             .path()
             .join("workspace")

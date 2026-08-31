@@ -1,6 +1,6 @@
 # Agent 管理与连接
 
-T2.1 实现 Server 侧 Agent 管理 API 和单实例原生 RFC 6455 WebSocket 网关；T4.1～T4.3 已接入任务领取、Git 准备、配置写入和最小命令执行，T5.1 已接入实时与历史日志，T5.2 已接入取消与跨平台进程树终止。产物处理仍留给后续阶段。
+T2.1 实现 Server 侧 Agent 管理 API 和单实例原生 RFC 6455 WebSocket 网关；T4.1～T4.3 已接入任务领取、Git 准备、配置写入和最小命令执行，T5.1 已接入实时与历史日志，T5.2 已接入取消与跨平台进程树终止，T5.3 已接入产物清单、流式上传、下载和成功闭环。
 
 ## 管理 API
 
@@ -75,7 +75,7 @@ log_level = "info"
 build-agent.exe --config C:/build-agent/build-agent.toml
 \`\`\`
 
-Rust Agent 使用 rustls native roots 支持 WSS，避免依赖系统 OpenSSL；任务领取、Git 准备、最小命令执行、T5.1 日志链路和 T5.2 取消链路已接入，产物处理仍留给后续阶段。
+Rust Agent 使用 rustls native roots 支持 WSS，避免依赖系统 OpenSSL；任务领取、Git 准备、最小命令执行、T5.1 日志链路、T5.2 取消链路和 T5.3 产物上传链路已接入。
 
 ## T4.2 Rust Agent 工作区与 Git 执行
 
@@ -91,9 +91,9 @@ Git 只调用系统 `git`，不使用 libgit2、Shell 或脚本解释器。clone
 
 T4.3 在任务 source 目录写入 `platform.config.json`：完整保留 assignment `config` 的字段，按 UTF-8 pretty JSON 写入并保留一个末尾换行。`sensitiveConfigKeys` 不会删除或改变配置内容，只用于 Agent 输出中的敏感值遮蔽和诊断保护。写入使用 source 内 create-new 临时文件、刷盘后替换，拒绝 source/目标的符号链接或 Windows reparse point，不在错误和日志中输出完整配置。
 
-配置写入成功后 Agent 发送 `PREPARING`、启动模板 command 并发送 `RUNNING`。Windows 使用 `cmd.exe /D /S /C`，Unix 使用 `/bin/sh -lc`，工作目录固定为 source；配置不会插入 command、环境变量或参数。stdout/stderr 并发以有界分片读取，非 UTF-8 使用 lossy 解码，日志序号按任务从 1 递增；Server 当前只安全接收而不持久化日志。命令预算不超过“租约剩余时间减去最终状态上报余量”；直接 Shell 超时会取消两个 reader，正常退出后的管道排空也有有限宽限期。0 退出发送 `UPLOADING`，非零、超时、启动、配置或输出错误发送 `task.failed`，带可选 exitCode，并清理失败任务工作区。不发送 `task.completed`，不上传产物。
+配置写入成功后 Agent 发送 `PREPARING`、启动模板 command 并发送 `RUNNING`。Windows 使用 `cmd.exe /D /S /C`，Unix 使用 `/bin/sh -lc`，工作目录固定为 source；配置不会插入 command、环境变量或参数。stdout/stderr 并发以有界分片读取，非 UTF-8 使用 lossy 解码，日志序号按任务从 1 递增；Server 当前只安全接收而不持久化日志。命令预算不超过“租约剩余时间减去最终状态上报余量”；直接 Shell 超时会取消两个 reader，正常退出后的管道排空也有有限宽限期。0 退出发送 `UPLOADING`，扫描 artifactDir 后发送清单并等待 Server ACK，再逐文件上传和发送 `task.completed`；非零、超时、启动、配置、输出或产物错误发送 `task.failed`，带可选 exitCode，并清理失败任务工作区。
 
-断线、token 撤销和优雅退出会终止当前任务进程树并清理任务工作区。Server 对 PREPARING/RUNNING/UPLOADING 断线按 `-> AGENT_LOST -> FAILED` 收尾；收到 task.cancel 后 Agent 校验 lease、终止进程组/Job Object、确认清理工作区成功后发送 task.canceled，Server 将 CANCELING 收尾为 CANCELED；清理失败或取消确认超时则以 `CANCELING -> FAILED` 释放执行槽。完整恢复对账和产物上传仍留给后续阶段。
+断线、token 撤销和优雅退出会终止当前任务进程树并清理任务工作区。Server 对 PREPARING/RUNNING/UPLOADING 断线按 `-> AGENT_LOST -> FAILED` 收尾；收到 task.cancel 后 Agent 校验 lease、终止进程组/Job Object、确认清理工作区成功后发送 task.canceled，Server 将 CANCELING 收尾为 CANCELED；清理失败或取消确认超时则以 `CANCELING -> FAILED` 释放执行槽。T5.3 中命令成功后扫描 artifactDir 生成 SHA-256 清单，Server ACK 后逐文件通过带租约的 HTTP 流上传，全部确认后才发送 task.completed；完整断线恢复对账和恢复窗口仍留给后续 T6。
 
 Server 接收 `task.status` 的 `PREPARING`、`RUNNING`、`UPLOADING` 状态，并按 Agent、activeTaskId、租约和当前状态顺序校验；合法转换统一经 TaskStateService，重复相同状态幂等。`task.failed` 可结束 PREPARING、RUNNING 或 UPLOADING，保存可选退出码、清理租约和执行槽。T5.1 的 `task.log` 会在校验租约和连续序号后落盘，Server 返回 `task.log.ack`；浏览器日志订阅另行校验项目所有权。
 Server 接收 `task.status` 的 `PREPARING`、`RUNNING`、`UPLOADING` 状态，并按 Agent、activeTaskId、租约和当前状态顺序校验；合法转换统一经 TaskStateService，重复相同状态幂等。`task.failed` 可结束 PREPARING、RUNNING 或 UPLOADING，保存可选退出码、清理租约和执行槽。T5.1 的 `task.log` 会在校验租约和连续序号后落盘，Server 返回 `task.log.ack`；浏览器日志订阅另行校验项目所有权。

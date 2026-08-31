@@ -19,6 +19,8 @@ import type {
   TaskAcceptedMessage,
   TaskCanceledMessage,
   TaskClaimMessage,
+  TaskArtifactManifestMessage,
+  TaskCompletedMessage,
   TaskFailedMessage,
   TaskLogMessage,
   TaskStatusMessage,
@@ -32,6 +34,7 @@ import { AgentConnectionRegistry } from './agent-connection.registry';
 import { AgentTokenService, type AuthenticatedAgent } from './agent-token.service';
 import { TaskQueueService } from '../tasks/task-queue.service';
 import { TaskLogsService } from '../task-logs/task-logs.service';
+import { ArtifactsService } from '../artifacts/artifacts.service';
 
 interface ConnectionState {
   readonly agentId: string;
@@ -327,6 +330,46 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
         } catch (error) {
           if (!(error instanceof ApiException)) throw error;
         }
+      } else if (result.value.type === 'task.artifact-manifest') {
+        if (!state.helloReceived) {
+          safeClose(socket, 1008, 'hello required');
+          return;
+        }
+        const artifacts = this.artifactsService();
+        if (!artifacts) return;
+        try {
+          const ack = await artifacts.registerManifest(
+            state.agentId,
+            result.value as TaskArtifactManifestMessage,
+          );
+          this.send(socket, ack);
+        } catch (error) {
+          if (error instanceof ApiException) {
+            this.send(socket, artifacts.manifestRejectedAck(result.value.payload.taskId));
+          } else {
+            throw error;
+          }
+        }
+      } else if (result.value.type === 'task.completed') {
+        if (!state.helloReceived) {
+          safeClose(socket, 1008, 'hello required');
+          return;
+        }
+        const artifacts = this.artifactsService();
+        if (!artifacts) return;
+        try {
+          const completed = await artifacts.completeTask(
+            state.agentId,
+            result.value as TaskCompletedMessage,
+          );
+          await this.taskQueue()?.onTaskCompleted(state.agentId, completed.taskId);
+        } catch (error) {
+          if (error instanceof ApiException) {
+            safeClose(socket, 1011, 'task completion rejected');
+            return;
+          }
+          throw error;
+        }
       } else if (result.value.type === 'task.failed') {
         if (!state.helloReceived) {
           safeClose(socket, 1008, 'hello required');
@@ -494,6 +537,14 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
   private taskQueue(): TaskQueueService | undefined {
     try {
       return this.moduleRef.get(TaskQueueService, { strict: false });
+    } catch {
+      return undefined;
+    }
+  }
+
+  private artifactsService(): ArtifactsService | undefined {
+    try {
+      return this.moduleRef.get(ArtifactsService, { strict: false });
     } catch {
       return undefined;
     }

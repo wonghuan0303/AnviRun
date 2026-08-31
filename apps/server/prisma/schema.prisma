@@ -154,6 +154,7 @@ model BuildTask {
   branch            String          @db.VarChar(512)
   config            Json
   sourceCommit      String?         @db.VarChar(128)
+  assignedArtifactDir String?       @db.VarChar(1024)
   exitCode          Int?
   queuedAt          DateTime?
   startedAt         DateTime?
@@ -208,6 +209,7 @@ model Artifact {
   sha256       String    @db.Char(64)
   storagePath  String    @db.VarChar(4096)
   createdAt    DateTime  @default(now())
+  uploadedAt   DateTime?
   deletedAt    DateTime?
   task         BuildTask @relation(fields: [taskId], references: [id], onDelete: NoAction, onUpdate: Cascade)
 

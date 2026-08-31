@@ -9,6 +9,7 @@ module.exports = {
     '<rootDir>/test/projects',
     '<rootDir>/test/tasks',
     '<rootDir>/test/task-logs',
+    '<rootDir>/test/artifacts',
   ],
   moduleFileExtensions: ['js', 'json', 'ts'],
   testRegex: '.*\\.integration\\.spec\\.ts$',

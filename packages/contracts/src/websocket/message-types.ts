@@ -19,6 +19,8 @@ export const SERVER_TO_AGENT_MESSAGE_TYPES = [
   'task.available',
   /** Server 已连续持久化的日志序号确认。 */
   'task.log.ack',
+  /** Server 已校验并登记产物清单，Agent 可以开始 HTTP 上传文件。 */
+  'task.artifact-manifest-ack',
   /** 派发任务并签发租约。 */
   'task.assignment',
   /** 请求取消任务，幂等（产品设计 5.5）。 */

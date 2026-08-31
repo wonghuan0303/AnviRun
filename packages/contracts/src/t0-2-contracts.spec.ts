@@ -66,7 +66,7 @@ describe('T0.2 shared contract baseline', () => {
 
   it('validates every server and agent message fixture', () => {
     expect(PROTOCOL_VERSION).toBe(1);
-    expect(serverMessages).toHaveLength(8);
+    expect(serverMessages).toHaveLength(9);
     expect(agentMessages).toHaveLength(10);
     for (const message of [...serverMessages, ...agentMessages])
       expect(validateProtocolMessage(message).ok).toBe(true);

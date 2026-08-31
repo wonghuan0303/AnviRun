@@ -144,7 +144,7 @@ export interface TaskArtifactManifestPayload {
   readonly artifactDir: string;
   /** 全部产物字节数之和。 */
   readonly totalBytes: number;
-  /** 产物文件清单，允许为空数组。 */
+  /** 产物文件清单；构建成功上报时必须包含至少一个文件。 */
   readonly files: readonly ArtifactManifestEntry[];
 }
 

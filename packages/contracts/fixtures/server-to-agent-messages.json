@@ -34,6 +34,18 @@
     }
   },
   {
+    "id": "msg-server-artifact-ack-01",
+    "type": "task.artifact-manifest-ack",
+    "timestamp": "2026-08-24T03:00:02.500Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "accepted": true,
+      "artifactCount": 2,
+      "artifactBytes": 1024
+    }
+  },
+  {
     "id": "msg-server-03",
     "type": "task.assignment",
     "timestamp": "2026-08-24T03:00:02Z",

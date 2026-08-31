@@ -165,6 +165,30 @@ function taskLease(
   leaseProperty(value, path, issues);
 }
 
+function isSafeRelativePath(value: unknown): value is string {
+  if (
+    !isString(value) ||
+    !isPlainText(value) ||
+    value.startsWith('/') ||
+    value.startsWith('\\') ||
+    value.includes('\\') ||
+    value.includes(':')
+  )
+    return false;
+  return value.split('/').every((part) => part.length > 0 && part !== '.' && part !== '..');
+}
+
+function relativePathProperty(
+  value: MessageObject,
+  key: string,
+  path: readonly ValidationPathSegment[],
+  issues: ProtocolMessageIssue[],
+): void {
+  stringProperty(value, key, path, issues, true, true);
+  if (value[key] !== undefined && !isSafeRelativePath(value[key]))
+    issue(issues, 'PROPERTY_INVALID', [...path, key], `${key} 必须是安全的相对路径`);
+}
+
 function timeProperty(
   value: MessageObject,
   key: string,
@@ -280,21 +304,8 @@ function artifactFiles(
     const file = objectValue(item, filePath, issues);
     if (file === undefined) return;
     unknownProperties(file, ['relativePath', 'size', 'sha256'], filePath, issues);
-    stringProperty(file, 'relativePath', filePath, issues, true, true);
+    relativePathProperty(file, 'relativePath', filePath, issues);
     nonNegativeInteger(file, 'size', filePath, issues, true);
-    if (
-      isString(file.relativePath) &&
-      (file.relativePath.startsWith('/') ||
-        file.relativePath.startsWith('\\') ||
-        file.relativePath.includes('..') ||
-        file.relativePath.includes('\\'))
-    )
-      issue(
-        issues,
-        'PROPERTY_INVALID',
-        [...filePath, 'relativePath'],
-        'relativePath 必须是安全的相对路径',
-      );
     if (!(isString(file.sha256) && /^[a-f0-9]{64}$/.test(file.sha256)))
       issue(
         issues,
@@ -344,6 +355,19 @@ function serverPayload(
       nonNegativeInteger(value, 'acknowledgedSequence', path, issues, true);
       nonNegativeInteger(value, 'persistedOffset', path, issues, true);
       return;
+    case 'task.artifact-manifest-ack':
+      unknownProperties(
+        value,
+        ['taskId', 'accepted', 'artifactCount', 'artifactBytes'],
+        path,
+        issues,
+      );
+      idProperty(value, 'taskId', path, issues);
+      if (typeof value.accepted !== 'boolean')
+        issue(issues, 'PROPERTY_INVALID', [...path, 'accepted'], 'accepted 必须是布尔值');
+      nonNegativeInteger(value, 'artifactCount', path, issues, true);
+      nonNegativeInteger(value, 'artifactBytes', path, issues, true);
+      return;
     case 'task.assignment':
       unknownProperties(
         value,
@@ -371,7 +395,7 @@ function serverPayload(
       idProperty(value, 'buildTemplateId', path, issues);
       gitSource(value.git, [...path, 'git'], issues);
       stringProperty(value, 'command', path, issues, true, false);
-      stringProperty(value, 'artifactDir', path, issues, true, true);
+      relativePathProperty(value, 'artifactDir', path, issues);
       positiveInteger(value, 'timeoutSeconds', path, issues);
       configObject(value.config, [...path, 'config'], issues);
       stringArray(value, 'sensitiveConfigKeys', path, issues);
@@ -484,7 +508,7 @@ function agentPayload(
         issues,
       );
       taskLease(value, path, issues);
-      stringProperty(value, 'artifactDir', path, issues, true, true);
+      relativePathProperty(value, 'artifactDir', path, issues);
       nonNegativeInteger(value, 'totalBytes', path, issues, true);
       artifactFiles(value.files, [...path, 'files'], issues);
       return;

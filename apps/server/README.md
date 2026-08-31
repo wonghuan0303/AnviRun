@@ -126,6 +126,21 @@ T3.3 不包含 Web 项目页面、构建任务创建、Git 访问、Agent 派发
 
 T4.1 只实现创建、查询、状态历史、Agent 可用通知、领取确认、租约和派发超时回收；任务执行、完成/失败上报、日志、产物和取消留给后续阶段。
 
+## T5.3 产物上传与下载
+
+Agent 在任务进入 `UPLOADING` 后先通过 WebSocket 发送 `task.artifact-manifest`。Server 按 Agent、活动任务和租约校验清单，写入尚未上传的 Artifact 元数据并返回 `task.artifact-manifest-ack`；文件本体通过 `PUT /api/agent/tasks/:taskId/artifacts/content?relativePath=...` 以 `application/octet-stream` 流式上传。上传过程在 Server 侧按清单大小和 SHA-256 校验，使用任务目录内的独占临时文件、刷盘后移动到 `data/artifacts/<taskId>/<relativePath>`，不把租约明文写入 URL、数据库、日志或响应。短写会被完整处理并在移动前复核临时文件大小；若正式文件已移动但 `uploadedAt` 尚未落库，内容一致的重试会流式复核并补写元数据。单任务总量上限为 2 GiB，路径穿越、符号链接/reparse point、尺寸或 Hash 不匹配都会拒绝；同一文件在内容一致时可安全重试。
+
+派发时使用的 `artifactDir` 会单独保存到 BuildTask，manifest 始终按本次 assignment 的目录校验，不受运行期间模板编辑影响。所有文件成功确认后，Agent 发送 `task.completed`，Server 再经 `TaskStateService` 将 `UPLOADING -> SUCCEEDED`，记录产物数量/字节数、清除任务租约和 `Agent.activeTaskId`。未完成全部上传不会成功收尾；如果完成统计错误，Server 拒绝消息并关闭当前 Agent 连接，由既有断线收尾将任务安全置为失败、释放执行槽。重复完成只接受与已记录统计一致的结果，不重复写终态历史。
+
+登录用户可使用：
+
+- `GET /api/tasks/:taskId/artifacts?page=&pageSize=`：按项目所有权分页列出已成功任务的产物。
+- `GET /api/artifacts/:artifactId/download`：流式下载单个产物。
+- `GET /api/tasks/:taskId/artifacts/archive`：流式下载任务 ZIP，不在内存中汇总文件内容；单个清单最多 65,535 个文件。
+- `DELETE /api/artifacts/:artifactId`：软删除产物。
+
+这些接口复用 `AccessTokenGuard -> OwnershipGuard` 和既有 `AuthorizationService`；跨用户、未完成任务、已删除产物、非法 UUID 和不存在资源统一返回 `404 RESOURCE_NOT_FOUND`。响应只包含相对路径、文件名、大小、SHA-256 等安全字段，不返回 `storagePath`、lease、Agent token、passwordHash 或 tokenVersion。
+
 ### T5.1 任务日志
 
 ### T5.2 任务取消与超时

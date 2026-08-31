@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 
 import { Test } from '@nestjs/testing';
@@ -312,6 +312,60 @@ describe('T4.1/T4.2/T4.3 task WebSocket PostgreSQL integration', () => {
     );
   }
 
+  function sendArtifactManifest(
+    socket: WebSocket,
+    taskId: string,
+    leaseToken: string,
+    content: Buffer,
+  ): void {
+    socket.send(
+      JSON.stringify({
+        id: randomUUID(),
+        type: 'task.artifact-manifest',
+        timestamp: new Date().toISOString(),
+        protocolVersion: PROTOCOL_VERSION,
+        payload: {
+          taskId,
+          leaseToken,
+          artifactDir: 'dist',
+          totalBytes: content.length,
+          files: [
+            {
+              relativePath: 'nested/app.txt',
+              size: content.length,
+              sha256: createHash('sha256').update(content).digest('hex'),
+            },
+          ],
+        },
+      }),
+    );
+  }
+
+  function sendTaskCompleted(
+    socket: WebSocket,
+    taskId: string,
+    leaseToken: string,
+    artifactBytes: number,
+  ): void {
+    socket.send(
+      JSON.stringify({
+        id: randomUUID(),
+        type: 'task.completed',
+        timestamp: new Date().toISOString(),
+        protocolVersion: PROTOCOL_VERSION,
+        payload: {
+          taskId,
+          leaseToken,
+          exitCode: 0,
+          finishedAt: new Date().toISOString(),
+          artifactCount: 1,
+          artifactBytes,
+          sourceCommit: '0123456789abcdef0123456789abcdef01234567',
+        },
+      }),
+    );
+  }
+
   function sendTaskFailure(
     socket: WebSocket,
     taskId: string,
@@ -414,6 +468,17 @@ describe('T4.1/T4.2/T4.3 task WebSocket PostgreSQL integration', () => {
         });
       });
     }
+  }
+
+  async function waitForClose(socket: WebSocket): Promise<void> {
+    if (socket.readyState === WebSocket.CLOSED) return;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 5_000);
+      socket.once('close', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
   }
 
   async function waitForTaskStatus(taskId: string, status: BuildTaskStatus): Promise<void> {
@@ -1504,5 +1569,167 @@ describe('T4.1/T4.2/T4.3 task WebSocket PostgreSQL integration', () => {
     expect(stored.leaseHash).toBeNull();
     expect(stored.leaseExpiresAt).toBeNull();
     await closeSocket(socket);
+  });
+
+  it('uploads artifacts over HTTP and completes the task over WebSocket', async () => {
+    const socket = openSocket();
+    await waitForOpen(socket);
+    await sendHello(socket);
+    const task = await createTask();
+    const assignment = await claimTask(socket, task.id);
+    sendAccepted(socket, task.id, assignment.payload.leaseToken);
+    await waitForTaskStatus(task.id, BuildTaskStatus.PREPARING);
+    sendTaskStatus(
+      socket,
+      task.id,
+      assignment.payload.leaseToken,
+      'RUNNING',
+      '0123456789abcdef0123456789abcdef01234567',
+    );
+    await waitForTaskStatus(task.id, BuildTaskStatus.RUNNING);
+    sendTaskStatus(
+      socket,
+      task.id,
+      assignment.payload.leaseToken,
+      'UPLOADING',
+      '0123456789abcdef0123456789abcdef01234567',
+    );
+    await waitForTaskStatus(task.id, BuildTaskStatus.UPLOADING);
+
+    const content = Buffer.from('websocket artifact\n', 'utf8');
+    const manifestAck = waitForMessage(socket, 'task.artifact-manifest-ack');
+    sendArtifactManifest(socket, task.id, assignment.payload.leaseToken, content);
+    await expect(manifestAck).resolves.toMatchObject({
+      payload: { accepted: true, artifactCount: 1, artifactBytes: content.length },
+    });
+    const uploaded = await request(app.getHttpServer())
+      .put(`/api/agent/tasks/${task.id}/artifacts/content`)
+      .query({ relativePath: 'nested/app.txt' })
+      .set('Authorization', `Bearer ${assignment.payload.leaseToken}`)
+      .set('Content-Type', 'application/octet-stream')
+      .send(content);
+    expect(uploaded.status).toBe(200);
+
+    sendTaskCompleted(socket, task.id, assignment.payload.leaseToken, content.length);
+    await waitForTaskStatus(task.id, BuildTaskStatus.SUCCEEDED);
+    const stored = await prisma.artifact.findFirstOrThrow({ where: { taskId: task.id } });
+    expect(stored.uploadedAt).not.toBeNull();
+    expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).activeTaskId).toBe(
+      null,
+    );
+    await closeSocket(socket);
+  });
+
+  it('matches the manifest against the artifactDir captured at dispatch time', async () => {
+    const socket = openSocket();
+    await waitForOpen(socket);
+    await sendHello(socket);
+    const task = await createTask();
+    const assignment = await claimTask(socket, task.id);
+    expect(assignment.payload.artifactDir).toBe('dist');
+    expect(
+      (await prisma.buildTask.findUniqueOrThrow({ where: { id: task.id } })).assignedArtifactDir,
+    ).toBe('dist');
+    await prisma.buildTemplate.update({
+      where: { id: templateId },
+      data: { artifactDir: 'release' },
+    });
+
+    sendAccepted(socket, task.id, assignment.payload.leaseToken);
+    await waitForTaskStatus(task.id, BuildTaskStatus.PREPARING);
+    sendTaskStatus(
+      socket,
+      task.id,
+      assignment.payload.leaseToken,
+      'RUNNING',
+      '0123456789abcdef0123456789abcdef01234567',
+    );
+    await waitForTaskStatus(task.id, BuildTaskStatus.RUNNING);
+    sendTaskStatus(
+      socket,
+      task.id,
+      assignment.payload.leaseToken,
+      'UPLOADING',
+      '0123456789abcdef0123456789abcdef01234567',
+    );
+    await waitForTaskStatus(task.id, BuildTaskStatus.UPLOADING);
+    const content = Buffer.from('dispatch artifactDir', 'utf8');
+    const manifestAck = waitForMessage(socket, 'task.artifact-manifest-ack');
+    sendArtifactManifest(socket, task.id, assignment.payload.leaseToken, content);
+    await expect(manifestAck).resolves.toMatchObject({ payload: { accepted: true } });
+    const uploaded = await request(app.getHttpServer())
+      .put(`/api/agent/tasks/${task.id}/artifacts/content`)
+      .query({ relativePath: 'nested/app.txt' })
+      .set('Authorization', `Bearer ${assignment.payload.leaseToken}`)
+      .set('Content-Type', 'application/octet-stream')
+      .send(content);
+    expect(uploaded.status).toBe(200);
+    sendTaskCompleted(socket, task.id, assignment.payload.leaseToken, content.length);
+    await waitForTaskStatus(task.id, BuildTaskStatus.SUCCEEDED);
+    await closeSocket(socket);
+  });
+
+  it('closes a connection when task.completed is rejected and releases the task', async () => {
+    const socket = openSocket();
+    await waitForOpen(socket);
+    await sendHello(socket);
+    const task = await createTask();
+    const assignment = await claimTask(socket, task.id);
+    sendAccepted(socket, task.id, assignment.payload.leaseToken);
+    await waitForTaskStatus(task.id, BuildTaskStatus.PREPARING);
+    sendTaskStatus(
+      socket,
+      task.id,
+      assignment.payload.leaseToken,
+      'RUNNING',
+      '0123456789abcdef0123456789abcdef01234567',
+    );
+    await waitForTaskStatus(task.id, BuildTaskStatus.RUNNING);
+    sendTaskStatus(
+      socket,
+      task.id,
+      assignment.payload.leaseToken,
+      'UPLOADING',
+      '0123456789abcdef0123456789abcdef01234567',
+    );
+    await waitForTaskStatus(task.id, BuildTaskStatus.UPLOADING);
+
+    const content = Buffer.from('rejected completion artifact\n', 'utf8');
+    const manifestAck = waitForMessage(socket, 'task.artifact-manifest-ack');
+    sendArtifactManifest(socket, task.id, assignment.payload.leaseToken, content);
+    await expect(manifestAck).resolves.toMatchObject({ payload: { accepted: true } });
+    const uploaded = await request(app.getHttpServer())
+      .put(`/api/agent/tasks/${task.id}/artifacts/content`)
+      .query({ relativePath: 'nested/app.txt' })
+      .set('Authorization', `Bearer ${assignment.payload.leaseToken}`)
+      .set('Content-Type', 'application/octet-stream')
+      .send(content);
+    expect(uploaded.status).toBe(200);
+
+    const closed = waitForClose(socket);
+    sendTaskCompleted(socket, task.id, assignment.payload.leaseToken, content.length + 1);
+    await closed;
+    await waitForTaskStatus(task.id, BuildTaskStatus.FAILED);
+    const failed = await prisma.buildTask.findUniqueOrThrow({ where: { id: task.id } });
+    expect(failed.leaseHash).toBeNull();
+    expect(failed.leaseExpiresAt).toBeNull();
+    expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).activeTaskId).toBe(
+      null,
+    );
+    expect(app.get(AgentConnectionRegistry).isReady(agentId)).toBe(false);
+
+    const followUp = await createTask();
+    expect(followUp.status).toBe(BuildTaskStatus.WAITING_AGENT);
+    const offlineMessages = await collectMessages(socket, 'task.assignment', 100);
+    expect(offlineMessages).toHaveLength(0);
+
+    const reconnected = openSocket();
+    await waitForOpen(reconnected);
+    const available = waitForMessage(reconnected, 'task.available');
+    await sendHello(reconnected);
+    await expect(available).resolves.toMatchObject({ type: 'task.available' });
+    const nextAssignment = await claimTask(reconnected, followUp.id);
+    expect(nextAssignment.payload.taskId).toBe(followUp.id);
+    await closeSocket(reconnected);
   });
 });

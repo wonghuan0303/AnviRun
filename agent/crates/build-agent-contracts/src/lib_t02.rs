@@ -76,6 +76,8 @@ pub enum MessageType {
     TaskAvailable,
     #[serde(rename = "task.log.ack")]
     TaskLogAck,
+    #[serde(rename = "task.artifact-manifest-ack")]
+    TaskArtifactManifestAck,
     #[serde(rename = "task.assignment")]
     TaskAssignment,
     #[serde(rename = "task.cancel")]
@@ -136,6 +138,12 @@ dto!(TaskLogAckPayload {
     task_id: String,
     acknowledged_sequence: u64,
     persisted_offset: u64
+});
+dto!(TaskArtifactManifestAckPayload {
+    task_id: String,
+    accepted: bool,
+    artifact_count: u64,
+    artifact_bytes: u64
 });
 dto!(TaskGitSource {
     url: String,
@@ -231,6 +239,7 @@ pub enum DecodedMessage {
     AgentRegistered(ProtocolEnvelopeTyped<AgentRegisteredPayload>),
     TaskAvailable(ProtocolEnvelopeTyped<TaskAvailablePayload>),
     TaskLogAck(ProtocolEnvelopeTyped<TaskLogAckPayload>),
+    TaskArtifactManifestAck(ProtocolEnvelopeTyped<TaskArtifactManifestAckPayload>),
     TaskAssignment(ProtocolEnvelopeTyped<TaskAssignmentPayload>),
     TaskCancel(ProtocolEnvelopeTyped<TaskCancelPayload>),
     AgentTokenRevoked(ProtocolEnvelopeTyped<AgentTokenRevokedPayload>),
@@ -419,6 +428,13 @@ pub fn parse_message(value: Value) -> Result<DecodedMessage, String> {
             valid_safe_non_negative(value.acknowledged_sequence, "acknowledgedSequence")?;
             valid_safe_non_negative(value.persisted_offset, "persistedOffset")?;
             Ok(DecodedMessage::TaskLogAck(typed(raw, value)))
+        }
+        MessageType::TaskArtifactManifestAck => {
+            let value: TaskArtifactManifestAckPayload = payload(&raw)?;
+            valid_id(&value.task_id, "taskId")?;
+            valid_safe_non_negative(value.artifact_count, "artifactCount")?;
+            valid_safe_non_negative(value.artifact_bytes, "artifactBytes")?;
+            Ok(DecodedMessage::TaskArtifactManifestAck(typed(raw, value)))
         }
         MessageType::TaskAssignment => {
             let value: TaskAssignmentPayload = payload(&raw)?;

@@ -13,6 +13,7 @@ import { UsersModule } from './users/users.module';
 import { ProjectsModule } from './projects/projects.module';
 import { TasksModule } from './tasks/tasks.module';
 import { TaskLogsModule } from './task-logs/task-logs.module';
+import { ArtifactsModule } from './artifacts/artifacts.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, cache: true }),
@@ -26,6 +27,7 @@ import { TaskLogsModule } from './task-logs/task-logs.module';
     ProjectsModule,
     TasksModule,
     TaskLogsModule,
+    ArtifactsModule,
     UsersModule,
   ],
   providers: [{ provide: APP_FILTER, useClass: ApiExceptionFilter }],

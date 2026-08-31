@@ -40,6 +40,7 @@ const CLAIM_SELECT = {
   agentId: true,
   config: true,
   branch: true,
+  assignedArtifactDir: true,
   status: true,
   updatedAt: true,
   project: { select: { deletedAt: true } },
@@ -134,6 +135,12 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
     if (queuedTaskCount > 0) {
       this.registry.send(agentId, taskAvailableMessage(agentId, queuedTaskCount));
     }
+  }
+
+  /** 清理完成任务在单进程内的明文租约，并唤醒同一 Agent 的后续队列。 */
+  async onTaskCompleted(agentId: string, taskId: string): Promise<void> {
+    this.activeLeaseTokens.delete(taskId);
+    await this.notifyAvailable(agentId);
   }
 
   async onAgentReady(agentId: string): Promise<void> {
@@ -833,6 +840,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
           await this.failUndispatchable(tx, task.id, 'Build template schema is invalid');
           continue;
         }
+        const assignedArtifactDir = task.buildTemplate.artifactDir;
         const lease = this.leases.generate(task.buildTemplate.timeoutSeconds);
         const assignment = {
           id: randomUUID(),
@@ -848,7 +856,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
             buildTemplateId: task.buildTemplateId,
             git: { url: task.buildTemplate.gitUrl, branch: task.branch },
             command: task.buildTemplate.command,
-            artifactDir: task.buildTemplate.artifactDir,
+            artifactDir: assignedArtifactDir,
             timeoutSeconds: task.buildTemplate.timeoutSeconds,
             config: task.config as FormConfigValues,
             sensitiveConfigKeys: listSensitiveFormFieldNames(schema.value),
@@ -872,6 +880,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
             logLeaseHash: lease.hash,
             logLeaseExpiresAt: new Date(lease.expiresAt.getTime() + LOG_LEASE_WINDOW_MS),
             logSensitiveKeys: listSensitiveFormFieldNames(schema.value),
+            assignedArtifactDir,
             statusReason: null,
           },
         );

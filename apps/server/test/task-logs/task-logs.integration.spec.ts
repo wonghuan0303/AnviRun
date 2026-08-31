@@ -40,6 +40,7 @@ describe('T5.1 task logs PostgreSQL/file/WebSocket integration', () => {
 
   async function resetDatabase(): Promise<void> {
     await prisma.agent.updateMany({ data: { activeTaskId: null } });
+    await prisma.artifact.deleteMany();
     await prisma.buildTaskStatusHistory.deleteMany();
     await prisma.buildTask.deleteMany();
     await prisma.project.deleteMany();
