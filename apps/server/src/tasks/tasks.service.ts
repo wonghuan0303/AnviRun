@@ -330,6 +330,20 @@ export class TasksService {
     return this.getTask(actor, taskId);
   }
 
+  async rebuildTask(
+    actor: AuthenticatedRequestUser,
+    taskId: string,
+    requestId?: string,
+  ): Promise<{ task: TaskResponse }> {
+    this.assertUuid(taskId);
+    const previous = await this.prisma.buildTask.findFirst({
+      where: this.authorization.taskScope(actor, { id: taskId }),
+      select: { projectId: true },
+    });
+    if (!previous) throw new ApiException('RESOURCE_NOT_FOUND');
+    return this.createTask(actor, previous.projectId, requestId);
+  }
+
   private assertUuid(value: string): void {
     if (!UUID_PATTERN.test(value)) throw new ApiException('RESOURCE_NOT_FOUND');
   }

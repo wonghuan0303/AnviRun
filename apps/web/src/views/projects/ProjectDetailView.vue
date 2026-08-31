@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { useRoute, useRouter } from 'vue-router';
 
 import * as projectApi from '@/api/project';
+import * as taskApi from '@/api/tasks';
 import type { ProjectView } from '@/api/types';
 import { errorMessage } from '@/utils/errors';
 import {
@@ -19,6 +20,7 @@ const router = useRouter();
 const project = ref<ProjectView | null>(null);
 const loading = ref(false);
 const error = ref('');
+const creatingTask = ref(false);
 
 function projectId(): string {
   const value = route.params.projectId;
@@ -53,6 +55,25 @@ async function confirmDelete(): Promise<void> {
   }
 }
 
+async function startBuild(): Promise<void> {
+  if (!project.value || !project.value.configCompatibility.buildable || creatingTask.value) return;
+  try {
+    await ElMessageBox.confirm(
+      `将使用项目当前分支“${project.value.branch}”、配置和模板开始构建，是否继续？`,
+      '确认开始构建',
+      { type: 'warning', confirmButtonText: '开始构建', cancelButtonText: '取消' },
+    );
+    creatingTask.value = true;
+    const result = await taskApi.createTask(project.value.id);
+    await router.push({ name: 'task-detail', params: { taskId: result.task.id } });
+  } catch (caught) {
+    if (caught !== 'cancel' && caught !== 'close')
+      ElMessage.error(errorMessage(caught, '任务创建失败'));
+  } finally {
+    creatingTask.value = false;
+  }
+}
+
 onMounted(() => {
   void load();
 });
@@ -77,6 +98,24 @@ onMounted(() => {
           type="primary"
           @click="router.push({ name: 'project-config', params: { projectId: project.id } })"
           >编辑配置</el-button
+        >
+        <el-button
+          v-if="project"
+          type="success"
+          :loading="creatingTask"
+          :disabled="!project.configCompatibility.buildable"
+          :title="
+            project.configCompatibility.buildable
+              ? '使用项目当前分支、配置和模板开始构建'
+              : '当前项目不可构建，请先修正配置或启用模板/Agent'
+          "
+          @click="startBuild"
+          >开始构建</el-button
+        >
+        <el-button
+          v-if="project"
+          @click="router.push({ name: 'project-tasks', params: { projectId: project.id } })"
+          >构建记录</el-button
         >
         <el-button v-if="project" type="danger" plain @click="confirmDelete">删除</el-button>
       </div>
@@ -180,7 +219,7 @@ onMounted(() => {
           </li>
         </ul>
         <p v-if="project.configCompatibility.buildable" class="muted-text">
-          当前阶段暂不提供构建任务创建，构建入口将在 T4.1 接入。
+          可以使用项目当前分支、配置和模板创建构建任务。
         </p>
       </el-card>
     </template>

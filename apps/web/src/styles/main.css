@@ -148,6 +148,55 @@ body {
 .home-actions {
   margin-top: 16px;
 }
+.task-status-header,
+.card-header-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.task-status-header__hint {
+  color: #606266;
+}
+.task-metrics {
+  margin-top: 22px;
+}
+.task-log-viewer {
+  max-height: 420px;
+  overflow: auto;
+  padding: 14px;
+  background: #1f2937;
+  border-radius: 4px;
+  color: #e5e7eb;
+  font:
+    13px/1.6 Consolas,
+    'Courier New',
+    monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.task-log-viewer .el-empty {
+  --el-empty-text-color: #9ca3af;
+}
+.task-log-line {
+  display: block;
+}
+.task-log-line--stderr {
+  color: #fca5a5;
+}
+.task-log-line__meta {
+  display: inline-block;
+  margin-right: 10px;
+  color: #9ca3af;
+  user-select: none;
+}
+.log-actions {
+  justify-content: flex-start;
+  margin-bottom: 10px;
+}
+.error-text {
+  color: #f56c6c;
+}
 @media (max-width: 800px) {
   .admin-shell__aside {
     width: 160px !important;

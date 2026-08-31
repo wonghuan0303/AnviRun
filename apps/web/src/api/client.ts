@@ -31,6 +31,11 @@ interface RequestOptions extends Omit<RequestInit, 'body'> {
   skipRefresh?: boolean;
 }
 
+export interface ApiBlobResponse {
+  blob: Blob;
+  filename: string;
+}
+
 const configuredBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').trim();
 export const apiBaseUrl = configuredBaseUrl
   ? `${configuredBaseUrl.replace(/\/$/, '')}/api`
@@ -90,6 +95,28 @@ async function parseResponse<T>(response: Response): Promise<T> {
   return payload as T;
 }
 
+async function parseErrorResponse(response: Response): Promise<never> {
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new ApiError(
+      { code: 'VALIDATION_FAILED', message: '服务端返回了无法识别的响应' },
+      response.status,
+    );
+  }
+  const body = payload as Partial<ApiErrorPayload>;
+  throw new ApiError(
+    {
+      code: typeof body.code === 'string' ? body.code : 'VALIDATION_FAILED',
+      message: typeof body.message === 'string' ? body.message : '请求失败，请稍后重试',
+      details: isRecord(body.details) ? body.details : undefined,
+      requestId: typeof body.requestId === 'string' ? body.requestId : undefined,
+    },
+    response.status,
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -127,4 +154,60 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     if (refreshed) return apiRequest<T>(path, { ...options, skipRefresh: true });
   }
   return parseResponse<T>(response);
+}
+
+function safeDownloadFilename(value: string | null): string {
+  if (!value) return 'download';
+  const utf8 = value.match(/filename\*=(?:UTF-8'')?([^;]+)/i)?.[1];
+  const plain = value.match(/filename="?([^";]+)"?/i)?.[1];
+  let decoded = utf8?.trim() ?? plain?.trim() ?? 'download';
+  if (utf8) {
+    try {
+      decoded = decodeURIComponent(decoded);
+    } catch {
+      decoded = 'download';
+    }
+  }
+  const candidate = decoded;
+  const safe = Array.from(candidate, (character) => {
+    const code = character.charCodeAt(0);
+    return character === '\\' || character === '/' || code < 32 || code === 127 ? '_' : character;
+  })
+    .join('')
+    .trim();
+  return safe || 'download';
+}
+
+export async function apiBlobRequest(
+  path: string,
+  options: RequestOptions = {},
+): Promise<ApiBlobResponse> {
+  const method = (options.method ?? 'GET').toUpperCase();
+  const headers = new Headers(options.headers);
+  const accessToken = configuration.getAccessToken();
+  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
+  if (needsCsrf(path, method)) {
+    const token = csrfToken();
+    if (token) headers.set('X-CSRF-Token', token);
+  }
+  let body = options.body;
+  if (body !== undefined && typeof body !== 'string' && !(body instanceof FormData)) {
+    headers.set('Content-Type', 'application/json');
+    body = JSON.stringify(body);
+  }
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    ...options,
+    body,
+    headers,
+    credentials: 'include',
+  });
+  if (response.status === 401 && shouldRetry(path, options)) {
+    const refreshed = await configuration.refreshAccessToken();
+    if (refreshed) return apiBlobRequest(path, { ...options, skipRefresh: true });
+  }
+  if (!response.ok) return parseErrorResponse(response);
+  return {
+    blob: await response.blob(),
+    filename: safeDownloadFilename(response.headers.get('Content-Disposition')),
+  };
 }

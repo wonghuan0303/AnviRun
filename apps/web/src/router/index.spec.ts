@@ -45,4 +45,15 @@ describe('router authorization guard', () => {
 
     expect(router.currentRoute.value.name).toBe('admin-agents');
   });
+
+  it('allows both authenticated roles into project task routes', async () => {
+    vi.mocked(authApi.refresh).mockResolvedValue(session(user));
+    await router.push('/projects/project-id/tasks');
+    expect(router.currentRoute.value.name).toBe('project-tasks');
+
+    setActivePinia(createPinia());
+    vi.mocked(authApi.refresh).mockResolvedValue(session(admin));
+    await router.push('/tasks/task-id');
+    expect(router.currentRoute.value.name).toBe('task-detail');
+  });
 });

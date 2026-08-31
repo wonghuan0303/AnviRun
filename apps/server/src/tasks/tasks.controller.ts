@@ -124,4 +124,16 @@ export class TasksController {
       throw validationException();
     }
   }
+
+  @Post(':taskId/rebuild')
+  @HttpCode(HttpStatus.CREATED)
+  @UseGuards(AccessTokenGuard, OwnershipGuard)
+  @OwnedResource('task', 'taskId')
+  async rebuild(
+    @Param('taskId') taskId: string,
+    @CurrentUser() actor: AuthenticatedRequestUser,
+    @Req() request: Request,
+  ) {
+    return this.tasks.rebuildTask(actor, taskId, requestId(request));
+  }
 }

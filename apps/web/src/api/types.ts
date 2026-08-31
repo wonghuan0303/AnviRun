@@ -154,3 +154,117 @@ export interface ProjectUpdateInput {
   description?: string | null;
   branch?: string;
 }
+
+export type BuildTaskStatus =
+  | 'CREATED'
+  | 'WAITING_AGENT'
+  | 'QUEUED'
+  | 'DISPATCHED'
+  | 'PREPARING'
+  | 'RUNNING'
+  | 'UPLOADING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'CANCELING'
+  | 'CANCELED'
+  | 'AGENT_LOST';
+
+export interface TaskStatusHistory {
+  id: string;
+  fromStatus: BuildTaskStatus | null;
+  toStatus: BuildTaskStatus;
+  source: string;
+  reason: string | null;
+  occurredAt: string;
+}
+
+export interface TaskProjectSummary {
+  id: string;
+  ownerId: string;
+  name: string;
+  description: string | null;
+  branch: string;
+  owner: AuthUser;
+}
+
+export interface TaskTemplateSummary {
+  id: string;
+  name: string;
+  description: string | null;
+  agentId: string;
+  enabled: boolean;
+  agent: TemplateAgentSummary;
+}
+
+export interface TaskSummary {
+  id: string;
+  projectId: string;
+  buildTemplateId: string;
+  agentId: string;
+  createdBy: string;
+  status: BuildTaskStatus;
+  statusReason: string | null;
+  branch: string;
+  config: Record<string, unknown>;
+  sourceCommit: string | null;
+  exitCode: number | null;
+  queuedAt: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  cancelRequestedAt: string | null;
+  leaseExpiresAt: string | null;
+  logSize: string;
+  artifactCount: string;
+  artifactBytes: string;
+  createdAt: string;
+  updatedAt: string;
+  project: TaskProjectSummary;
+  buildTemplate: TaskTemplateSummary;
+  agent: TemplateAgentSummary;
+  creator: AuthUser;
+}
+
+export interface TaskDetail extends TaskSummary {
+  statusHistory: TaskStatusHistory[];
+}
+
+export interface TaskPage {
+  items: TaskSummary[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+export interface TaskLogEntry {
+  sequence: number;
+  stream: 'stdout' | 'stderr';
+  chunk: string;
+  emittedAt: string;
+}
+
+export interface TaskLogPage {
+  taskId: string;
+  offset: number;
+  nextOffset: number;
+  size: number;
+  eof: boolean;
+  entries: TaskLogEntry[];
+}
+
+export interface ArtifactSummary {
+  id: string;
+  taskId: string;
+  relativePath: string;
+  fileName: string;
+  size: string;
+  sha256: string;
+  createdAt: string;
+}
+
+export interface ArtifactPage {
+  items: ArtifactSummary[];
+  taskId: string;
+  page: number;
+  pageSize: number;
+  total: number;
+}

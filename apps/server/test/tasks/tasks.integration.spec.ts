@@ -392,4 +392,39 @@ describe('T4.1 task REST PostgreSQL integration', () => {
     expect(crossOwner.status).toBe(404);
     expect(crossOwner.body.code).toBe('RESOURCE_NOT_FOUND');
   });
+
+  it('rebuilds an accessible task from the current project configuration without changing the old task', async () => {
+    const original = await createTask(userAToken);
+    expect(original.status).toBe(201);
+    const originalTaskId = original.body.task.id as string;
+
+    await prisma.project.update({
+      where: { id: projectAId },
+      data: { branch: 'feature/rebuild', config: { channel: 'current' } },
+    });
+
+    const rebuilt = await request(app.getHttpServer())
+      .post(`/api/tasks/${originalTaskId}/rebuild`)
+      .set('Authorization', `Bearer ${userAToken}`)
+      .send({});
+    expect(rebuilt.status).toBe(201);
+    expect(rebuilt.body.task.id).not.toBe(originalTaskId);
+    expect(rebuilt.body.task.projectId).toBe(projectAId);
+    expect(rebuilt.body.task.branch).toBe('feature/rebuild');
+    expect(rebuilt.body.task.config).toEqual({ channel: 'current' });
+    expect(rebuilt.body.task.statusHistory).toEqual(
+      expect.arrayContaining([expect.objectContaining({ fromStatus: null, toStatus: 'CREATED' })]),
+    );
+
+    const unchanged = await prisma.buildTask.findUniqueOrThrow({ where: { id: originalTaskId } });
+    expect(unchanged.branch).toBe('main');
+    expect(unchanged.config).toEqual({ channel: 'dev' });
+
+    const crossUser = await request(app.getHttpServer())
+      .post(`/api/tasks/${originalTaskId}/rebuild`)
+      .set('Authorization', `Bearer ${userBToken}`)
+      .send({});
+    expect(crossUser.status).toBe(404);
+    expect(crossUser.body.code).toBe('RESOURCE_NOT_FOUND');
+  });
 });

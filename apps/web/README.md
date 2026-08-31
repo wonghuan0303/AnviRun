@@ -19,7 +19,15 @@
 - 项目配置编辑器只显式渲染公共契约白名单控件，使用 `validateFormConfigValues`、`normalizeFormConfigValues` 和 `analyzeFormConfigCompatibility`，不会动态加载组件、HTML、事件或脚本。
 - ADMIN 和 USER 共用项目路由，最终所有权隔离由 Server 的 `Project.ownerId` 授权规则保证；ADMIN 额外显示 Agent 和构建模板菜单。
 
-T3.4 不包含构建任务创建、Git 访问、Agent 派发、模板版本或项目恢复；构建入口留给 T4.1。
+## T5.4 任务页面
+
+- `/projects/:projectId/tasks` 提供项目任务分页、状态筛选、状态中文反馈和开始构建入口。
+- `/tasks/:taskId` 展示任务基础信息、状态时间线、轮询状态、历史/实时日志和产物。
+- 任务页面支持排队任务取消、执行中任务停止、终态重新构建、单文件下载、ZIP 下载和产物软删除。
+- 历史日志先通过 HTTP 按偏移分页读取，再通过 `/ws/client` 以最后确认的偏移订阅；重复偏移会忽略，发现缺口会回读 HTTP。
+- 下载统一使用带 Bearer Token 的 Blob 请求，401 时最多刷新并重试一次；Access Token 不进入 URL 或持久化存储。
+
+T5.4 不包含 T6 断线恢复、租约对账、自动重试、日志搜索、产物预览和对象存储。
 
 ## 本地运行
 

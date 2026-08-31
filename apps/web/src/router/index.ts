@@ -50,6 +50,25 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/projects/ProjectConfigView.vue'),
         meta: { title: '项目配置' },
       },
+      {
+        path: ':projectId/tasks',
+        name: 'project-tasks',
+        component: () => import('@/views/tasks/ProjectTasksView.vue'),
+        meta: { title: '构建记录' },
+      },
+    ],
+  },
+  {
+    path: '/tasks/:taskId',
+    component: () => import('@/layouts/AppLayout.vue'),
+    meta: { requiresAuth: true },
+    children: [
+      {
+        path: '',
+        name: 'task-detail',
+        component: () => import('@/views/tasks/TaskDetailView.vue'),
+        meta: { title: '任务详情' },
+      },
     ],
   },
   {

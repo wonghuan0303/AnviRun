@@ -141,6 +141,19 @@ Agent 在任务进入 `UPLOADING` 后先通过 WebSocket 发送 `task.artifact-m
 
 这些接口复用 `AccessTokenGuard -> OwnershipGuard` 和既有 `AuthorizationService`；跨用户、未完成任务、已删除产物、非法 UUID 和不存在资源统一返回 `404 RESOURCE_NOT_FOUND`。响应只包含相对路径、文件名、大小、SHA-256 等安全字段，不返回 `storagePath`、lease、Agent token、passwordHash 或 tokenVersion。
 
+## T5.4 任务查询与重新构建
+
+登录用户可使用：
+
+- `GET /api/projects/:projectId/tasks?page=&pageSize=&status=`：按项目所有权分页查询任务。
+- `GET /api/tasks/:taskId`：返回任务安全详情和按时间排序的状态历史。
+- `POST /api/tasks/:taskId/cancel`：按当前任务状态请求取消或停止。
+- `POST /api/tasks/:taskId/rebuild`：按旧任务取得项目后，使用项目当前 branch、config 和模板创建一条全新任务；旧任务的状态、历史、日志、产物和执行租约不复制。
+
+任务详情、日志和产物接口都先执行 `AccessTokenGuard`，再执行 `OwnershipGuard`；USER 只能访问自己 `Project.ownerId` 下的任务，ADMIN 可访问所有未软删除项目。跨用户、非法 UUID、不存在和已软删除资源统一返回 `404 RESOURCE_NOT_FOUND`。任务响应只返回安全的项目、模板、Agent 和用户摘要，`leaseHash`、`storagePath`、Agent token、`passwordHash` 和 `tokenVersion` 不对外暴露。
+
+T5.4 不实现 T6 的断线恢复、租约对账和 Agent 重启恢复，也不提供自动重试或日志搜索。
+
 ### T5.1 任务日志
 
 ### T5.2 任务取消与超时

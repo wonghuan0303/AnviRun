@@ -57,4 +57,29 @@ describe('apiRequest', () => {
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('downloads a Blob with Bearer authentication and retries once after refresh', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response({ code: 'AUTH_TOKEN_EXPIRED', message: 'expired' }, 401))
+      .mockResolvedValueOnce(
+        new Response('zip-content', {
+          status: 200,
+          headers: { 'Content-Disposition': "attachment; filename*=UTF-8''logs.zip" },
+        }),
+      );
+    const refresh = vi.fn().mockResolvedValue(true);
+    vi.stubGlobal('fetch', fetchMock);
+    configureApiClient({ getAccessToken: () => 'new-token', refreshAccessToken: refresh });
+
+    const { apiBlobRequest } = await import('./client');
+    const result = await apiBlobRequest('/tasks/task-id/artifacts/archive');
+    expect(result.filename).toBe('logs.zip');
+    expect(await result.blob.text()).toBe('zip-content');
+    expect((fetchMock.mock.calls[1][1] as RequestInit).credentials).toBe('include');
+    expect(
+      ((fetchMock.mock.calls[1][1] as RequestInit).headers as Headers).get('Authorization'),
+    ).toBe('Bearer new-token');
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
 });
