@@ -6,7 +6,9 @@ import type { INestApplication } from '@nestjs/common';
 import { AgentStatus, BuildTaskStatus, Prisma, UserRole } from '@prisma/client';
 import {
   PROTOCOL_VERSION,
+  TASK_LEASE_RECOVERY_WINDOW_SECONDS,
   validateProtocolMessage,
+  type AgentCurrentTask,
   type TaskAssignmentMessage,
 } from '@buildplatform/contracts';
 import request from 'supertest';
@@ -17,6 +19,7 @@ import { AgentConnectionRegistry } from '../../src/agents/agent-connection.regis
 import { LoginRateLimiterService } from '../../src/auth/rate-limiter.service';
 import { PasswordService } from '../../src/auth/password.service';
 import { PrismaService } from '../../src/database/prisma.service';
+import { TaskLogsService } from '../../src/task-logs/task-logs.service';
 import { TaskQueueService } from '../../src/tasks/task-queue.service';
 
 const databaseUrl = process.env.DATABASE_URL ?? '';
@@ -221,7 +224,10 @@ describe('T4.1/T4.2/T4.3 task WebSocket PostgreSQL integration', () => {
     return messages;
   }
 
-  async function sendHello(socket: WebSocket): Promise<void> {
+  async function sendHello(
+    socket: WebSocket,
+    currentTask: AgentCurrentTask | null = null,
+  ): Promise<void> {
     socket.send(
       JSON.stringify({
         id: randomUUID(),
@@ -235,6 +241,7 @@ describe('T4.1/T4.2/T4.3 task WebSocket PostgreSQL integration', () => {
           os: 'linux',
           arch: 'x86_64',
           workspaceRoot: 'C:/agent-workspace',
+          currentTask,
         },
       }),
     );
@@ -915,6 +922,334 @@ describe('T4.1/T4.2/T4.3 task WebSocket PostgreSQL integration', () => {
     await closeSocket(secondSocket);
   });
 
+  it('does not let an old socket close affect a replacement connection', async () => {
+    const firstSocket = openSocket();
+    await waitForOpen(firstSocket);
+    await sendHello(firstSocket);
+    const task = await createTask();
+    const assignment = await claimTask(firstSocket, task.id);
+    sendAccepted(firstSocket, task.id, assignment.payload.leaseToken);
+    await waitForTaskStatus(task.id, BuildTaskStatus.PREPARING);
+
+    const secondSocket = openSocket();
+    await waitForOpen(secondSocket);
+    const recovery = waitForMessage(secondSocket, 'task.recovery');
+    await sendHello(secondSocket, {
+      taskId: task.id,
+      leaseToken: assignment.payload.leaseToken,
+      status: 'PREPARING',
+      lastLogSequence: 0,
+    });
+    await expect(recovery).resolves.toMatchObject({
+      payload: { taskId: task.id, action: 'RESUME', status: 'PREPARING' },
+    });
+    await waitForClose(firstSocket);
+
+    expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).status).toBe(
+      AgentStatus.ONLINE,
+    );
+    expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).activeTaskId).toBe(
+      task.id,
+    );
+    expect((await prisma.buildTask.findUniqueOrThrow({ where: { id: task.id } })).status).toBe(
+      BuildTaskStatus.PREPARING,
+    );
+
+    const resultAck = waitForMessage(secondSocket, 'task.result.ack');
+    sendPreparationFailure(
+      secondSocket,
+      task.id,
+      assignment.payload.leaseToken,
+      'GIT_CLONE_FAILED: replacement connection cleanup',
+    );
+    await expect(resultAck).resolves.toMatchObject({
+      payload: { taskId: task.id, status: 'FAILED' },
+    });
+    await closeSocket(secondSocket);
+  });
+
+  it('serializes log persistence before a terminal failure on the same socket', async () => {
+    const socket = openSocket();
+    await waitForOpen(socket);
+    await sendHello(socket);
+    const task = await createTask();
+    const assignment = await claimTask(socket, task.id);
+    sendAccepted(socket, task.id, assignment.payload.leaseToken);
+    await waitForTaskStatus(task.id, BuildTaskStatus.PREPARING);
+
+    const logs = app.get(TaskLogsService);
+    const originalAppend = logs.appendFromAgent.bind(logs);
+    const append = jest
+      .spyOn(logs, 'appendFromAgent')
+      .mockImplementation(async (agent, message) => {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        return originalAppend(agent, message);
+      });
+    const order: string[] = [];
+    const onMessage = (raw: WebSocket.RawData) => {
+      const message = JSON.parse(raw.toString()) as ProtocolMessage;
+      if (message.type === 'task.log.ack' || message.type === 'task.result.ack') {
+        order.push(message.type);
+      }
+    };
+    socket.on('message', onMessage);
+    try {
+      const logAck = waitForMessage(socket, 'task.log.ack');
+      const resultAck = waitForMessage(socket, 'task.result.ack');
+      sendTaskLog(socket, task.id, assignment.payload.leaseToken);
+      sendTaskFailure(socket, task.id, assignment.payload.leaseToken, 'COMMAND_FAILED: ordered');
+      await expect(logAck).resolves.toMatchObject({
+        payload: { taskId: task.id, acknowledgedSequence: 1 },
+      });
+      await expect(resultAck).resolves.toMatchObject({
+        payload: { taskId: task.id, status: 'FAILED' },
+      });
+      expect(order).toEqual(['task.log.ack', 'task.result.ack']);
+      const persisted = await prisma.buildTask.findUniqueOrThrow({ where: { id: task.id } });
+      expect(persisted.status).toBe(BuildTaskStatus.FAILED);
+      expect(persisted.lastLogSequence).toBe(1n);
+      expect(Number(persisted.logSize)).toBeGreaterThan(0);
+      const history = await prisma.buildTaskStatusHistory.findMany({
+        where: { taskId: task.id, toStatus: BuildTaskStatus.FAILED },
+      });
+      expect(history).toHaveLength(1);
+    } finally {
+      socket.off('message', onMessage);
+      append.mockRestore();
+      await closeSocket(socket);
+    }
+  });
+
+  it('drops queued messages from an old socket after a replacement takes ownership', async () => {
+    const firstSocket = openSocket();
+    await waitForOpen(firstSocket);
+    await sendHello(firstSocket);
+    const task = await createTask();
+    const assignment = await claimTask(firstSocket, task.id);
+    sendAccepted(firstSocket, task.id, assignment.payload.leaseToken);
+    await waitForTaskStatus(task.id, BuildTaskStatus.PREPARING);
+
+    let releaseAppend!: () => void;
+    let appendStarted!: () => void;
+    const appendBlocked = new Promise<void>((resolve) => {
+      releaseAppend = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      appendStarted = resolve;
+    });
+    const logs = app.get(TaskLogsService);
+    const originalAppend = logs.appendFromAgent.bind(logs);
+    const append = jest
+      .spyOn(logs, 'appendFromAgent')
+      .mockImplementation(async (agent, message) => {
+        appendStarted();
+        await appendBlocked;
+        return originalAppend(agent, message);
+      });
+    try {
+      sendTaskLog(firstSocket, task.id, assignment.payload.leaseToken);
+      await started;
+      sendTaskFailure(firstSocket, task.id, assignment.payload.leaseToken, 'COMMAND_FAILED: stale');
+
+      const secondSocket = openSocket();
+      await waitForOpen(secondSocket);
+      const recovery = waitForMessage(secondSocket, 'task.recovery');
+      await sendHello(secondSocket, {
+        taskId: task.id,
+        leaseToken: assignment.payload.leaseToken,
+        status: 'PREPARING',
+        lastLogSequence: 0,
+      });
+      await expect(recovery).resolves.toMatchObject({
+        payload: { taskId: task.id, action: 'RESUME', status: 'PREPARING' },
+      });
+      releaseAppend();
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect((await prisma.buildTask.findUniqueOrThrow({ where: { id: task.id } })).status).toBe(
+        BuildTaskStatus.PREPARING,
+      );
+
+      const resultAck = waitForMessage(secondSocket, 'task.result.ack');
+      sendPreparationFailure(
+        secondSocket,
+        task.id,
+        assignment.payload.leaseToken,
+        'GIT_CLONE_FAILED: replacement cleanup',
+      );
+      await expect(resultAck).resolves.toMatchObject({
+        payload: { taskId: task.id, status: 'FAILED' },
+      });
+      await closeSocket(secondSocket);
+    } finally {
+      append.mockRestore();
+      releaseAppend();
+      await closeSocket(firstSocket);
+    }
+  });
+
+  it('reconciles a live PREPARING task after a short disconnect without rerunning it', async () => {
+    const firstSocket = openSocket();
+    await waitForOpen(firstSocket);
+    await sendHello(firstSocket);
+    const task = await createTask();
+    const assignment = await claimTask(firstSocket, task.id);
+    sendAccepted(firstSocket, task.id, assignment.payload.leaseToken);
+    await waitForTaskStatus(task.id, BuildTaskStatus.PREPARING);
+
+    const logAck = waitForMessage(firstSocket, 'task.log.ack');
+    sendTaskLog(firstSocket, task.id, assignment.payload.leaseToken);
+    await expect(logAck).resolves.toMatchObject({
+      payload: { taskId: task.id, acknowledgedSequence: 1 },
+    });
+    await closeSocket(firstSocket);
+    await waitForTaskStatus(task.id, BuildTaskStatus.AGENT_LOST);
+
+    const lost = await prisma.buildTask.findUniqueOrThrow({ where: { id: task.id } });
+    expect(lost.leaseHash).not.toBeNull();
+    expect(lost.leaseExpiresAt).not.toBeNull();
+    expect(lost.lastLogSequence).toBe(1n);
+    expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).activeTaskId).toBe(
+      task.id,
+    );
+    const lostHistoryCount = await prisma.buildTaskStatusHistory.count({
+      where: { taskId: task.id },
+    });
+
+    const secondSocket = openSocket();
+    await waitForOpen(secondSocket);
+    const recovery = waitForMessage(secondSocket, 'task.recovery');
+    await sendHello(secondSocket, {
+      taskId: task.id,
+      leaseToken: assignment.payload.leaseToken,
+      status: 'PREPARING',
+      lastLogSequence: 1,
+    });
+    await expect(recovery).resolves.toMatchObject({
+      payload: {
+        taskId: task.id,
+        action: 'RESUME',
+        status: 'PREPARING',
+        acknowledgedLogSequence: 1,
+      },
+    });
+    await waitForTaskStatus(task.id, BuildTaskStatus.PREPARING);
+    expect(await prisma.buildTaskStatusHistory.count({ where: { taskId: task.id } })).toBe(
+      lostHistoryCount + 1,
+    );
+    const resumed = await prisma.buildTask.findUniqueOrThrow({ where: { id: task.id } });
+    expect(resumed.leaseHash).not.toBeNull();
+    expect(resumed.leaseExpiresAt).not.toBeNull();
+    expect(resumed.recoveryStatus).toBeNull();
+    expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).activeTaskId).toBe(
+      task.id,
+    );
+
+    const resultAck = waitForMessage(secondSocket, 'task.result.ack');
+    sendPreparationFailure(
+      secondSocket,
+      task.id,
+      assignment.payload.leaseToken,
+      'GIT_CLONE_FAILED: recovery test cleanup',
+    );
+    await expect(resultAck).resolves.toMatchObject({
+      payload: { taskId: task.id, status: 'FAILED' },
+    });
+    await waitForTaskStatus(task.id, BuildTaskStatus.FAILED);
+    await closeSocket(secondSocket);
+  });
+
+  it('fails an orphaned active task when the Agent restarts without currentTask', async () => {
+    const firstSocket = openSocket();
+    await waitForOpen(firstSocket);
+    await sendHello(firstSocket);
+    const task = await createTask();
+    const assignment = await claimTask(firstSocket, task.id);
+    sendAccepted(firstSocket, task.id, assignment.payload.leaseToken);
+    await waitForTaskStatus(task.id, BuildTaskStatus.PREPARING);
+    await closeSocket(firstSocket);
+    await waitForTaskStatus(task.id, BuildTaskStatus.AGENT_LOST);
+
+    const secondSocket = openSocket();
+    await waitForOpen(secondSocket);
+    await sendHello(secondSocket);
+    await waitForTaskStatus(task.id, BuildTaskStatus.FAILED);
+
+    const failed = await prisma.buildTask.findUniqueOrThrow({ where: { id: task.id } });
+    expect(failed.leaseHash).toBeNull();
+    expect(failed.leaseExpiresAt).toBeNull();
+    expect(failed.recoveryStatus).toBeNull();
+    expect(failed.recoveryDeadlineAt).toBeNull();
+    expect(
+      (await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).activeTaskId,
+    ).toBeNull();
+    const history = await prisma.buildTaskStatusHistory.findMany({
+      where: { taskId: task.id },
+      select: { fromStatus: true, toStatus: true, source: true, reason: true },
+    });
+    expect(taskTransitions(history)).toEqual(
+      expect.arrayContaining(['PREPARING->AGENT_LOST', 'AGENT_LOST->FAILED']),
+    );
+    expect(history.find((item) => item.toStatus === BuildTaskStatus.FAILED)).toEqual(
+      expect.objectContaining({
+        source: 'SYSTEM',
+        reason: 'Agent restarted without a resumable local task; execution was abandoned',
+      }),
+    );
+
+    const followUp = await createTask();
+    const followUpAssignment = await claimTask(secondSocket, followUp.id);
+    expect(followUpAssignment.payload.taskId).toBe(followUp.id);
+    await closeSocket(secondSocket);
+  });
+
+  it('expires a lost task once and releases its lease and execution slot', async () => {
+    const firstSocket = openSocket();
+    await waitForOpen(firstSocket);
+    await sendHello(firstSocket);
+    const task = await createTask();
+    const assignment = await claimTask(firstSocket, task.id);
+    sendAccepted(firstSocket, task.id, assignment.payload.leaseToken);
+    await waitForTaskStatus(task.id, BuildTaskStatus.PREPARING);
+    await closeSocket(firstSocket);
+    await waitForTaskStatus(task.id, BuildTaskStatus.AGENT_LOST);
+
+    const deadline = new Date(Date.now() + (TASK_LEASE_RECOVERY_WINDOW_SECONDS + 1) * 1_000);
+    await queue.reclaimTimedOutDispatches(deadline);
+    await waitForTaskStatus(task.id, BuildTaskStatus.FAILED);
+    const historyCount = await prisma.buildTaskStatusHistory.count({ where: { taskId: task.id } });
+    await queue.reclaimTimedOutDispatches(deadline);
+    expect(await prisma.buildTaskStatusHistory.count({ where: { taskId: task.id } })).toBe(
+      historyCount,
+    );
+    const failed = await prisma.buildTask.findUniqueOrThrow({ where: { id: task.id } });
+    expect(failed.leaseHash).toBeNull();
+    expect(failed.leaseExpiresAt).toBeNull();
+    expect(
+      (await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).activeTaskId,
+    ).toBeNull();
+  });
+
+  it('persists task creation idempotency across concurrent and repeated requests', async () => {
+    const key = 't6-creation-' + randomUUID();
+    const create = () =>
+      request(app.getHttpServer())
+        .post('/api/projects/' + projectId + '/tasks')
+        .set('Authorization', 'Bearer ' + adminToken)
+        .set('Idempotency-Key', key)
+        .send({});
+    const [first, second] = await Promise.all([create(), create()]);
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(first.body.task.id).toBe(second.body.task.id);
+    expect(
+      await prisma.buildTask.count({ where: { projectId, creationIdempotencyKey: key } }),
+    ).toBe(1);
+
+    const repeated = await create();
+    expect(repeated.status).toBe(201);
+    expect(repeated.body.task.id).toBe(first.body.task.id);
+  });
+
   it('reclaims dispatch timeout, clears lease and returns an online task to QUEUED', async () => {
     const socket = openSocket();
     await waitForOpen(socket);
@@ -1047,6 +1382,10 @@ describe('T4.1/T4.2/T4.3 task WebSocket PostgreSQL integration', () => {
     const second = await createQueuedTask();
     await closeSocket(firstSocket);
 
+    await waitForTaskStatus(first.id, BuildTaskStatus.AGENT_LOST);
+    await queue.reclaimTimedOutDispatches(
+      new Date(Date.now() + (TASK_LEASE_RECOVERY_WINDOW_SECONDS + 1) * 1_000),
+    );
     await waitForTaskStatus(first.id, BuildTaskStatus.FAILED);
     await waitForTaskStatus(second.id, BuildTaskStatus.WAITING_AGENT);
 
@@ -1073,12 +1412,7 @@ describe('T4.1/T4.2/T4.3 task WebSocket PostgreSQL integration', () => {
             item.toStatus === BuildTaskStatus.AGENT_LOST ||
             item.toStatus === BuildTaskStatus.FAILED,
         )
-        .every(
-          (item) =>
-            item.source === 'SYSTEM' &&
-            item.reason?.toLowerCase().includes('agent') &&
-            item.reason?.toLowerCase().includes('disconnect'),
-        ),
+        .every((item) => item.source === 'SYSTEM' && item.reason?.toLowerCase().includes('agent')),
     ).toBe(true);
 
     const historyCount = history.length;
@@ -1153,6 +1487,10 @@ describe('T4.1/T4.2/T4.3 task WebSocket PostgreSQL integration', () => {
     );
 
     await closeSocket(socket);
+    await waitForTaskStatus(task.id, BuildTaskStatus.AGENT_LOST);
+    await queue.reclaimTimedOutDispatches(
+      new Date(Date.now() + (TASK_LEASE_RECOVERY_WINDOW_SECONDS + 1) * 1_000),
+    );
     await waitForTaskStatus(task.id, BuildTaskStatus.FAILED);
     const failed = await prisma.buildTask.findUniqueOrThrow({ where: { id: task.id } });
     expect(failed.leaseHash).toBeNull();
@@ -1184,7 +1522,9 @@ describe('T4.1/T4.2/T4.3 task WebSocket PostgreSQL integration', () => {
         .every(
           (item) =>
             item.source === 'SYSTEM' &&
-            item.reason?.toLowerCase().includes('disconnect') &&
+            (item.toStatus === BuildTaskStatus.AGENT_LOST
+              ? item.reason?.toLowerCase().includes('disconnect')
+              : item.reason?.toLowerCase().includes('recovery window')) &&
             !item.reason?.includes(assignment.payload.leaseToken),
         ),
     ).toBe(true);
@@ -1272,6 +1612,10 @@ describe('T4.1/T4.2/T4.3 task WebSocket PostgreSQL integration', () => {
 
     const second = await createQueuedTask();
     await closeSocket(firstSocket);
+    await waitForTaskStatus(first.id, BuildTaskStatus.AGENT_LOST);
+    await queue.reclaimTimedOutDispatches(
+      new Date(Date.now() + (TASK_LEASE_RECOVERY_WINDOW_SECONDS + 1) * 1_000),
+    );
     await waitForTaskStatus(first.id, BuildTaskStatus.FAILED);
     await waitForTaskStatus(second.id, BuildTaskStatus.WAITING_AGENT);
 
@@ -1366,7 +1710,7 @@ describe('T4.1/T4.2/T4.3 task WebSocket PostgreSQL integration', () => {
     await closeSocket(socket);
   });
 
-  it('rejects a wrong cancellation confirmation while CANCELING and fails safely on disconnect', async () => {
+  it('keeps CANCELING across disconnect and completes cancellation after recovery', async () => {
     const task = await createTask();
     const socket = openSocket();
     await waitForOpen(socket);
@@ -1390,14 +1734,95 @@ describe('T4.1/T4.2/T4.3 task WebSocket PostgreSQL integration', () => {
       BuildTaskStatus.CANCELING,
     );
     await closeSocket(socket);
-    await waitForTaskStatus(task.id, BuildTaskStatus.FAILED);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect((await prisma.buildTask.findUniqueOrThrow({ where: { id: task.id } })).status).toBe(
+      BuildTaskStatus.CANCELING,
+    );
+
+    const reconnected = openSocket();
+    await waitForOpen(reconnected);
+    const recovery = waitForMessage(reconnected, 'task.recovery');
+    await sendHello(reconnected, {
+      taskId: task.id,
+      leaseToken: assignment.payload.leaseToken,
+      status: 'PREPARING',
+      lastLogSequence: 0,
+    });
+    await expect(recovery).resolves.toMatchObject({
+      payload: { taskId: task.id, action: 'CANCEL', status: 'PREPARING' },
+    });
+    sendTaskCanceled(reconnected, task.id, assignment.payload.leaseToken);
+    await waitForTaskStatus(task.id, BuildTaskStatus.CANCELED);
     const history = await prisma.buildTaskStatusHistory.findMany({
       where: { taskId: task.id },
       select: { fromStatus: true, toStatus: true },
     });
     expect(taskTransitions(history)).toEqual(
-      expect.arrayContaining(['PREPARING->CANCELING', 'CANCELING->FAILED']),
+      expect.arrayContaining(['PREPARING->CANCELING', 'CANCELING->CANCELED']),
     );
+    expect(taskTransitions(history)).not.toContain('CANCELING->FAILED');
+    expect(history.filter((item) => item.toStatus === BuildTaskStatus.CANCELED)).toHaveLength(1);
+    await closeSocket(reconnected);
+  });
+
+  it('recovers an AGENT_LOST cancellation with CANCEL instead of resuming execution', async () => {
+    const firstSocket = openSocket();
+    await waitForOpen(firstSocket);
+    await sendHello(firstSocket);
+    const task = await createTask();
+    const assignment = await claimTask(firstSocket, task.id);
+    sendAccepted(firstSocket, task.id, assignment.payload.leaseToken);
+    await waitForTaskStatus(task.id, BuildTaskStatus.PREPARING);
+    const sourceCommit = 'e'.repeat(40);
+    sendPreparationStatus(firstSocket, task.id, assignment.payload.leaseToken, sourceCommit);
+    await waitForSourceCommit(task.id, sourceCommit);
+    sendTaskStatus(firstSocket, task.id, assignment.payload.leaseToken, 'RUNNING', sourceCommit);
+    await waitForTaskStatus(task.id, BuildTaskStatus.RUNNING);
+    await closeSocket(firstSocket);
+    await waitForTaskStatus(task.id, BuildTaskStatus.AGENT_LOST);
+
+    const cancel = await request(app.getHttpServer())
+      .post('/api/tasks/' + task.id + '/cancel')
+      .set('Authorization', 'Bearer ' + adminToken)
+      .send({ reason: 'cancel while agent was lost' });
+    expect(cancel.status).toBe(200);
+    expect(cancel.body.task.status).toBe(BuildTaskStatus.CANCELING);
+
+    const secondSocket = openSocket();
+    await waitForOpen(secondSocket);
+    const recovery = waitForMessage(secondSocket, 'task.recovery');
+    await sendHello(secondSocket, {
+      taskId: task.id,
+      leaseToken: assignment.payload.leaseToken,
+      status: 'RUNNING',
+      lastLogSequence: 0,
+    });
+    await expect(recovery).resolves.toMatchObject({
+      payload: { taskId: task.id, action: 'CANCEL', status: 'RUNNING' },
+    });
+    sendTaskCanceled(secondSocket, task.id, assignment.payload.leaseToken);
+    await waitForTaskStatus(task.id, BuildTaskStatus.CANCELED);
+
+    const history = await prisma.buildTaskStatusHistory.findMany({
+      where: { taskId: task.id },
+      select: { fromStatus: true, toStatus: true },
+    });
+    expect(taskTransitions(history)).toEqual(
+      expect.arrayContaining([
+        'RUNNING->AGENT_LOST',
+        'AGENT_LOST->CANCELING',
+        'CANCELING->CANCELED',
+      ]),
+    );
+    expect(taskTransitions(history)).not.toContain('AGENT_LOST->FAILED');
+    expect(history.filter((item) => item.toStatus === BuildTaskStatus.CANCELED)).toHaveLength(1);
+    expect(await prisma.buildTask.findUniqueOrThrow({ where: { id: task.id } })).toEqual(
+      expect.objectContaining({ leaseHash: null, leaseExpiresAt: null }),
+    );
+    expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toEqual(
+      expect.objectContaining({ activeTaskId: null }),
+    );
+    await closeSocket(secondSocket);
   });
 
   it('serializes cancellation with natural failure and records only one terminal outcome', async () => {

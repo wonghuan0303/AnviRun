@@ -280,7 +280,7 @@
 - Windows 使用 `cmd.exe /D /S /C`，Unix 使用 `/bin/sh -lc`，命令只来自 assignment 且配置不参与插值。
 - 有界并发捕获 stdout/stderr，处理 lossy UTF-8、每任务日志序号、退出码和超时。
 - 实现 `PREPARING`、`RUNNING`、`UPLOADING`、`FAILED` 生命周期上报；成功不发送 `task.completed`，不上传产物。
-- Server 统一校验状态、租约和执行槽；RUNNING/UPLOADING 断线按 `AGENT_LOST -> FAILED` 最小收尾。
+- Server 统一校验状态、租约和执行槽；T6.1 对 RUNNING/UPLOADING 等执行阶段断线先进入 `AGENT_LOST`，在恢复窗口内等待对账，超时再失败。
 
 **验收标准**
 
@@ -368,13 +368,17 @@
 
 #### T6.1 断线恢复与幂等性
 
+**当前状态：已完成（T6.1）**
+
 **实施内容**
 
 - Agent 重连上报当前 taskId、租约和最后日志序号。
 - Server/Agent 重启后的任务对账。
 - AGENT_LOST、5 分钟恢复窗口和超时失败。
-- Agent 在终态确认后清理；启动时安全清理已确认终态的残留目录。
+- Agent 在终态确认后清理；启动时仅安全清理已确认未持锁的合法 UUID 残留目录，无法判断时保留。
 - 为任务创建、claim、状态、日志、上传、完成和取消增加幂等测试。
+- Server 以 PostgreSQL 的 Agent 行锁、恢复字段和创建唯一幂等键作为单实例事实来源；不引入 Redis、队列或自动重试。
+- Agent 断线重连发送当前任务，Server 返回 `task.recovery`；终态事务提交后返回 `task.result.ack`，Agent 再清理本地任务。
 
 **验收标准**
 

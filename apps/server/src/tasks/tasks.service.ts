@@ -56,6 +56,9 @@ const TASK_SELECT = {
   finishedAt: true,
   cancelRequestedAt: true,
   leaseExpiresAt: true,
+  recoveryStatus: true,
+  agentLostAt: true,
+  recoveryDeadlineAt: true,
   logSize: true,
   artifactCount: true,
   artifactBytes: true,
@@ -144,6 +147,15 @@ function jsonInput(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
 }
 
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'P2002'
+  );
+}
+
 function projectConfigIssues(issues: readonly FormConfigIssue[]) {
   return issues.map((issue) => ({
     code: issue.code,
@@ -212,8 +224,21 @@ export class TasksService {
     actor: AuthenticatedRequestUser,
     projectId: string,
     requestId?: string,
+    creationIdempotencyKey?: string,
   ): Promise<{ task: TaskResponse }> {
     this.assertUuid(projectId);
+
+    if (creationIdempotencyKey) {
+      const existing = await this.prisma.buildTask.findFirst({
+        where: {
+          createdBy: actor.id,
+          projectId,
+          creationIdempotencyKey,
+        },
+        select: TASK_DETAIL_SELECT,
+      });
+      if (existing) return { task: toTaskResponse(existing) };
+    }
 
     const current = await this.projects.getProject(actor, projectId);
     if (!current.project.buildTemplate.enabled) {
@@ -224,57 +249,80 @@ export class TasksService {
     }
     await this.projects.assertProjectBuildable(actor, projectId);
 
-    const task = await this.prisma.$transaction(async (tx) => {
-      const project = await tx.project.findFirst({
-        where: this.authorization.projectScope(actor, { id: projectId }),
-        select: PROJECT_TASK_SELECT,
-      });
-      if (!project) throw new ApiException('RESOURCE_NOT_FOUND');
-      if (!project.buildTemplate.enabled) {
-        throw new ApiException('BUILD_TEMPLATE_INVALID', { message: '构建模板已停用' });
-      }
-      if (!project.buildTemplate.agent.enabled) throw new ApiException('AGENT_DISABLED');
+    let task: TaskDetailView;
+    try {
+      task = await this.prisma.$transaction(async (tx) => {
+        if (creationIdempotencyKey) {
+          const existing = await tx.buildTask.findFirst({
+            where: {
+              createdBy: actor.id,
+              projectId,
+              creationIdempotencyKey,
+            },
+            select: TASK_DETAIL_SELECT,
+          });
+          if (existing) return existing;
+        }
+        const project = await tx.project.findFirst({
+          where: this.authorization.projectScope(actor, { id: projectId }),
+          select: PROJECT_TASK_SELECT,
+        });
+        if (!project) throw new ApiException('RESOURCE_NOT_FOUND');
+        if (!project.buildTemplate.enabled) {
+          throw new ApiException('BUILD_TEMPLATE_INVALID', { message: '构建模板已停用' });
+        }
+        if (!project.buildTemplate.agent.enabled) throw new ApiException('AGENT_DISABLED');
 
-      const schema = validSchema(project.buildTemplate.formSchema);
-      const config = validateFormConfigValues(schema, project.config);
-      if (!config.ok) throw invalidConfig(config.issues);
+        const schema = validSchema(project.buildTemplate.formSchema);
+        const config = validateFormConfigValues(schema, project.config);
+        if (!config.ok) throw invalidConfig(config.issues);
 
-      const queued = this.registry.isReady(project.buildTemplate.agent.id);
-      const initialStatus = queued ? BuildTaskStatus.QUEUED : BuildTaskStatus.WAITING_AGENT;
-      const statusReason = queued
-        ? 'Waiting for Agent to claim task'
-        : 'Waiting for Agent to connect';
-      const created = await tx.buildTask.create({
-        data: {
-          projectId: project.id,
-          buildTemplateId: project.buildTemplateId,
-          agentId: project.buildTemplate.agent.id,
-          createdBy: actor.id,
-          status: BuildTaskStatus.CREATED,
-          statusReason: null,
-          branch: project.branch,
-          config: jsonInput(config.value),
-          queuedAt: queued ? new Date() : null,
-        },
-        select: { id: true },
+        const queued = this.registry.isReady(project.buildTemplate.agent.id);
+        const initialStatus = queued ? BuildTaskStatus.QUEUED : BuildTaskStatus.WAITING_AGENT;
+        const statusReason = queued
+          ? 'Waiting for Agent to claim task'
+          : 'Waiting for Agent to connect';
+        const created = await tx.buildTask.create({
+          data: {
+            projectId: project.id,
+            buildTemplateId: project.buildTemplateId,
+            agentId: project.buildTemplate.agent.id,
+            createdBy: actor.id,
+            status: BuildTaskStatus.CREATED,
+            statusReason: null,
+            branch: project.branch,
+            config: jsonInput(config.value),
+            creationIdempotencyKey: creationIdempotencyKey ?? null,
+            queuedAt: queued ? new Date() : null,
+          },
+          select: { id: true },
+        });
+        await this.state.createInitial(tx, created.id, initialStatus, 'SERVER', statusReason);
+        await this.audit.record(
+          {
+            actorId: actor.id,
+            action: 'TASK_CREATED',
+            resourceType: 'BuildTask',
+            resourceId: created.id,
+            requestId,
+            metadata: { projectId: project.id, buildTemplateId: project.buildTemplateId },
+          },
+          tx,
+        );
+        return tx.buildTask.findUniqueOrThrow({
+          select: TASK_DETAIL_SELECT,
+          where: { id: created.id },
+        });
       });
-      await this.state.createInitial(tx, created.id, initialStatus, 'SERVER', statusReason);
-      await this.audit.record(
-        {
-          actorId: actor.id,
-          action: 'TASK_CREATED',
-          resourceType: 'BuildTask',
-          resourceId: created.id,
-          requestId,
-          metadata: { projectId: project.id, buildTemplateId: project.buildTemplateId },
-        },
-        tx,
-      );
-      return tx.buildTask.findUniqueOrThrow({
+    } catch (error) {
+      if (!creationIdempotencyKey || !isUniqueViolation(error)) throw error;
+      const existing = await this.prisma.buildTask.findFirst({
+        where: { createdBy: actor.id, projectId, creationIdempotencyKey },
         select: TASK_DETAIL_SELECT,
-        where: { id: created.id },
       });
-    });
+      if (!existing) throw error;
+      task = existing;
+    }
 
     if (task.agentId) await this.queue.notifyAvailable(task.agentId);
     return { task: toTaskResponse(task) };
@@ -334,6 +382,7 @@ export class TasksService {
     actor: AuthenticatedRequestUser,
     taskId: string,
     requestId?: string,
+    creationIdempotencyKey?: string,
   ): Promise<{ task: TaskResponse }> {
     this.assertUuid(taskId);
     const previous = await this.prisma.buildTask.findFirst({
@@ -341,7 +390,7 @@ export class TasksService {
       select: { projectId: true },
     });
     if (!previous) throw new ApiException('RESOURCE_NOT_FOUND');
-    return this.createTask(actor, previous.projectId, requestId);
+    return this.createTask(actor, previous.projectId, requestId, creationIdempotencyKey);
   }
 
   private assertUuid(value: string): void {

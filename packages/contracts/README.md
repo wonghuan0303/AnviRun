@@ -52,6 +52,8 @@ Rust crate `agent/crates/build-agent-contracts` 通过 `src/lib_t02.rs` 中的 S
 
 Agent 到 Server 的 `task.log` 携带任务租约、每任务连续序号、流向和 UTF-8 分片；分片最大字节数由 `TASK_LOG_CHUNK_MAX_BYTES` 约束。Server 成功追加后发送 `task.log.ack`，ACK 只确认已持久化的连续序号和文件偏移；重复序号可安全重试，跳号不会被写入。Agent 端可使用有界本地缓冲支持短暂断线回放。
 
+T6.1 增加 Server 到 Agent 的 `task.recovery` 和 `task.result.ack`：重连 hello 中的 `currentTask` 只描述当前本地执行阶段，Server 在单实例数据库锁和恢复窗口内裁决 RESUME、CANCEL 或 ABANDON；CANCELING 任务只接受 CANCEL 清理裁决，不恢复执行。终态确认必须匹配任务和终态后才能清理本地工作区。创建接口的 `Idempotency-Key` 由 Server 持久化约束，避免请求重试创建重复任务。
+
 浏览器日志订阅不是 Agent 协议：客户端先在 `/ws/client` 发送 access token 认证，再发送任务和 offset 订阅。Server 通过现有任务所有权服务授权，历史和实时 payload 均不携带租约哈希、令牌或配置秘密。
 
 ## 项目配置值校验

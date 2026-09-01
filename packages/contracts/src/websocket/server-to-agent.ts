@@ -11,6 +11,7 @@
  */
 
 import type { FormConfigValues } from '../form-schema/values';
+import type { AgentReportableTaskStatus, TerminalTaskStatus } from '../task/task-status';
 import type { IsoDateTimeString, ProtocolEnvelope } from './protocol';
 import type { ServerToAgentMessageType } from './message-types';
 
@@ -49,6 +50,26 @@ export interface TaskArtifactManifestAckPayload {
   readonly accepted: boolean;
   readonly artifactCount: number;
   readonly artifactBytes: number;
+}
+
+/** Server 对 Agent 重连时上报的本地任务作出的恢复裁决。 */
+export interface TaskRecoveryPayload {
+  readonly taskId: string;
+  readonly action: 'RESUME' | 'CANCEL' | 'ABANDON';
+  /** RESUME/CANCEL 时的原执行阶段。 */
+  readonly status?: AgentReportableTaskStatus;
+  /** Server 已持久化并确认的最高日志序号。 */
+  readonly acknowledgedLogSequence: number;
+  readonly recoveryDeadlineAt?: IsoDateTimeString;
+  /** ABANDON 时的非敏感说明。 */
+  readonly reason?: string;
+}
+
+/** Server 事务提交终态后发给 Agent 的确认。 */
+export interface TaskResultAckPayload {
+  readonly taskId: string;
+  readonly status: TerminalTaskStatus;
+  readonly acknowledgedAt: IsoDateTimeString;
 }
 
 /** 任务需要拉取的 Git 仓库信息。**不包含任何凭据。** */
@@ -125,6 +146,8 @@ export interface ServerToAgentPayloadMap extends Record<ServerToAgentMessageType
   'task.available': TaskAvailablePayload;
   'task.log.ack': TaskLogAckPayload;
   'task.artifact-manifest-ack': TaskArtifactManifestAckPayload;
+  'task.recovery': TaskRecoveryPayload;
+  'task.result.ack': TaskResultAckPayload;
   'task.assignment': TaskAssignmentPayload;
   'task.cancel': TaskCancelPayload;
   'agent.token.revoked': AgentTokenRevokedPayload;
@@ -142,6 +165,8 @@ export type AgentRegisteredMessage = ServerToAgentMessageOf<'agent.registered'>;
 export type TaskAvailableMessage = ServerToAgentMessageOf<'task.available'>;
 export type TaskLogAckMessage = ServerToAgentMessageOf<'task.log.ack'>;
 export type TaskArtifactManifestAckMessage = ServerToAgentMessageOf<'task.artifact-manifest-ack'>;
+export type TaskRecoveryMessage = ServerToAgentMessageOf<'task.recovery'>;
+export type TaskResultAckMessage = ServerToAgentMessageOf<'task.result.ack'>;
 /** 任务派发消息。 */
 export type TaskAssignmentMessage = ServerToAgentMessageOf<'task.assignment'>;
 /** 任务取消消息。 */
@@ -155,6 +180,8 @@ export type ServerToAgentMessage =
   | TaskAvailableMessage
   | TaskLogAckMessage
   | TaskArtifactManifestAckMessage
+  | TaskRecoveryMessage
+  | TaskResultAckMessage
   | TaskAssignmentMessage
   | TaskCancelMessage
   | AgentTokenRevokedMessage;

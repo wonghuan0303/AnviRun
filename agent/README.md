@@ -58,7 +58,7 @@ T5.1 日志链路：每个任务的 stdout/stderr 日志按 UTF-8 NDJSON 分片�
 
 准备成功后按顺序发送 `PREPARING` 和 `RUNNING`。命令工作目录是 source，Windows 使用 `cmd.exe /D /S /C <command>`，Unix 使用 `/bin/sh -lc <command>`。stdout/stderr 并发读取，每个分片最多 4 KiB，采用 lossy UTF-8 和每任务从 1 开始的单调序号；日志先写入每任务有界 NDJSON 缓冲，再发送 `task.log`，Server 持久化成功后以 `task.log.ack` 确认。断线恢复时同一进程从未确认序号继续回放；缓冲上限由 `log_buffer_max_bytes` 控制。命令预算取模板 timeout 与“租约剩余时间减去最终状态上报余量”的较小值；直接 Shell 超时会主动取消两个 reader，正常退出后的管道排空也有有限宽限期。超时、启动失败、输出读取失败或非零退出都会发送 `task.failed` 并清理任务工作区。退出码为 0 时发送 `UPLOADING`，扫描 artifactDir 生成清单，收到 Server ACK 后按文件流式上传；全部上传成功才发送 `task.completed`。
 
-断线、token 撤销或进程退出会终止当前任务进程树、关闭输出读取任务并清理工作区；Server 会对执行中的失联任务做最小失败收尾。完整断线恢复对账和恢复窗口仍留给后续 T6。
+普通 WebSocket 短断线不会终止当前任务：Agent 保留 ActiveTask、工作区、执行句柄和未确认日志，并在重连 hello 中上报当前阶段、租约和最后确认日志序号，由 Server 在 5 分钟恢复窗口内裁决是否继续。每个任务工作区持有跨平台活动锁；Agent 重启时只清理确认未持锁的合法 UUID 残留目录，无法判断锁状态时保留。token 撤销、显式关闭或本地真实失败仍终止进程树并清理工作区；Agent 进程重启因失去内存执行上下文不会重跑旧任务，Server 对账后将其明确失败。
 
 ## 手工 Git smoke
 
@@ -66,7 +66,7 @@ T5.1 日志链路：每个任务的 stdout/stderr 日志按 UTF-8 NDJSON 分片�
 
 收到 task.cancel 后，Agent 仅接受与当前任务和租约完全匹配的请求。准备阶段会向 Git 操作发送取消信号，并等待 Windows Job Object 或 Unix 进程组确认终止；执行阶段同样终止整个任务进程树，Unix 先发送 SIGTERM，短暂宽限后发送 SIGKILL。停止后显式清理并检查任务工作区，再回传 task.canceled；清理失败仅回传不含敏感值的结构化 `TASK_CANCEL_CLEANUP_FAILED` task.failed。
 
-取消、超时、连接断开、token 撤销和优雅退出共用进程终止路径，输出 reader 的停止不会被误报为 COMMAND_OUTPUT_FAILED。取消期间保持心跳且不领取新任务；Server 等待固定取消确认期限，未确认时关闭连接并以失败收尾，避免 CANCELING 永久占用执行槽。任务日志缓冲仍按既有 T5.1 规则保留。完整断线恢复、租约对账和恢复窗口属于后续 T6。
+取消、超时、token 撤销和优雅退出共用进程终止路径，输出 reader 的停止不会被误报为 COMMAND_OUTPUT_FAILED；普通 WebSocket 短断线则保留任务等待 T6.1 对账。取消期间保持心跳且不领取新任务；Server 等待固定取消确认期限，未确认时关闭连接并以失败收尾，避免 CANCELING 永久占用执行槽。任务日志缓冲仍按既有 T5.1 规则保留。
 
 准备一个本地 Git 仓库后，在配置的 Server 和 Agent 环境中创建指向该仓库的构建模板与项目，连接 Agent，观察 `task.claim`、`task.accepted` 和带 `sourceCommit` 的 `task.status`。手工验证命令示例：
 
@@ -89,4 +89,4 @@ cargo test --all-features
 cargo build
 ```
 
-当前 T4.3 已实现 platform.config.json、跨平台构建命令和 `RUNNING`/`UPLOADING`/`FAILED` 生命周期上报；T5.1 已实现有界磁盘日志缓冲、连续序号、Server ACK、同进程短暂断线回放、文件持久化和浏览器订阅；T5.3 已实现 artifactDir 扫描、清单 ACK、流式上传和 `SUCCEEDED` 闭环。任务详情页面与更完整的断线恢复属于后续 T5.4/T6。
+当前 T4.3 已实现 platform.config.json、跨平台构建命令和 `RUNNING`/`UPLOADING`/`FAILED` 生命周期上报；T5.1 已实现有界磁盘日志缓冲、连续序号、Server ACK、同进程短暂断线回放、文件持久化和浏览器订阅；T5.3 已实现 artifactDir 扫描、清单 ACK、流式上传和 `SUCCEEDED` 闭环；T6.1 已补充短断线恢复、终态 ACK 和任务创建幂等。T6.2 及更后续阶段仍未实现。

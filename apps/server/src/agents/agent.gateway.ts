@@ -1,4 +1,4 @@
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, Server as HttpServer } from 'node:http';
 import type { Socket } from 'node:net';
 import { Injectable, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
@@ -10,7 +10,6 @@ import {
   validateProtocolMessage,
 } from '@buildplatform/contracts';
 import type {
-  AgentCurrentTask,
   AgentHeartbeatMessage,
   AgentHelloMessage,
   AgentRegisteredMessage,
@@ -24,6 +23,8 @@ import type {
   TaskFailedMessage,
   TaskLogMessage,
   TaskStatusMessage,
+  TaskRecoveryMessage,
+  TaskResultAckMessage,
 } from '@buildplatform/contracts';
 import { AgentStatus, BuildTaskStatus } from '@prisma/client';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
@@ -40,6 +41,7 @@ interface ConnectionState {
   readonly agentId: string;
   helloReceived: boolean;
   lastHeartbeatAt: number;
+  messageQueue: Promise<void>;
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -116,6 +118,40 @@ function revokedMessage(agentId: string, reason: string): AgentTokenRevokedMessa
       revokedAt: new Date().toISOString(),
       reason,
     },
+  };
+}
+
+function recoveryMessage(
+  decision: import('../tasks/task-queue.service').AgentRecoveryDecision,
+): TaskRecoveryMessage {
+  return {
+    id: randomUUID(),
+    type: 'task.recovery',
+    timestamp: new Date().toISOString(),
+    protocolVersion: PROTOCOL_VERSION,
+    payload: {
+      taskId: decision.taskId,
+      action: decision.action,
+      acknowledgedLogSequence: decision.acknowledgedLogSequence,
+      ...(decision.status === undefined ? {} : { status: decision.status }),
+      ...(decision.recoveryDeadlineAt === undefined
+        ? {}
+        : { recoveryDeadlineAt: decision.recoveryDeadlineAt }),
+      ...(decision.reason === undefined ? {} : { reason: decision.reason }),
+    },
+  };
+}
+
+function resultAckMessage(
+  taskId: string,
+  status: TaskResultAckMessage['payload']['status'],
+): TaskResultAckMessage {
+  return {
+    id: randomUUID(),
+    type: 'task.result.ack',
+    timestamp: new Date().toISOString(),
+    protocolVersion: PROTOCOL_VERSION,
+    payload: { taskId, status, acknowledgedAt: new Date().toISOString() },
   };
 }
 
@@ -247,16 +283,36 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
       agentId: agent.id,
       helloReceived: false,
       lastHeartbeatAt: Date.now(),
+      messageQueue: Promise.resolve(),
     };
     this.states.set(socket, state);
-    socket.on('message', (raw) => void this.handleMessage(socket, raw));
+    socket.on('message', (raw) => {
+      const next = state.messageQueue
+        .then(async () => {
+          // A replacement connection owns the Agent row as soon as it is
+          // registered. Do not let messages already queued on the old socket
+          // mutate that new connection's task state.
+          if (this.states.get(socket) !== state) return;
+          await this.handleMessage(socket, raw, state);
+        })
+        .catch(() => {
+          if (this.states.get(socket) === state) {
+            safeClose(socket, 1011, 'message processing failed');
+          }
+        });
+      state.messageQueue = next;
+    });
     socket.on('close', () => void this.handleClose(socket, state.agentId).catch(() => undefined));
     socket.on('error', () => undefined);
   }
 
-  private async handleMessage(socket: WebSocket, raw: RawData): Promise<void> {
+  private async handleMessage(
+    socket: WebSocket,
+    raw: RawData,
+    expectedState: ConnectionState,
+  ): Promise<void> {
     const state = this.states.get(socket);
-    if (!state) return;
+    if (!state || state !== expectedState) return;
     let input: unknown;
     try {
       input = JSON.parse(messageText(raw)) as unknown;
@@ -363,8 +419,14 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
             result.value as TaskCompletedMessage,
           );
           await this.taskQueue()?.onTaskCompleted(state.agentId, completed.taskId);
+          this.send(socket, resultAckMessage(completed.taskId, 'SUCCEEDED'));
+          await this.taskQueue()?.onAgentReady(state.agentId);
         } catch (error) {
           if (error instanceof ApiException) {
+            await this.taskQueue()?.failRejectedCompletion(
+              state.agentId,
+              result.value as TaskCompletedMessage,
+            );
             safeClose(socket, 1011, 'task completion rejected');
             return;
           }
@@ -378,9 +440,20 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
         const queue = this.taskQueue();
         if (!queue) return;
         try {
-          await queue.reportPreparationFailure(state.agentId, result.value as TaskFailedMessage);
+          const failed = await queue.reportPreparationFailure(
+            state.agentId,
+            result.value as TaskFailedMessage,
+          );
+          this.send(socket, resultAckMessage(result.value.payload.taskId, failed));
+          await queue.onAgentReady(state.agentId);
         } catch (error) {
-          if (!(error instanceof ApiException)) throw error;
+          if (error instanceof ApiException) {
+            // Invalid/stale failure reports must not turn a still-valid
+            // execution lease into a disconnect. A matching report can still
+            // arrive; the lease/recovery scanners handle an absent report.
+            return;
+          }
+          throw error;
         }
       } else if (result.value.type === 'task.canceled') {
         if (!state.helloReceived) {
@@ -390,9 +463,21 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
         const queue = this.taskQueue();
         if (!queue) return;
         try {
-          await queue.reportTaskCanceled(state.agentId, result.value as TaskCanceledMessage);
+          const canceled = await queue.reportTaskCanceled(
+            state.agentId,
+            result.value as TaskCanceledMessage,
+          );
+          this.send(socket, resultAckMessage(result.value.payload.taskId, canceled));
+          await queue.onAgentReady(state.agentId);
         } catch (error) {
-          if (!(error instanceof ApiException)) throw error;
+          if (error instanceof ApiException) {
+            // A stale or malformed cancellation confirmation must not tear
+            // down the live lease. The Agent can still deliver the valid
+            // confirmation, and the normal cancellation timeout remains the
+            // recovery path if it never does.
+            return;
+          }
+          throw error;
         }
       } else {
         safeClose(socket, 1008, 'unsupported protocol message');
@@ -433,7 +518,12 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
       await this.rejectConnection(socket, state.agentId, 'agent disabled');
       return;
     }
-    const activeTaskId = await this.validHelloTask(state.agentId, payload.currentTask);
+    const queue = this.taskQueue();
+    if (!queue) {
+      safeClose(socket, 1011, 'task recovery service unavailable');
+      return;
+    }
+    const recovery = await queue.reconcileAgentHello(state.agentId, payload.currentTask);
     const updated = await this.prisma.agent.updateMany({
       where: { id: state.agentId, enabled: true },
       data: {
@@ -443,7 +533,8 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
         version: payload.agentVersion,
         lastSeenAt: new Date(),
         status: AgentStatus.ONLINE,
-        ...(activeTaskId ? { activeTaskId } : {}),
+        activeTaskId:
+          recovery?.action === 'RESUME' || recovery?.action === 'CANCEL' ? recovery.taskId : null,
       },
     });
     if (updated.count !== 1) {
@@ -454,7 +545,8 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
     state.lastHeartbeatAt = Date.now();
     this.registry.markReady(state.agentId, socket);
     this.send(socket, registeredMessage(state.agentId, agent.name));
-    await this.taskQueue()?.onAgentReady(state.agentId);
+    if (recovery) this.send(socket, recoveryMessage(recovery));
+    await queue.onAgentReady(state.agentId);
   }
 
   private async handleHeartbeat(
@@ -483,32 +575,6 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
       return;
     }
     state.lastHeartbeatAt = Date.now();
-  }
-
-  private async validHelloTask(
-    agentId: string,
-    currentTask: AgentCurrentTask | null | undefined,
-  ): Promise<string | null> {
-    if (!currentTask || !UUID_PATTERN.test(currentTask.taskId)) return null;
-    const agent = await this.prisma.agent.findUnique({
-      where: { id: agentId },
-      select: { activeTaskId: true },
-    });
-    if (agent?.activeTaskId !== currentTask.taskId) return null;
-    const task = await this.prisma.buildTask.findFirst({
-      where: {
-        id: currentTask.taskId,
-        agentId,
-        status: { in: [...ACTIVE_CONNECTION_TASK_STATUSES] },
-      },
-      select: { id: true, leaseHash: true, leaseExpiresAt: true },
-    });
-    if (!task?.leaseHash || !task.leaseExpiresAt || task.leaseExpiresAt.getTime() <= Date.now()) {
-      return null;
-    }
-    const actual = Buffer.from(createHash('sha256').update(currentTask.leaseToken).digest('hex'));
-    const expected = Buffer.from(task.leaseHash);
-    return actual.length === expected.length && timingSafeEqual(actual, expected) ? task.id : null;
   }
 
   private async validHeartbeatTask(agentId: string, taskId: string | null): Promise<string | null> {

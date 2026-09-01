@@ -119,10 +119,12 @@ T3.3 不包含 Web 项目页面、构建任务创建、Git 访问、Agent 派发
 `AccessTokenGuard -> OwnershipGuard`。用户只能创建和查看自己项目下的任务；ADMIN 可访问所有未软删除项目，跨用户、非法 UUID、已删除或不存在资源统一返回 `404 RESOURCE_NOT_FOUND`。
 
 - `POST /api/projects/:projectId/tasks` 创建任务；服务端复制项目当前 branch/config，并记录当前模板、Agent 和创建者，不接受客户端 ownerId、模板或配置覆盖。
+- 创建接口支持 `Idempotency-Key` 请求头；同一用户、项目和幂等键在 PostgreSQL 中只对应一条任务，Web 创建/重建请求会自动携带该键。
 - `GET /api/projects/:projectId/tasks?page=&pageSize=&status=` 分页查询项目任务；`GET /api/tasks/:taskId` 返回安全详情和按时间排序的状态历史。
 - 创建前校验模板和 Agent 均启用、项目配置对模板当前 Schema 兼容；Agent 无可用连接时进入 `WAITING_AGENT`，Agent 已完成 WebSocket hello 时进入 `QUEUED`。
 - Agent hello 后会将该 Agent 的等待任务转为 `QUEUED` 并发送 `task.available`。`task.claim` 在 PostgreSQL 事务中先锁定 Agent 行，再按 `createdAt,id` FIFO 领取，写入派发租约并设置 `activeTaskId`；部分唯一索引和同一锁顺序保证一个 Agent 同时最多一个活动任务。
 - 租约明文只在 `task.assignment` 中短暂发送，数据库只保存 SHA-256 哈希和过期时间。Agent 以 `task.accepted` 确认后任务进入 `PREPARING`；未确认的 `DISPATCHED` 超过 30 秒会被回收至 `QUEUED` 或 `WAITING_AGENT`。Server 重启后队列、租约状态和历史仍以 PostgreSQL 为准。
+- T6.1 中 Agent 的普通短断线会使执行中任务进入 `AGENT_LOST`，保留租约和 `activeTaskId`，重连 hello 经数据库锁定后由 `task.recovery` 决定 RESUME、CANCEL 或 ABANDON；CANCELING 任务保持取消确认窗口，重连只执行 CANCEL 清理，不恢复命令。恢复窗口默认 300 秒，超时转 FAILED。终态事务完成后通过 `task.result.ack` 明确确认，重复终态上报不重复写历史。
 
 T4.1 只实现创建、查询、状态历史、Agent 可用通知、领取确认、租约和派发超时回收；任务执行、完成/失败上报、日志、产物和取消留给后续阶段。
 
@@ -152,7 +154,7 @@ Agent 在任务进入 `UPLOADING` 后先通过 WebSocket 发送 `task.artifact-m
 
 任务详情、日志和产物接口都先执行 `AccessTokenGuard`，再执行 `OwnershipGuard`；USER 只能访问自己 `Project.ownerId` 下的任务，ADMIN 可访问所有未软删除项目。跨用户、非法 UUID、不存在和已软删除资源统一返回 `404 RESOURCE_NOT_FOUND`。任务响应只返回安全的项目、模板、Agent 和用户摘要，`leaseHash`、`storagePath`、Agent token、`passwordHash` 和 `tokenVersion` 不对外暴露。
 
-T5.4 不实现 T6 的断线恢复、租约对账和 Agent 重启恢复，也不提供自动重试或日志搜索。
+T5.4 页面接口不承载 T6.1 的断线恢复协议；Server/Agent 已在 T6.1 支持短断线租约对账和 Agent 重启孤立任务失败。系统不提供自动重试或日志搜索。
 
 ### T5.1 任务日志
 
@@ -162,7 +164,7 @@ T5.4 不实现 T6 的断线恢复、租约对账和 Agent 重启恢复，也不�
 
 排队任务在同一事务中经由 CREATED/WAITING_AGENT/QUEUED -> CANCELING -> CANCELED 收尾；已派发或执行中的任务先锁定 Agent 行并进入 CANCELING，Server 使用进程内短暂保存的明文租约发送 task.cancel，只接受匹配 Agent、taskId、activeTaskId 和租约的 task.canceled 回执。租约明文不写入数据库、日志或 API 响应。
 
-取消完成会清除任务租约、Agent.activeTaskId 和 finishedAt，并保留任务日志租约；重复回执幂等，普通状态上报不能逆转 CANCELING，但在 Agent、任务、活动租约和 leaseToken 均校验通过时，普通 task.failed 可将 CANCELING 收尾为 FAILED。Agent 断线、task.cancel 未送达或超时未确认时，Server 以 CANCELING -> FAILED 做最小收尾，避免执行槽永久占用。Rust Agent 使用 Windows Job Object 或 Unix 进程组终止任务进程树，确认工作区清理成功后发送 task.canceled；完整恢复对账仍不属于本阶段。
+取消完成会清除任务租约、Agent.activeTaskId 和 finishedAt，并保留任务日志租约；重复回执幂等，普通状态上报不能逆转 CANCELING，但在 Agent、任务、活动租约和 leaseToken 均校验通过时，普通 task.failed 可将 CANCELING 收尾为 FAILED。Agent 断线时 CANCELING 保留租约和执行槽，重连由 `task.recovery(CANCEL)` 要求 Agent 清理；task.cancel 未送达或超时未确认时，Server 在固定确认窗口后以 CANCELING -> FAILED 做最小收尾并断开 Agent，避免执行槽永久占用。Rust Agent 使用 Windows Job Object 或 Unix 进程组终止任务进程树，确认工作区清理成功后发送 task.canceled；完整恢复对账仍不属于本阶段。
 
 Agent 的 `task.log` 由 `/ws/agent` 接收并按任务追加到文件型 NDJSON 日志，文件路径为 `<TASK_LOG_ROOT>/<taskId 前两位>/<taskId>.ndjson`。PostgreSQL 只保存 `lastLogSequence`、`logSize`、短期日志租约和敏感键快照，不保存日志正文。重复序号会返回当前 ACK，乱序序号不会写入；成功追加后 Server 返回 `task.log.ack`，其中包含连续序号和持久化偏移。
 

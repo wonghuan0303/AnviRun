@@ -3,6 +3,7 @@ import { AgentStatus, BuildTaskStatus, Prisma } from '@prisma/client';
 import {
   listSensitiveFormFieldNames,
   PROTOCOL_VERSION,
+  TASK_LEASE_RECOVERY_WINDOW_SECONDS,
   validateFormConfigValues,
   validateFormSchema,
   validateProtocolMessage,
@@ -11,15 +12,19 @@ import {
   type TaskAvailableMessage,
   type TaskCancelMessage,
   type TaskCanceledMessage,
+  type TaskCompletedMessage,
   type TaskFailedMessage,
   type TaskStatusMessage,
+  type AgentCurrentTask,
+  type AgentReportableTaskStatus,
 } from '@buildplatform/contracts';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 
 import { ApiException } from '../common/api-exception';
 import { PrismaService } from '../database/prisma.service';
 import { lockAgentExecutionSlot } from '../database/execution-slot';
 import { AgentConnectionRegistry } from '../agents/agent-connection.registry';
+import { TaskLogStorageService } from '../task-logs/task-log-storage.service';
 import { TaskLeaseService } from './task-lease.service';
 import { TaskStateService } from './task-state.service';
 
@@ -63,6 +68,25 @@ type ClaimResult = TaskAssignmentMessage | null;
 interface StoredClaimResult {
   readonly result: ClaimResult;
   readonly expiresAt: number;
+}
+
+export interface AgentRecoveryDecision {
+  readonly taskId: string;
+  readonly action: 'RESUME' | 'CANCEL' | 'ABANDON';
+  readonly status?: AgentReportableTaskStatus;
+  readonly acknowledgedLogSequence: number;
+  readonly recoveryDeadlineAt?: string;
+  readonly reason?: string;
+}
+
+const AGENT_EXECUTION_PHASES = [
+  BuildTaskStatus.PREPARING,
+  BuildTaskStatus.RUNNING,
+  BuildTaskStatus.UPLOADING,
+] as const;
+
+function isAgentExecutionPhase(value: BuildTaskStatus | null): value is AgentReportableTaskStatus {
+  return AGENT_EXECUTION_PHASES.includes(value as (typeof AGENT_EXECUTION_PHASES)[number]);
 }
 
 function safeAgentReason(value: string): string {
@@ -110,9 +134,16 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
     private readonly registry: AgentConnectionRegistry,
     private readonly state: TaskStateService,
     private readonly leases: TaskLeaseService,
+    private readonly logStorage: TaskLogStorageService,
   ) {}
 
-  onModuleInit(): void {
+  async onModuleInit(): Promise<void> {
+    try {
+      await this.reconcileInterruptedTasks();
+    } catch {
+      // A startup reconciliation failure must not prevent the queue from
+      // serving; the periodic scanner will retry the same durable state.
+    }
     this.scanTimer = setInterval(
       () => void this.reclaimTimedOutDispatches().catch(() => undefined),
       QUEUE_SCAN_INTERVAL_MS,
@@ -140,13 +171,16 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
   /** 清理完成任务在单进程内的明文租约，并唤醒同一 Agent 的后续队列。 */
   async onTaskCompleted(agentId: string, taskId: string): Promise<void> {
     this.activeLeaseTokens.delete(taskId);
-    await this.notifyAvailable(agentId);
+    await this.onAgentReady(agentId);
   }
 
   async onAgentReady(agentId: string): Promise<void> {
     const ready = await this.prisma.$transaction(async (tx) => {
       const agent = await this.lockAgent(tx, agentId);
       if (!agent || !agent.enabled || agent.status !== AgentStatus.ONLINE) return false;
+      // A recovered task keeps the execution slot until its terminal report is
+      // acknowledged. Do not wake a second task for the same Agent.
+      if (agent.activeTaskId !== null) return false;
 
       const waiting = await tx.buildTask.findMany({
         where: { agentId, status: BuildTaskStatus.WAITING_AGENT },
@@ -191,14 +225,20 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
     // Use one transaction per task so a malformed task cannot roll back recovery of its siblings.
     for (const task of pending) {
       try {
-        await this.prisma.$transaction(async (tx) => {
+        const preservedForRecovery = await this.prisma.$transaction(async (tx) => {
           const agent = await this.lockAgent(tx, agentId);
-          if (!agent) return;
+          if (!agent) return false;
           const current = await tx.buildTask.findUnique({
             where: { id: task.id },
-            select: { id: true, agentId: true, status: true, startedAt: true },
+            select: {
+              id: true,
+              agentId: true,
+              status: true,
+              startedAt: true,
+              leaseExpiresAt: true,
+            },
           });
-          if (!current || current.agentId !== agentId) return;
+          if (!current || current.agentId !== agentId) return false;
           if (current.status === BuildTaskStatus.QUEUED) {
             await this.state.transition(
               tx,
@@ -207,7 +247,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
               'SYSTEM',
               'Agent disconnected while task was queued',
             );
-            return;
+            return false;
           }
           if (
             current.status === BuildTaskStatus.DISPATCHED &&
@@ -220,33 +260,23 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
               'Agent disconnected before accepting task assignment',
             );
             await tx.agent.update({ where: { id: agentId }, data: { activeTaskId: null } });
-            return;
+            return false;
           }
 
           if (
             (current.status === BuildTaskStatus.PREPARING ||
               current.status === BuildTaskStatus.RUNNING ||
-              current.status === BuildTaskStatus.UPLOADING ||
-              current.status === BuildTaskStatus.CANCELING) &&
+              current.status === BuildTaskStatus.UPLOADING) &&
             agent.activeTaskId === current.id
           ) {
-            if (current.status === BuildTaskStatus.CANCELING) {
-              await this.state.transition(
-                tx,
-                current.id,
-                BuildTaskStatus.FAILED,
-                'SYSTEM',
-                'Agent disconnected before task cancellation was confirmed',
-                {
-                  leaseHash: null,
-                  leaseExpiresAt: null,
-                  finishedAt: new Date(),
-                },
-              );
-              await tx.agent.update({ where: { id: agentId }, data: { activeTaskId: null } });
-              return;
-            }
             const phase = current.status.toLowerCase();
+            const now = new Date();
+            const recoveryDeadlineAt = new Date(
+              Math.min(
+                now.getTime() + TASK_LEASE_RECOVERY_WINDOW_SECONDS * 1_000,
+                current.leaseExpiresAt?.getTime() ?? Number.MAX_SAFE_INTEGER,
+              ),
+            );
             await this.state.transition(
               tx,
               current.id,
@@ -254,28 +284,340 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
               'SYSTEM',
               `Agent disconnected while task was ${phase}`,
               {
-                leaseHash: null,
-                leaseExpiresAt: null,
+                recoveryStatus: current.status,
+                agentLostAt: now,
+                recoveryDeadlineAt,
               },
             );
-            await this.state.transition(
-              tx,
-              current.id,
-              BuildTaskStatus.FAILED,
-              'SYSTEM',
-              `Agent ${phase} was interrupted after disconnect`,
-              {
-                leaseHash: null,
-                leaseExpiresAt: null,
-                finishedAt: new Date(),
-              },
-            );
-            await tx.agent.update({ where: { id: agentId }, data: { activeTaskId: null } });
+            return true;
           }
+          if (current.status === BuildTaskStatus.CANCELING && agent.activeTaskId === current.id) {
+            // Keep the lease and execution slot during the cancellation
+            // confirmation window. A reconnect will receive a CANCEL
+            // recovery decision; the timeout scanner is the durable fallback.
+            return true;
+          }
+          return false;
         });
-        this.activeLeaseTokens.delete(task.id);
+        if (!preservedForRecovery) this.activeLeaseTokens.delete(task.id);
       } catch {
         // Continue recovering other queued tasks even if this task has inconsistent state.
+      }
+    }
+  }
+
+  /**
+   * Reconcile the Agent's durable local task during hello. The Agent is never
+   * allowed to start a second execution: the locked Agent row and its active
+   * task decide whether this is a resume, an abandon, or an orphan to fail.
+   */
+  async reconcileAgentHello(
+    agentId: string,
+    currentTask: AgentCurrentTask | null | undefined,
+  ): Promise<AgentRecoveryDecision | null> {
+    let leaseToRestore: { taskId: string; leaseToken: string } | undefined;
+    const decision = await this.prisma.$transaction(async (tx) => {
+      const agent = await this.lockAgent(tx, agentId);
+      if (!agent) throw new ApiException('RESOURCE_NOT_FOUND');
+      const activeTaskId = agent.activeTaskId;
+      if (!activeTaskId && !currentTask) return null;
+
+      const taskId = currentTask?.taskId ?? activeTaskId;
+      if (!taskId || !UUID_PATTERN.test(taskId)) {
+        if (activeTaskId) await this.failOrphanedTask(tx, activeTaskId, agentId);
+        return null;
+      }
+      const task = await tx.buildTask.findUnique({
+        where: { id: taskId },
+        select: {
+          id: true,
+          agentId: true,
+          status: true,
+          recoveryStatus: true,
+          recoveryDeadlineAt: true,
+          leaseHash: true,
+          leaseExpiresAt: true,
+          cancelRequestedAt: true,
+          lastLogSequence: true,
+          logSize: true,
+        },
+      });
+      const cancellationLeaseUsable =
+        task?.status === BuildTaskStatus.CANCELING &&
+        task.cancelRequestedAt !== null &&
+        Date.now() - task.cancelRequestedAt.getTime() < CANCELLATION_CONFIRMATION_TIMEOUT_MS;
+      const validTask =
+        task &&
+        task.agentId === agentId &&
+        agent.activeTaskId === task.id &&
+        task.leaseHash &&
+        task.leaseExpiresAt &&
+        (task.leaseExpiresAt.getTime() > Date.now() || cancellationLeaseUsable);
+
+      if (!validTask) {
+        if (activeTaskId) await this.failOrphanedTask(tx, activeTaskId, agentId);
+        return currentTask
+          ? {
+              taskId: currentTask.taskId,
+              action: 'ABANDON' as const,
+              acknowledgedLogSequence: 0,
+              reason: 'Server could not match the Agent current task',
+            }
+          : null;
+      }
+
+      const actualHash = Buffer.from(
+        createHash('sha256')
+          .update(currentTask?.leaseToken ?? '')
+          .digest('hex'),
+      );
+      const expectedHash = Buffer.from(task.leaseHash ?? '');
+      const leaseMatches =
+        currentTask !== undefined &&
+        currentTask !== null &&
+        actualHash.length === expectedHash.length &&
+        timingSafeEqual(actualHash, expectedHash);
+      if (!leaseMatches) {
+        await this.failOrphanedTask(tx, task.id, agentId);
+        return currentTask
+          ? {
+              taskId: currentTask.taskId,
+              action: 'ABANDON' as const,
+              acknowledgedLogSequence: 0,
+              reason: 'Agent task lease could not be verified',
+            }
+          : null;
+      }
+
+      // The repaired, synced log file is authoritative for the prefix that
+      // the Agent may replay after reconnecting. Align the database cursor
+      // while the Agent row is still locked.
+      const durableLog = await this.logStorage.getState(task.id);
+      if (
+        Number(task.lastLogSequence) !== durableLog.lastSequence ||
+        Number(task.logSize) !== durableLog.size
+      ) {
+        await tx.buildTask.update({
+          where: { id: task.id },
+          data: {
+            lastLogSequence: BigInt(durableLog.lastSequence),
+            logSize: BigInt(durableLog.size),
+          },
+        });
+      }
+
+      if (task.status === BuildTaskStatus.AGENT_LOST) {
+        const recoveryStatus = task.recoveryStatus;
+        const deadline = task.recoveryDeadlineAt;
+        if (
+          !isAgentExecutionPhase(recoveryStatus) ||
+          !deadline ||
+          deadline.getTime() <= Date.now() ||
+          currentTask.status !== recoveryStatus
+        ) {
+          await this.failOrphanedTask(tx, task.id, agentId);
+          return {
+            taskId: task.id,
+            action: 'ABANDON' as const,
+            acknowledgedLogSequence: durableLog.lastSequence,
+            reason: 'Task recovery window expired or phase did not match',
+          };
+        }
+        await this.state.transition(
+          tx,
+          task.id,
+          recoveryStatus,
+          'SYSTEM',
+          `Agent reconnected and resumed task in ${recoveryStatus.toLowerCase()}`,
+          { recoveryStatus: null, agentLostAt: null, recoveryDeadlineAt: null },
+        );
+        leaseToRestore = { taskId: task.id, leaseToken: currentTask.leaseToken };
+        return {
+          taskId: task.id,
+          action: 'RESUME' as const,
+          status: recoveryStatus,
+          acknowledgedLogSequence: durableLog.lastSequence,
+          recoveryDeadlineAt: deadline.toISOString(),
+        };
+      }
+
+      if (task.status === BuildTaskStatus.CANCELING) {
+        if (!currentTask || !isAgentExecutionPhase(currentTask.status)) {
+          await this.failOrphanedTask(tx, task.id, agentId);
+          return {
+            taskId: task.id,
+            action: 'ABANDON' as const,
+            acknowledgedLogSequence: durableLog.lastSequence,
+            reason: 'Agent current task was not in a cancellable execution phase',
+          };
+        }
+        leaseToRestore = { taskId: task.id, leaseToken: currentTask.leaseToken };
+        return {
+          taskId: task.id,
+          action: 'CANCEL' as const,
+          status: currentTask.status,
+          acknowledgedLogSequence: durableLog.lastSequence,
+          reason: 'Server requested cancellation after Agent reconnect',
+        };
+      }
+
+      if (!isAgentExecutionPhase(task.status) || currentTask.status !== task.status) {
+        await this.failOrphanedTask(tx, task.id, agentId);
+        return {
+          taskId: task.id,
+          action: 'ABANDON' as const,
+          acknowledgedLogSequence: durableLog.lastSequence,
+          reason: 'Agent task phase did not match the Server state',
+        };
+      }
+      leaseToRestore = { taskId: task.id, leaseToken: currentTask.leaseToken };
+      return {
+        taskId: task.id,
+        action: 'RESUME' as const,
+        status: task.status,
+        acknowledgedLogSequence: durableLog.lastSequence,
+      };
+    });
+    if (leaseToRestore)
+      this.activeLeaseTokens.set(leaseToRestore.taskId, leaseToRestore.leaseToken);
+    return decision;
+  }
+
+  private async failOrphanedTask(
+    tx: Prisma.TransactionClient,
+    taskId: string,
+    agentId: string,
+  ): Promise<void> {
+    const task = await tx.buildTask.findUnique({
+      where: { id: taskId },
+      select: { id: true, agentId: true, status: true },
+    });
+    if (
+      !task ||
+      task.agentId !== agentId ||
+      task.status === BuildTaskStatus.SUCCEEDED ||
+      task.status === BuildTaskStatus.FAILED ||
+      task.status === BuildTaskStatus.CANCELED
+    )
+      return;
+    await this.state.transition(
+      tx,
+      task.id,
+      BuildTaskStatus.FAILED,
+      'SYSTEM',
+      'Agent restarted without a resumable local task; execution was abandoned',
+      {
+        leaseHash: null,
+        leaseExpiresAt: null,
+        recoveryStatus: null,
+        agentLostAt: null,
+        recoveryDeadlineAt: null,
+        finishedAt: new Date(),
+      },
+    );
+    await tx.agent.update({ where: { id: agentId }, data: { activeTaskId: null } });
+    this.activeLeaseTokens.delete(task.id);
+  }
+
+  private async reconcileInterruptedTasks(): Promise<void> {
+    const tasks = await this.prisma.buildTask.findMany({
+      where: {
+        status: {
+          in: [BuildTaskStatus.PREPARING, BuildTaskStatus.RUNNING, BuildTaskStatus.UPLOADING],
+        },
+      },
+      select: { id: true, agentId: true, status: true, leaseExpiresAt: true },
+    });
+    for (const candidate of tasks) {
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          const agent = await this.lockAgent(tx, candidate.agentId);
+          if (!agent || agent.activeTaskId !== candidate.id) return;
+          const current = await tx.buildTask.findUnique({
+            where: { id: candidate.id },
+            select: { id: true, status: true, leaseExpiresAt: true },
+          });
+          if (!current || current.status !== candidate.status) return;
+          const now = new Date();
+          await this.state.transition(
+            tx,
+            current.id,
+            BuildTaskStatus.AGENT_LOST,
+            'SYSTEM',
+            `Server restarted while task was ${candidate.status.toLowerCase()}`,
+            {
+              recoveryStatus: candidate.status,
+              agentLostAt: now,
+              recoveryDeadlineAt: new Date(
+                Math.min(
+                  now.getTime() + TASK_LEASE_RECOVERY_WINDOW_SECONDS * 1_000,
+                  current.leaseExpiresAt?.getTime() ?? Number.MAX_SAFE_INTEGER,
+                ),
+              ),
+            },
+          );
+          if (!this.registry.isConnected(candidate.agentId)) {
+            await tx.agent.update({
+              where: { id: candidate.agentId },
+              data: { status: AgentStatus.OFFLINE },
+            });
+          }
+        });
+      } catch {
+        // A single inconsistent task must not prevent startup reconciliation of siblings.
+      }
+    }
+  }
+
+  private async reclaimTimedOutRecoveries(now: Date): Promise<void> {
+    const candidates = await this.prisma.buildTask.findMany({
+      where: { status: BuildTaskStatus.AGENT_LOST, recoveryDeadlineAt: { not: null, lte: now } },
+      select: { id: true, agentId: true },
+      orderBy: [{ recoveryDeadlineAt: 'asc' }, { id: 'asc' }],
+    });
+    for (const candidate of candidates) {
+      let recovered = false;
+      try {
+        recovered = await this.prisma.$transaction(async (tx) => {
+          const agent = await this.lockAgent(tx, candidate.agentId);
+          if (!agent) return false;
+          const task = await tx.buildTask.findUnique({
+            where: { id: candidate.id },
+            select: { id: true, status: true, recoveryDeadlineAt: true },
+          });
+          if (
+            !task ||
+            task.status !== BuildTaskStatus.AGENT_LOST ||
+            !task.recoveryDeadlineAt ||
+            task.recoveryDeadlineAt.getTime() > now.getTime()
+          )
+            return false;
+          await this.state.transition(
+            tx,
+            task.id,
+            BuildTaskStatus.FAILED,
+            'SYSTEM',
+            'Agent did not reconnect before the task recovery window expired',
+            {
+              leaseHash: null,
+              leaseExpiresAt: null,
+              recoveryStatus: null,
+              agentLostAt: null,
+              recoveryDeadlineAt: null,
+              finishedAt: now,
+            },
+          );
+          if (agent.activeTaskId === task.id) {
+            await tx.agent.update({ where: { id: agent.id }, data: { activeTaskId: null } });
+          }
+          return true;
+        });
+      } catch {
+        continue;
+      }
+      if (recovered) {
+        this.activeLeaseTokens.delete(candidate.id);
+        await this.notifyAvailable(candidate.agentId);
       }
     }
   }
@@ -345,7 +687,8 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
         task.status !== BuildTaskStatus.PREPARING &&
         task.status !== BuildTaskStatus.RUNNING &&
         task.status !== BuildTaskStatus.UPLOADING &&
-        task.status !== BuildTaskStatus.CANCELING
+        task.status !== BuildTaskStatus.CANCELING &&
+        task.status !== BuildTaskStatus.AGENT_LOST
       ) {
         throw new ApiException('TASK_INVALID_STATE');
       }
@@ -383,7 +726,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
     if (cancelMessage && agentId) this.registry.send(agentId, cancelMessage);
   }
 
-  async reportTaskCanceled(agentId: string, message: TaskCanceledMessage): Promise<void> {
+  async reportTaskCanceled(agentId: string, message: TaskCanceledMessage): Promise<'CANCELED'> {
     const payload = message.payload;
     if (!UUID_PATTERN.test(payload.taskId)) throw new ApiException('TASK_LEASE_INVALID');
     if (!this.registry.isReady(agentId)) throw new ApiException('TASK_LEASE_INVALID');
@@ -399,13 +742,19 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
           status: true,
           leaseHash: true,
           leaseExpiresAt: true,
+          logLeaseHash: true,
+          logLeaseExpiresAt: true,
         },
       });
       if (!task || task.agentId !== agentId) throw new ApiException('TASK_LEASE_INVALID');
       if (task.status === BuildTaskStatus.CANCELED) {
-        if (agent.activeTaskId === task.id) {
-          await tx.agent.update({ where: { id: agentId }, data: { activeTaskId: null } });
-        }
+        if (
+          !task.logLeaseHash ||
+          !task.logLeaseExpiresAt ||
+          task.logLeaseExpiresAt.getTime() <= Date.now() ||
+          !this.leases.verify(payload.leaseToken, task.logLeaseHash)
+        )
+          throw new ApiException('TASK_LEASE_INVALID');
         return;
       }
       if (
@@ -434,7 +783,8 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
       shouldNotify = true;
     });
     this.activeLeaseTokens.delete(payload.taskId);
-    if (shouldNotify) await this.notifyAvailable(agentId);
+    if (shouldNotify) await this.onAgentReady(agentId);
+    return BuildTaskStatus.CANCELED;
   }
 
   async claim(
@@ -602,7 +952,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
     await this.reportTaskStatus(agentId, message);
   }
 
-  async reportPreparationFailure(agentId: string, message: TaskFailedMessage): Promise<void> {
+  async reportPreparationFailure(agentId: string, message: TaskFailedMessage): Promise<'FAILED'> {
     const payload = message.payload;
     if (!UUID_PATTERN.test(payload.taskId)) throw new ApiException('TASK_LEASE_INVALID');
     if (
@@ -630,11 +980,24 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
           status: true,
           leaseHash: true,
           leaseExpiresAt: true,
+          logLeaseHash: true,
+          logLeaseExpiresAt: true,
         },
       });
-      if (!task || task.agentId !== agentId || agent.activeTaskId !== task.id) {
+      if (!task || task.agentId !== agentId) {
         throw new ApiException('TASK_LEASE_INVALID');
       }
+      if (task.status === BuildTaskStatus.FAILED) {
+        if (
+          !task.logLeaseHash ||
+          !task.logLeaseExpiresAt ||
+          task.logLeaseExpiresAt.getTime() <= Date.now() ||
+          !this.leases.verify(payload.leaseToken, task.logLeaseHash)
+        )
+          throw new ApiException('TASK_LEASE_INVALID');
+        return;
+      }
+      if (agent.activeTaskId !== task.id) throw new ApiException('TASK_LEASE_INVALID');
       if (!task.leaseHash || !task.leaseExpiresAt || task.leaseExpiresAt.getTime() <= Date.now()) {
         throw new ApiException('TASK_LEASE_INVALID');
       }
@@ -661,8 +1024,47 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.activeLeaseTokens.delete(payload.taskId);
-    if (shouldNotify) await this.notifyAvailable(agentId);
+    if (shouldNotify) await this.onAgentReady(agentId);
+    return BuildTaskStatus.FAILED;
   }
+  /** Fail a completion with a valid lease instead of leaving UPLOADING stuck. */
+  async failRejectedCompletion(agentId: string, message: TaskCompletedMessage): Promise<void> {
+    const payload = message.payload;
+    if (!UUID_PATTERN.test(payload.taskId)) return;
+    let shouldNotify = false;
+    await this.prisma.$transaction(async (tx) => {
+      const agent = await this.lockAgent(tx, agentId);
+      if (!agent) return;
+      const task = await tx.buildTask.findUnique({
+        where: { id: payload.taskId },
+        select: { id: true, agentId: true, status: true, leaseHash: true, leaseExpiresAt: true },
+      });
+      if (
+        !task ||
+        task.agentId !== agentId ||
+        task.status !== BuildTaskStatus.UPLOADING ||
+        agent.activeTaskId !== task.id ||
+        !task.leaseHash ||
+        !task.leaseExpiresAt ||
+        task.leaseExpiresAt.getTime() <= Date.now() ||
+        !this.leases.verify(payload.leaseToken, task.leaseHash)
+      )
+        return;
+      await this.state.transition(
+        tx,
+        task.id,
+        BuildTaskStatus.FAILED,
+        'SYSTEM',
+        'Server rejected task completion after validating the active lease',
+        { leaseHash: null, leaseExpiresAt: null, finishedAt: new Date() },
+      );
+      await tx.agent.update({ where: { id: agentId }, data: { activeTaskId: null } });
+      shouldNotify = true;
+    });
+    this.activeLeaseTokens.delete(payload.taskId);
+    if (shouldNotify) await this.onAgentReady(agentId);
+  }
+
   async reclaimTimedOutDispatches(now = new Date()): Promise<void> {
     const cutoff = new Date(now.getTime() - DISPATCH_CONFIRMATION_TIMEOUT_MS);
     const candidates = await this.prisma.buildTask.findMany({
@@ -717,6 +1119,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
       }
     }
     await this.reclaimTimedOutCancellations(now);
+    await this.reclaimTimedOutRecoveries(now);
   }
 
   async reclaimTimedOutCancellations(now = new Date()): Promise<void> {

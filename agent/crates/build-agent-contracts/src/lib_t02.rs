@@ -78,6 +78,10 @@ pub enum MessageType {
     TaskLogAck,
     #[serde(rename = "task.artifact-manifest-ack")]
     TaskArtifactManifestAck,
+    #[serde(rename = "task.recovery")]
+    TaskRecovery,
+    #[serde(rename = "task.result.ack")]
+    TaskResultAck,
     #[serde(rename = "task.assignment")]
     TaskAssignment,
     #[serde(rename = "task.cancel")]
@@ -144,6 +148,26 @@ dto!(TaskArtifactManifestAckPayload {
     accepted: bool,
     artifact_count: u64,
     artifact_bytes: u64
+});
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TaskRecoveryAction {
+    Resume,
+    Cancel,
+    Abandon,
+}
+dto!(TaskRecoveryPayload {
+    task_id: String,
+    action: TaskRecoveryAction,
+    status: Option<BuildTaskStatus>,
+    acknowledged_log_sequence: u64,
+    recovery_deadline_at: Option<String>,
+    reason: Option<String>
+});
+dto!(TaskResultAckPayload {
+    task_id: String,
+    status: BuildTaskStatus,
+    acknowledged_at: String
 });
 dto!(TaskGitSource {
     url: String,
@@ -240,6 +264,8 @@ pub enum DecodedMessage {
     TaskAvailable(ProtocolEnvelopeTyped<TaskAvailablePayload>),
     TaskLogAck(ProtocolEnvelopeTyped<TaskLogAckPayload>),
     TaskArtifactManifestAck(ProtocolEnvelopeTyped<TaskArtifactManifestAckPayload>),
+    TaskRecovery(ProtocolEnvelopeTyped<TaskRecoveryPayload>),
+    TaskResultAck(ProtocolEnvelopeTyped<TaskResultAckPayload>),
     TaskAssignment(ProtocolEnvelopeTyped<TaskAssignmentPayload>),
     TaskCancel(ProtocolEnvelopeTyped<TaskCancelPayload>),
     AgentTokenRevoked(ProtocolEnvelopeTyped<AgentTokenRevokedPayload>),
@@ -435,6 +461,37 @@ pub fn parse_message(value: Value) -> Result<DecodedMessage, String> {
             valid_safe_non_negative(value.artifact_count, "artifactCount")?;
             valid_safe_non_negative(value.artifact_bytes, "artifactBytes")?;
             Ok(DecodedMessage::TaskArtifactManifestAck(typed(raw, value)))
+        }
+        MessageType::TaskRecovery => {
+            let value: TaskRecoveryPayload = payload(&raw)?;
+            valid_id(&value.task_id, "taskId")?;
+            valid_safe_non_negative(value.acknowledged_log_sequence, "acknowledgedLogSequence")?;
+            if matches!(
+                value.action,
+                TaskRecoveryAction::Resume | TaskRecoveryAction::Cancel
+            ) && value.status.is_none()
+            {
+                return Err("RESUME or CANCEL recovery requires status".to_string());
+            }
+            if value
+                .status
+                .is_some_and(|status| !status.is_agent_reportable())
+            {
+                return Err("task recovery status must be agent-reportable".to_string());
+            }
+            if let Some(deadline) = &value.recovery_deadline_at {
+                valid_timestamp(deadline, "recoveryDeadlineAt")?;
+            }
+            Ok(DecodedMessage::TaskRecovery(typed(raw, value)))
+        }
+        MessageType::TaskResultAck => {
+            let value: TaskResultAckPayload = payload(&raw)?;
+            valid_id(&value.task_id, "taskId")?;
+            if !value.status.is_terminal() {
+                return Err("task.result.ack status must be terminal".to_string());
+            }
+            valid_timestamp(&value.acknowledged_at, "acknowledgedAt")?;
+            Ok(DecodedMessage::TaskResultAck(typed(raw, value)))
         }
         MessageType::TaskAssignment => {
             let value: TaskAssignmentPayload = payload(&raw)?;

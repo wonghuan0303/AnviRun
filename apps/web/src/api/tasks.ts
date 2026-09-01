@@ -7,6 +7,11 @@ export interface TaskListParams {
   status?: BuildTaskStatus;
 }
 
+function newIdempotencyKey(prefix: string): string {
+  const random = Math.random().toString(36).slice(2);
+  return `${prefix}-${Date.now()}-${random}`.slice(0, 128);
+}
+
 function queryString(params: TaskListParams): string {
   const query = new URLSearchParams();
   if (params.page !== undefined) query.set('page', String(params.page));
@@ -15,10 +20,14 @@ function queryString(params: TaskListParams): string {
   return query.toString() ? `?${query.toString()}` : '';
 }
 
-export function createTask(projectId: string): Promise<{ task: TaskDetail }> {
+export function createTask(
+  projectId: string,
+  idempotencyKey = newIdempotencyKey('create-task'),
+): Promise<{ task: TaskDetail }> {
   return apiRequest<{ task: TaskDetail }>(`/projects/${projectId}/tasks`, {
     method: 'POST',
     body: {},
+    headers: { 'Idempotency-Key': idempotencyKey },
   });
 }
 
@@ -43,10 +52,14 @@ export function cancelTask(
   });
 }
 
-export function rebuildTask(taskId: string): Promise<{ task: TaskDetail }> {
+export function rebuildTask(
+  taskId: string,
+  idempotencyKey = newIdempotencyKey('rebuild-task'),
+): Promise<{ task: TaskDetail }> {
   return apiRequest<{ task: TaskDetail }>(`/tasks/${taskId}/rebuild`, {
     method: 'POST',
     body: {},
+    headers: { 'Idempotency-Key': idempotencyKey },
   });
 }
 

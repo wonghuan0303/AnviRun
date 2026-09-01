@@ -17,7 +17,7 @@ import {
   isPlainText,
   isString,
 } from '../validation/primitives';
-import { isAgentReportableTaskStatus } from '../task/task-status';
+import { isAgentReportableTaskStatus, isTerminalTaskStatus } from '../task/task-status';
 import { isLogStream, TASK_LOG_CHUNK_MAX_BYTES, utf8ByteLength } from '../task/task-log';
 import {
   isSupportedProtocolVersion,
@@ -368,6 +368,37 @@ function serverPayload(
       nonNegativeInteger(value, 'artifactCount', path, issues, true);
       nonNegativeInteger(value, 'artifactBytes', path, issues, true);
       return;
+    case 'task.recovery':
+      unknownProperties(
+        value,
+        ['taskId', 'action', 'status', 'acknowledgedLogSequence', 'recoveryDeadlineAt', 'reason'],
+        path,
+        issues,
+      );
+      idProperty(value, 'taskId', path, issues);
+      if (value.action !== 'RESUME' && value.action !== 'CANCEL' && value.action !== 'ABANDON')
+        issue(
+          issues,
+          'PROPERTY_INVALID',
+          [...path, 'action'],
+          'action 必须是 RESUME、CANCEL 或 ABANDON',
+        );
+      if ((value.action === 'RESUME' || value.action === 'CANCEL') && value.status === undefined)
+        issue(issues, 'PROPERTY_MISSING', [...path, 'status'], 'RESUME 或 CANCEL 必须包含 status');
+      if (value.status !== undefined && !isAgentReportableTaskStatus(value.status))
+        issue(issues, 'PROPERTY_INVALID', [...path, 'status'], 'status 必须是 Agent 可上报阶段');
+      nonNegativeInteger(value, 'acknowledgedLogSequence', path, issues, true);
+      if (value.recoveryDeadlineAt !== undefined)
+        timeProperty(value, 'recoveryDeadlineAt', path, issues);
+      optionalText(value, 'reason', path, issues);
+      return;
+    case 'task.result.ack':
+      unknownProperties(value, ['taskId', 'status', 'acknowledgedAt'], path, issues);
+      idProperty(value, 'taskId', path, issues);
+      if (!isTerminalTaskStatus(value.status))
+        issue(issues, 'PROPERTY_INVALID', [...path, 'status'], 'status 必须是任务终态');
+      timeProperty(value, 'acknowledgedAt', path, issues);
+      return;
     case 'task.assignment':
       unknownProperties(
         value,
@@ -426,7 +457,7 @@ function currentTask(
   taskLease(value, path, issues);
   if (!isAgentReportableTaskStatus(value.status))
     issue(issues, 'PROPERTY_INVALID', [...path, 'status'], 'status 必须是 Agent 可上报阶段');
-  positiveInteger(value, 'lastLogSequence', path, issues);
+  nonNegativeInteger(value, 'lastLogSequence', path, issues, true);
 }
 
 function agentPayload(

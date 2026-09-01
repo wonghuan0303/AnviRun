@@ -27,6 +27,7 @@ const ACTIVE_STATUSES = new Set<BuildTaskStatus>([
   BuildTaskStatus.PREPARING,
   BuildTaskStatus.RUNNING,
   BuildTaskStatus.UPLOADING,
+  BuildTaskStatus.AGENT_LOST,
 ]);
 const LOGGABLE_TERMINAL_STATUSES = new Set<BuildTaskStatus>([
   BuildTaskStatus.SUCCEEDED,

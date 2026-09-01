@@ -21,6 +21,10 @@ export const SERVER_TO_AGENT_MESSAGE_TYPES = [
   'task.log.ack',
   /** Server 已校验并登记产物清单，Agent 可以开始 HTTP 上传文件。 */
   'task.artifact-manifest-ack',
+  /** Server 对断线任务给出的恢复裁决。 */
+  'task.recovery',
+  /** Server 已完成任务终态事务，Agent 可以清理本地任务。 */
+  'task.result.ack',
   /** 派发任务并签发租约。 */
   'task.assignment',
   /** 请求取消任务，幂等（产品设计 5.5）。 */

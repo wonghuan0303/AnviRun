@@ -46,6 +46,43 @@
     }
   },
   {
+    "id": "msg-server-recovery-01",
+    "type": "task.recovery",
+    "timestamp": "2026-08-24T03:00:02.750Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "action": "RESUME",
+      "status": "RUNNING",
+      "acknowledgedLogSequence": 3,
+      "recoveryDeadlineAt": "2026-08-24T03:05:02.750Z"
+    }
+  },
+  {
+    "id": "msg-server-result-ack-01",
+    "type": "task.result.ack",
+    "timestamp": "2026-08-24T03:00:02.900Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "status": "SUCCEEDED",
+      "acknowledgedAt": "2026-08-24T03:00:02.900Z"
+    }
+  },
+  {
+    "id": "msg-server-recovery-cancel-01",
+    "type": "task.recovery",
+    "timestamp": "2026-08-24T03:00:03.000Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "action": "CANCEL",
+      "status": "RUNNING",
+      "acknowledgedLogSequence": 3,
+      "reason": "Server requested cancellation after Agent reconnect"
+    }
+  },
+  {
     "id": "msg-server-03",
     "type": "task.assignment",
     "timestamp": "2026-08-24T03:00:02Z",

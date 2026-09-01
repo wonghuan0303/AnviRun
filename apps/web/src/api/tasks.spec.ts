@@ -9,15 +9,16 @@ describe('task API', () => {
   beforeEach(() => vi.mocked(apiRequest).mockResolvedValue({} as never));
 
   it('uses server-owned task creation and supports status/log pagination', async () => {
-    await createTask('project-id');
+    await createTask('project-id', 'create-key');
     await listProjectTasks('project-id', { page: 2, pageSize: 5, status: 'FAILED' });
     await readTaskLogs('task-id', 128, 256);
     await cancelTask('task-id');
-    await rebuildTask('task-id');
+    await rebuildTask('task-id', 'rebuild-key');
 
     expect(apiRequest).toHaveBeenNthCalledWith(1, '/projects/project-id/tasks', {
       method: 'POST',
       body: {},
+      headers: { 'Idempotency-Key': 'create-key' },
     });
     expect(apiRequest).toHaveBeenNthCalledWith(
       2,
@@ -31,6 +32,7 @@ describe('task API', () => {
     expect(apiRequest).toHaveBeenNthCalledWith(5, '/tasks/task-id/rebuild', {
       method: 'POST',
       body: {},
+      headers: { 'Idempotency-Key': 'rebuild-key' },
     });
   });
 });

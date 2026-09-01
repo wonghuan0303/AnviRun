@@ -155,6 +155,10 @@ model BuildTask {
   config            Json
   sourceCommit      String?         @db.VarChar(128)
   assignedArtifactDir String?       @db.VarChar(1024)
+  recoveryStatus    BuildTaskStatus?
+  agentLostAt       DateTime?
+  recoveryDeadlineAt DateTime?
+  creationIdempotencyKey String?    @db.VarChar(128)
   exitCode          Int?
   queuedAt          DateTime?
   startedAt         DateTime?
@@ -184,6 +188,8 @@ model BuildTask {
   @@index([status, createdAt, id])
   @@index([buildTemplateId, status, createdAt, id])
   @@index([createdBy, createdAt, id])
+  @@unique([createdBy, projectId, creationIdempotencyKey])
+  @@index([status, recoveryDeadlineAt])
 }
 
 model BuildTaskStatusHistory {

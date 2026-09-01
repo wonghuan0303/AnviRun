@@ -547,10 +547,19 @@ export class ArtifactsService {
           sourceCommit: true,
           artifactCount: true,
           artifactBytes: true,
+          logLeaseHash: true,
+          logLeaseExpiresAt: true,
         },
       });
       if (!task || task.agentId !== agentId) throw new ApiException('TASK_LEASE_INVALID');
       if (task.status === BuildTaskStatus.SUCCEEDED) {
+        if (
+          !task.logLeaseHash ||
+          !task.logLeaseExpiresAt ||
+          task.logLeaseExpiresAt.getTime() <= Date.now() ||
+          !this.leases.verify(payload.leaseToken, task.logLeaseHash)
+        )
+          throw new ApiException('TASK_LEASE_INVALID');
         if (
           safeNumber(task.artifactCount) !== payload.artifactCount ||
           safeNumber(task.artifactBytes) !== payload.artifactBytes

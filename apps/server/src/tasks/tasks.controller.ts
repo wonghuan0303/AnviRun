@@ -32,6 +32,13 @@ function requestId(request: Request): string | undefined {
   return value && /^[A-Za-z0-9_.:-]{1,128}$/.test(value) ? value : undefined;
 }
 
+function idempotencyKey(request: Request): string | undefined {
+  const value = request.header('idempotency-key');
+  if (value === undefined) return undefined;
+  if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(value)) throw validationException();
+  return value;
+}
+
 function validationException(): ApiException {
   return new ApiException('VALIDATION_FAILED');
 }
@@ -52,7 +59,12 @@ export class ProjectTasksController {
   ) {
     try {
       parseCreateTaskDto(body);
-      return await this.tasks.createTask(actor, projectId, requestId(request));
+      return await this.tasks.createTask(
+        actor,
+        projectId,
+        requestId(request),
+        idempotencyKey(request),
+      );
     } catch (error) {
       if (error instanceof ApiException) throw error;
       throw validationException();
@@ -134,6 +146,6 @@ export class TasksController {
     @CurrentUser() actor: AuthenticatedRequestUser,
     @Req() request: Request,
   ) {
-    return this.tasks.rebuildTask(actor, taskId, requestId(request));
+    return this.tasks.rebuildTask(actor, taskId, requestId(request), idempotencyKey(request));
   }
 }

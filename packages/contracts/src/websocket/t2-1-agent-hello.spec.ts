@@ -21,4 +21,28 @@ describe('T2.1 agent hello optional identity contract', () => {
       validateProtocolMessage({ ...base, payload: { ...base.payload, agentId: null } }).ok,
     ).toBe(true);
   });
+
+  it('allows an active task to report an empty acknowledged log prefix', () => {
+    const message = {
+      id: 'hello-recovery-message',
+      type: 'agent.hello',
+      timestamp: '2026-08-25T00:00:00Z',
+      protocolVersion: 1,
+      payload: {
+        agentId: 'agent-01',
+        agentVersion: '2.1.0',
+        hostname: 'builder',
+        os: 'linux',
+        arch: 'x86_64',
+        workspaceRoot: '/workspace',
+        currentTask: {
+          taskId: 'task-01',
+          leaseToken: 'lease-token-000001',
+          status: 'PREPARING',
+          lastLogSequence: 0,
+        },
+      },
+    };
+    expect(validateProtocolMessage(message).ok).toBe(true);
+  });
 });

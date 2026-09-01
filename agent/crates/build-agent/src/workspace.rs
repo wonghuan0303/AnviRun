@@ -1,8 +1,9 @@
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Mutex;
 
-use fs2::available_space;
+use fs2::{available_space, FileExt};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -48,7 +49,10 @@ pub struct TaskWorkspace {
     tasks_root: PathBuf,
     task_dir: PathBuf,
     source_path: PathBuf,
+    active_lock: Mutex<Option<File>>,
 }
+
+const ACTIVE_LOCK_FILE: &str = ".build-agent-active.lock";
 
 impl WorkspaceManager {
     pub fn new(root: &Path, minimum_free_space_bytes: u64) -> Result<Self, WorkspaceError> {
@@ -83,6 +87,7 @@ impl WorkspaceManager {
         };
         manager.check_writable()?;
         manager.check_disk_space()?;
+        manager.cleanup_stale_task_workspaces()?;
         Ok(manager)
     }
 
@@ -129,6 +134,7 @@ impl WorkspaceManager {
                 tasks_root: self.tasks_root.clone(),
                 task_dir,
                 source_path,
+                active_lock: Mutex::new(None),
             };
             let _ = workspace.cleanup_inner();
             return Err(if error.kind() == std::io::ErrorKind::AlreadyExists {
@@ -143,8 +149,34 @@ impl WorkspaceManager {
             tasks_root: self.tasks_root.clone(),
             task_dir,
             source_path,
+            active_lock: Mutex::new(None),
         };
-        workspace.verify_paths()?;
+        if let Err(error) = workspace.verify_paths() {
+            let _ = workspace.cleanup_inner();
+            return Err(error);
+        }
+        let lock_path = workspace.task_dir.join(ACTIVE_LOCK_FILE);
+        let lock = match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(lock) => lock,
+            Err(_) => {
+                let _ = workspace.cleanup_inner();
+                return Err(WorkspaceError::CleanupRefused);
+            }
+        };
+        if lock.lock_exclusive().is_err() {
+            drop(lock);
+            let _ = workspace.cleanup_inner();
+            return Err(WorkspaceError::CleanupRefused);
+        }
+        *workspace
+            .active_lock
+            .lock()
+            .map_err(|_| WorkspaceError::CleanupRefused)? = Some(lock);
         Ok(workspace)
     }
 
@@ -163,6 +195,7 @@ impl WorkspaceManager {
             tasks_root: self.tasks_root.clone(),
             source_path: task_dir.join("source"),
             task_dir,
+            active_lock: Mutex::new(None),
         }
         .cleanup()
     }
@@ -193,6 +226,61 @@ impl WorkspaceManager {
             < self.minimum_free_space_bytes
         {
             return Err(WorkspaceError::InsufficientDiskSpace);
+        }
+        Ok(())
+    }
+
+    /// Remove task directories left by an Agent process that no longer owns
+    /// the per-task lock. A held lock means another Agent process can still
+    /// be using the workspace, so it is never removed during startup.
+    fn cleanup_stale_task_workspaces(&self) -> Result<(), WorkspaceError> {
+        for entry in fs::read_dir(&self.tasks_root).map_err(|_| WorkspaceError::PathEscape)? {
+            let entry = entry.map_err(|_| WorkspaceError::PathEscape)?;
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).map_err(|_| WorkspaceError::PathEscape)?;
+            if has_reparse_metadata(&metadata) || !metadata.is_dir() {
+                return Err(WorkspaceError::PathEscape);
+            }
+            let name = entry.file_name();
+            let name = name.to_str().ok_or(WorkspaceError::PathEscape)?;
+            let task_id = Uuid::parse_str(name).map_err(|_| WorkspaceError::PathEscape)?;
+            let canonical_id = task_id.to_string();
+            if name != canonical_id {
+                return Err(WorkspaceError::PathEscape);
+            }
+            let lock_path = path.join(ACTIVE_LOCK_FILE);
+            if let Ok(lock_metadata) = fs::symlink_metadata(&lock_path) {
+                if has_reparse_metadata(&lock_metadata) || !lock_metadata.is_file() {
+                    return Err(WorkspaceError::PathEscape);
+                }
+            }
+            let lock = match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .truncate(false)
+                .create(true)
+                .open(&lock_path)
+            {
+                Ok(lock) => lock,
+                // Windows reports a sharing violation while another Agent
+                // still owns the lock file. Preserve that workspace.
+                Err(_) => continue,
+            };
+            match lock.try_lock_exclusive() {
+                Ok(()) => {
+                    let _ = FileExt::unlock(&lock);
+                    drop(lock);
+                    self.cleanup_task(&canonical_id)?;
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::PermissionDenied
+                    ) => {}
+                // If lock status cannot be determined, preserve the
+                // workspace rather than risking deletion of a live task.
+                Err(_) => {}
+            }
         }
         Ok(())
     }
@@ -252,6 +340,15 @@ impl TaskWorkspace {
     }
 
     fn cleanup_inner(&self) -> Result<(), WorkspaceError> {
+        if let Some(lock) = self
+            .active_lock
+            .lock()
+            .map_err(|_| WorkspaceError::CleanupRefused)?
+            .take()
+        {
+            FileExt::unlock(&lock).map_err(|_| WorkspaceError::CleanupRefused)?;
+            drop(lock);
+        }
         let tasks_root =
             fs::canonicalize(&self.tasks_root).map_err(|_| WorkspaceError::CleanupRefused)?;
         let task_metadata = match fs::symlink_metadata(&self.task_dir) {
@@ -435,6 +532,33 @@ mod tests {
         assert!(existing.exists());
     }
 
+    #[test]
+    fn startup_cleans_an_unlocked_orphaned_task_workspace() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let manager = WorkspaceManager::new(directory.path(), 0).expect("workspace manager");
+        let id = task_id();
+        let orphan = manager.tasks_root().join(&id);
+        fs::create_dir_all(orphan.join("source")).expect("orphan workspace");
+        drop(manager);
+
+        let restarted = WorkspaceManager::new(directory.path(), 0).expect("restarted manager");
+        assert!(!restarted.tasks_root().join(id).exists());
+    }
+
+    #[test]
+    fn startup_preserves_a_workspace_with_an_active_lock() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let manager = WorkspaceManager::new(directory.path(), 0).expect("workspace manager");
+        let id = task_id();
+        let workspace = manager.create_task(&id).expect("active workspace");
+
+        let restarted = WorkspaceManager::new(directory.path(), 0).expect("restarted manager");
+        assert!(restarted.tasks_root().join(&id).exists());
+
+        drop(restarted);
+        workspace.cleanup().expect("workspace cleanup");
+    }
+
     #[cfg(unix)]
     #[test]
     fn rejects_task_symlink_that_escapes_tasks_root() {
@@ -461,6 +585,7 @@ mod tests {
             tasks_root: manager.tasks_root().to_path_buf(),
             task_dir: manager.tasks_root().to_path_buf(),
             source_path: manager.tasks_root().join("source"),
+            active_lock: Mutex::new(None),
         };
         assert!(matches!(
             invalid.cleanup(),

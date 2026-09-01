@@ -4,12 +4,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use build_agent_contracts::{
-    parse_message, AgentHeartbeatPayload, AgentHelloPayload, AgentRegisteredPayload,
-    BuildTaskStatus, DecodedMessage, LogStream, MessageType, ProtocolEnvelope, ProtocolVersion,
-    RequiredNullable, TaskAcceptedPayload, TaskArtifactManifestAckPayload,
-    TaskArtifactManifestPayload, TaskAssignmentPayload, TaskCancelPayload, TaskCanceledPayload,
-    TaskClaimPayload, TaskCompletedPayload, TaskFailedPayload, TaskLogAckPayload, TaskLogPayload,
-    TaskStatusPayload,
+    parse_message, AgentCurrentTask, AgentHeartbeatPayload, AgentHelloPayload,
+    AgentRegisteredPayload, BuildTaskStatus, DecodedMessage, LogStream, MessageType,
+    ProtocolEnvelope, ProtocolVersion, RequiredNullable, TaskAcceptedPayload,
+    TaskArtifactManifestAckPayload, TaskArtifactManifestPayload, TaskAssignmentPayload,
+    TaskCancelPayload, TaskCanceledPayload, TaskClaimPayload, TaskCompletedPayload,
+    TaskFailedPayload, TaskLogAckPayload, TaskLogPayload, TaskRecoveryAction, TaskRecoveryPayload,
+    TaskResultAckPayload, TaskStatusPayload,
 };
 use chrono::{DateTime, SecondsFormat, Utc};
 use futures_util::{SinkExt, StreamExt};
@@ -69,6 +70,8 @@ pub enum AgentError {
     WebSocket { message: String },
     #[error("protocol error: {0}")]
     Protocol(String),
+    #[error("shutdown requested")]
+    ShutdownRequested,
     #[error("failed to encode protocol message: {0}")]
     Encode(#[from] serde_json::Error),
     #[error("Agent task failed: {0}")]
@@ -137,6 +140,8 @@ struct ActiveTask {
     lease_token: String,
     lease_expires_at: String,
     source_commit: Option<String>,
+    config_written: bool,
+    command_completed: bool,
     command: String,
     config: serde_json::Map<String, Value>,
     stdout_log_redactor: SensitiveLogRedactor,
@@ -151,6 +156,14 @@ struct ActiveTask {
     artifact_dir: String,
     artifact_manifest: Option<ArtifactManifest>,
     artifact_upload: Option<JoinHandle<Result<(), ArtifactError>>>,
+    pending_result: Option<PendingTerminalResult>,
+}
+
+#[derive(Debug, Clone)]
+enum PendingTerminalResult {
+    Completed(TaskCompletedPayload),
+    Failed(TaskFailedPayload),
+    Canceled(TaskCanceledPayload),
 }
 
 #[derive(Debug)]
@@ -257,15 +270,57 @@ impl Agent {
         self.git = git;
 
         let mut retry = RetryState::new(self.config.reconnect_initial, self.config.reconnect_max);
+        let (result_sender, mut result_receiver) = mpsc::unbounded_channel::<PreparationEvent>();
+        let mut active: Option<ActiveTask> = None;
+        let mut execution_receiver = None;
+        let mut pending_logs = std::mem::take(&mut self.pending_logs);
         loop {
             if shutdown_requested(&shutdown) {
+                self.cleanup_active_task_for_exit(
+                    &mut active,
+                    &mut result_receiver,
+                    &mut execution_receiver,
+                    self.workspace.as_ref(),
+                    &mut pending_logs,
+                )
+                .await;
+                self.pending_logs = pending_logs;
                 return Ok(RunExit::Shutdown);
             }
-            let result = self.connect_once(shutdown.clone()).await;
+            let result = self
+                .connect_once(
+                    shutdown.clone(),
+                    &result_sender,
+                    &mut result_receiver,
+                    &mut active,
+                    &mut execution_receiver,
+                    &mut pending_logs,
+                )
+                .await;
             let disconnected = matches!(&result, Ok(ConnectionExit::Disconnected));
             match result {
-                Ok(ConnectionExit::Shutdown) => return Ok(RunExit::Shutdown),
+                Ok(ConnectionExit::Shutdown) => {
+                    self.cleanup_active_task_for_exit(
+                        &mut active,
+                        &mut result_receiver,
+                        &mut execution_receiver,
+                        self.workspace.as_ref(),
+                        &mut pending_logs,
+                    )
+                    .await;
+                    self.pending_logs = pending_logs;
+                    return Ok(RunExit::Shutdown);
+                }
                 Ok(ConnectionExit::TokenRevoked { reason }) => {
+                    self.cleanup_active_task_for_exit(
+                        &mut active,
+                        &mut result_receiver,
+                        &mut execution_receiver,
+                        self.workspace.as_ref(),
+                        &mut pending_logs,
+                    )
+                    .await;
+                    self.pending_logs = pending_logs;
                     return Ok(RunExit::TokenRevoked { reason });
                 }
                 Ok(ConnectionExit::Disconnected) => {
@@ -280,6 +335,15 @@ impl Agent {
                         "Agent WebSocket connection failed; retrying"
                     );
                     if wait_for_retry(delay, &mut shutdown).await {
+                        self.cleanup_active_task_for_exit(
+                            &mut active,
+                            &mut result_receiver,
+                            &mut execution_receiver,
+                            self.workspace.as_ref(),
+                            &mut pending_logs,
+                        )
+                        .await;
+                        self.pending_logs = pending_logs;
                         return Ok(RunExit::Shutdown);
                     }
                 }
@@ -287,15 +351,53 @@ impl Agent {
             if disconnected {
                 let delay = retry.next_delay();
                 if wait_for_retry(delay, &mut shutdown).await {
+                    self.cleanup_active_task_for_exit(
+                        &mut active,
+                        &mut result_receiver,
+                        &mut execution_receiver,
+                        self.workspace.as_ref(),
+                        &mut pending_logs,
+                    )
+                    .await;
+                    self.pending_logs = pending_logs;
                     return Ok(RunExit::Shutdown);
                 }
             }
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn cleanup_active_task_for_exit(
+        &self,
+        active: &mut Option<ActiveTask>,
+        result_receiver: &mut mpsc::UnboundedReceiver<PreparationEvent>,
+        execution_receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
+        workspace_manager: Option<&WorkspaceManager>,
+        pending_logs: &mut HashMap<String, PendingLog>,
+    ) {
+        if let Some(pending) = cancel_active_task(
+            active,
+            result_receiver,
+            execution_receiver,
+            workspace_manager,
+        )
+        .await
+        {
+            // Preserve the durable log buffer for a future reconnect. This is
+            // distinct from ABANDON, where the Server has explicitly
+            // invalidated the lease and the buffer must be discarded.
+            pending_logs.insert(pending.task_id.clone(), pending);
+        }
+    }
+
     async fn connect_once(
         &mut self,
         mut shutdown: watch::Receiver<bool>,
+        result_sender: &mpsc::UnboundedSender<PreparationEvent>,
+        result_receiver: &mut mpsc::UnboundedReceiver<PreparationEvent>,
+        active: &mut Option<ActiveTask>,
+        execution_receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
+        pending_logs: &mut HashMap<String, PendingLog>,
     ) -> Result<ConnectionExit, AgentError> {
         let url = self.config.websocket_url()?;
         let mut request = url
@@ -315,7 +417,7 @@ impl Agent {
             close_socket(&mut socket).await;
             return Ok(ConnectionExit::Shutdown);
         }
-        self.send_hello(&mut socket).await?;
+        self.send_hello(&mut socket, active.as_ref()).await?;
         let registered = match self.wait_for_registered(&mut socket, &mut shutdown).await? {
             RegisteredResult::Registered(payload) => payload,
             RegisteredResult::Disconnected => return Ok(ConnectionExit::Disconnected),
@@ -328,13 +430,60 @@ impl Agent {
             }
         };
         let heartbeat_seconds = self.record_registered(&registered)?;
-        self.replay_pending_logs(&mut socket).await?;
+        let recovery_status = if active.is_some() {
+            match self
+                .wait_for_recovery(
+                    &mut socket,
+                    &mut shutdown,
+                    active,
+                    result_receiver,
+                    execution_receiver,
+                    pending_logs,
+                )
+                .await
+            {
+                Ok(status) => status,
+                Err(AgentError::ShutdownRequested) => {
+                    close_socket(&mut socket).await;
+                    return Ok(ConnectionExit::Shutdown);
+                }
+                Err(error) => return Err(error),
+            }
+        } else {
+            None
+        };
+        if active.is_some() {
+            self.resume_active_task(
+                &mut socket,
+                active,
+                execution_receiver,
+                recovery_status,
+                pending_logs,
+            )
+            .await?;
+        }
+        self.replay_pending_logs(&mut socket, pending_logs).await?;
+        self.replay_active_logs(&mut socket, active).await?;
+        self.resend_pending_result(&mut socket, active).await?;
         retry_log_connected(self.agent_id.as_deref(), heartbeat_seconds);
-        self.run_connected(&mut socket, &mut shutdown, heartbeat_seconds)
-            .await
+        self.run_connected(
+            &mut socket,
+            &mut shutdown,
+            heartbeat_seconds,
+            result_sender,
+            result_receiver,
+            active,
+            execution_receiver,
+            pending_logs,
+        )
+        .await
     }
 
-    async fn send_hello(&self, socket: &mut AgentSocket) -> Result<(), AgentError> {
+    async fn send_hello(
+        &self,
+        socket: &mut AgentSocket,
+        active: Option<&ActiveTask>,
+    ) -> Result<(), AgentError> {
         let payload = AgentHelloPayload {
             agent_id: self.agent_id.clone(),
             agent_version: self.build_info.version.to_string(),
@@ -342,7 +491,7 @@ impl Agent {
             os: self.build_info.os.to_string(),
             arch: self.build_info.arch.to_string(),
             workspace_root: self.config.workspace_root.to_string_lossy().into_owned(),
-            current_task: None,
+            current_task: active.map(active_current_task),
         };
         send_envelope(
             socket,
@@ -429,41 +578,327 @@ impl Agent {
         }
         Ok(payload.heartbeat_interval_seconds)
     }
+
+    async fn wait_for_recovery(
+        &self,
+        socket: &mut AgentSocket,
+        shutdown: &mut watch::Receiver<bool>,
+        active: &mut Option<ActiveTask>,
+        result_receiver: &mut mpsc::UnboundedReceiver<PreparationEvent>,
+        execution_receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
+        pending_logs: &mut HashMap<String, PendingLog>,
+    ) -> Result<Option<BuildTaskStatus>, AgentError> {
+        let incoming = tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || shutdown_requested(shutdown) {
+                    return Err(AgentError::ShutdownRequested);
+                }
+                return Err(AgentError::Protocol("task recovery was interrupted".to_string()));
+            }
+            incoming = read_message(socket) => incoming?,
+        };
+        let Some(DecodedMessage::TaskRecovery(envelope)) = incoming else {
+            return Err(AgentError::Protocol(
+                "expected task.recovery after agent.registered".to_string(),
+            ));
+        };
+        let Some(current) = active.as_ref() else {
+            return Ok(None);
+        };
+        let payload: TaskRecoveryPayload = envelope.payload;
+        if payload.task_id != current.task_id {
+            return Err(AgentError::Protocol(
+                "task recovery taskId mismatch".to_string(),
+            ));
+        }
+        let current_task_id = current.task_id.clone();
+        let current_lease_token = current.lease_token.clone();
+        let current_status = active_current_task(current).status;
+        let recovered_status = match payload.action {
+            TaskRecoveryAction::Resume => {
+                let status = payload.status.ok_or_else(|| {
+                    AgentError::Protocol(
+                        "task recovery RESUME did not include a status".to_string(),
+                    )
+                })?;
+                if !status.is_agent_reportable() || status != current_status {
+                    return Err(AgentError::Protocol(
+                        "task recovery RESUME status did not match the local task".to_string(),
+                    ));
+                }
+                // The Server is authoritative for the acknowledged prefix. A
+                // value beyond the local buffer is rejected by LogBuffer.
+                active
+                    .as_mut()
+                    .expect("active task still exists")
+                    .log_buffer
+                    .acknowledge(payload.acknowledged_log_sequence)?;
+                Some(status)
+            }
+            TaskRecoveryAction::Cancel => {
+                let status = payload.status.ok_or_else(|| {
+                    AgentError::Protocol(
+                        "task recovery CANCEL did not include a status".to_string(),
+                    )
+                })?;
+                if !status.is_agent_reportable() || status != current_status {
+                    return Err(AgentError::Protocol(
+                        "task recovery CANCEL status did not match the local task".to_string(),
+                    ));
+                }
+                active
+                    .as_mut()
+                    .expect("active task still exists")
+                    .log_buffer
+                    .acknowledge(payload.acknowledged_log_sequence)?;
+                let cancel = TaskCancelPayload {
+                    task_id: current_task_id,
+                    lease_token: current_lease_token,
+                    requested_at: utc_now(),
+                    reason: Some("Server requested cancellation after Agent reconnect".to_string()),
+                };
+                self.handle_task_cancel(
+                    socket,
+                    active,
+                    result_receiver,
+                    execution_receiver,
+                    pending_logs,
+                    cancel,
+                )
+                .await?;
+                None
+            }
+            TaskRecoveryAction::Abandon => {
+                if let Some(pending) = cancel_active_task(
+                    active,
+                    result_receiver,
+                    execution_receiver,
+                    self.workspace.as_ref(),
+                )
+                .await
+                {
+                    pending_logs.remove(&pending.task_id);
+                }
+                None
+            }
+        };
+        Ok(recovered_status)
+    }
+
+    async fn resume_active_task(
+        &self,
+        socket: &mut AgentSocket,
+        active: &mut Option<ActiveTask>,
+        execution_receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
+        recovery_status: Option<BuildTaskStatus>,
+        pending_logs: &mut HashMap<String, PendingLog>,
+    ) -> Result<(), AgentError> {
+        let Some(snapshot) = active.as_ref() else {
+            return Ok(());
+        };
+        if snapshot.pending_result.is_some() {
+            return Ok(());
+        }
+
+        if snapshot.command_completed {
+            if snapshot.artifact_upload.is_some() {
+                return Ok(());
+            }
+            if recovery_status != Some(BuildTaskStatus::Uploading) {
+                let uploading = TaskStatusPayload {
+                    task_id: snapshot.task_id.clone(),
+                    lease_token: snapshot.lease_token.clone(),
+                    status: BuildTaskStatus::Uploading,
+                    occurred_at: utc_now(),
+                    reason: None,
+                    source_commit: snapshot.source_commit.clone(),
+                };
+                send_envelope(
+                    socket,
+                    MessageType::TaskStatus,
+                    serde_json::to_value(uploading)?,
+                )
+                .await?;
+            }
+            if snapshot.artifact_manifest.is_none() {
+                let source_path = snapshot
+                    .workspace
+                    .as_ref()
+                    .ok_or_else(|| {
+                        AgentError::Protocol(
+                            "task workspace was missing before artifact recovery".to_string(),
+                        )
+                    })?
+                    .source_path()
+                    .to_path_buf();
+                let artifact_dir = snapshot.artifact_dir.clone();
+                let manifest = match scan_artifacts(&source_path, &artifact_dir).await {
+                    Ok(manifest) => manifest,
+                    Err(error) => {
+                        return self
+                            .fail_active_task(
+                                socket,
+                                active,
+                                &safe_artifact_failure(&error),
+                                None,
+                                pending_logs,
+                            )
+                            .await;
+                    }
+                };
+                let Some(current) = active.as_mut() else {
+                    return Ok(());
+                };
+                current.artifact_manifest = Some(manifest);
+            }
+            let Some(current) = active.as_ref() else {
+                return Ok(());
+            };
+            let manifest = current
+                .artifact_manifest
+                .as_ref()
+                .expect("artifact manifest was restored");
+            send_envelope(
+                socket,
+                MessageType::TaskArtifactManifest,
+                serde_json::to_value(build_artifact_manifest_payload(current, manifest))?,
+            )
+            .await?;
+            return Ok(());
+        }
+
+        if snapshot.source_commit.is_some()
+            && snapshot.workspace.is_some()
+            && snapshot.preparation.is_none()
+            && snapshot.execution.is_none()
+            && snapshot.artifact_manifest.is_none()
+            && snapshot.artifact_upload.is_none()
+        {
+            if !snapshot.config_written {
+                let source_path = snapshot
+                    .workspace
+                    .as_ref()
+                    .expect("workspace was checked above")
+                    .source_path()
+                    .to_path_buf();
+                if let Err(error) = write_platform_config(&source_path, &snapshot.config) {
+                    return self
+                        .fail_active_task(socket, active, &error.to_string(), None, pending_logs)
+                        .await;
+                }
+                if let Some(current) = active.as_mut() {
+                    current.config_written = true;
+                }
+            }
+            return match self
+                .start_active_command(socket, active, execution_receiver)
+                .await
+            {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    self.fail_active_task(socket, active, &error.to_string(), None, pending_logs)
+                        .await
+                }
+            };
+        }
+        Ok(())
+    }
+
+    async fn start_active_command(
+        &self,
+        socket: &mut AgentSocket,
+        active: &mut Option<ActiveTask>,
+        execution_receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
+    ) -> Result<(), AgentError> {
+        let (lease_expires_at, timeout_seconds, command, source_path) = {
+            let current = active.as_ref().ok_or_else(|| {
+                AgentError::Protocol("active task disappeared before command start".to_string())
+            })?;
+            let source_path = current
+                .workspace
+                .as_ref()
+                .ok_or_else(|| {
+                    AgentError::Protocol(
+                        "task workspace was missing before command start".to_string(),
+                    )
+                })?
+                .source_path()
+                .to_path_buf();
+            (
+                current.lease_expires_at.clone(),
+                current.timeout_seconds,
+                current.command.clone(),
+                source_path,
+            )
+        };
+        let lease_remaining = DateTime::parse_from_rfc3339(&lease_expires_at)
+            .ok()
+            .and_then(|value| (value.with_timezone(&Utc) - Utc::now()).to_std().ok());
+        let Some(lease_remaining) = lease_remaining else {
+            return Err(AgentError::Protocol(
+                "task lease expired before command start".to_string(),
+            ));
+        };
+        let command_budget = lease_remaining.saturating_sub(COMMAND_REPORT_RESERVE);
+        if command_budget.is_zero() {
+            return Err(AgentError::Protocol(
+                "insufficient lease time for command and status reporting".to_string(),
+            ));
+        }
+        let command_timeout = Duration::from_secs(timeout_seconds).min(command_budget);
+        let shell = if cfg!(windows) {
+            "cmd.exe /D /S /C"
+        } else {
+            "/bin/sh -lc"
+        };
+        debug!(shell, "Starting build command after recovery");
+        let execution = start_command(&command, &source_path, command_timeout)
+            .map_err(|error| AgentError::Protocol(error.to_string()))?;
+        let current = active.as_mut().ok_or_else(|| {
+            AgentError::Protocol("active task disappeared after command start".to_string())
+        })?;
+        *execution_receiver = Some(execution.receiver);
+        current.execution = Some(execution.task);
+        current.execution_cancel = execution.cancel;
+        let running = TaskStatusPayload {
+            task_id: current.task_id.clone(),
+            lease_token: current.lease_token.clone(),
+            status: BuildTaskStatus::Running,
+            occurred_at: utc_now(),
+            reason: None,
+            source_commit: current.source_commit.clone(),
+        };
+        send_envelope(
+            socket,
+            MessageType::TaskStatus,
+            serde_json::to_value(running)?,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn run_connected(
         &mut self,
         socket: &mut AgentSocket,
         shutdown: &mut watch::Receiver<bool>,
         heartbeat_seconds: u64,
+        result_sender: &mpsc::UnboundedSender<PreparationEvent>,
+        result_receiver: &mut mpsc::UnboundedReceiver<PreparationEvent>,
+        active: &mut Option<ActiveTask>,
+        execution_receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
+        pending_logs: &mut HashMap<String, PendingLog>,
     ) -> Result<ConnectionExit, AgentError> {
-        let (result_sender, mut result_receiver) = mpsc::unbounded_channel::<PreparationEvent>();
-        let mut active: Option<ActiveTask> = None;
-        let mut execution_receiver = None;
-        let mut pending_logs = std::mem::take(&mut self.pending_logs);
-        let result = self
-            .run_connected_loop(
-                socket,
-                shutdown,
-                heartbeat_seconds,
-                &result_sender,
-                &mut result_receiver,
-                &mut active,
-                &mut execution_receiver,
-                &mut pending_logs,
-            )
-            .await;
-        let pending = cancel_active_task(
-            &mut active,
-            &mut result_receiver,
-            &mut execution_receiver,
-            self.workspace.as_ref(),
+        self.run_connected_loop(
+            socket,
+            shutdown,
+            heartbeat_seconds,
+            result_sender,
+            result_receiver,
+            active,
+            execution_receiver,
+            pending_logs,
         )
-        .await;
-        if let Some(pending) = pending {
-            pending_logs.insert(pending.task_id.clone(), pending);
-        }
-        self.pending_logs = pending_logs;
-        drop(result_sender);
-        result
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -508,6 +943,9 @@ impl Agent {
                         }
                         Some(DecodedMessage::TaskArtifactManifestAck(envelope)) => {
                             self.handle_artifact_manifest_ack(socket, active, pending_logs, envelope.payload).await?;
+                        }
+                        Some(DecodedMessage::TaskResultAck(envelope)) => {
+                            self.handle_result_ack(active, envelope.payload).await?;
                         }
                         Some(DecodedMessage::TaskAvailable(envelope)) => {
                             let payload = envelope.payload;
@@ -612,6 +1050,8 @@ impl Agent {
             lease_token: lease_token.clone(),
             lease_expires_at: assignment.lease_expires_at.clone(),
             source_commit: None,
+            config_written: false,
+            command_completed: false,
             command: assignment.command.clone(),
             config: assignment.config.clone(),
             stdout_log_redactor: SensitiveLogRedactor::new(
@@ -632,6 +1072,7 @@ impl Agent {
             artifact_dir: assignment.artifact_dir.clone(),
             artifact_manifest: None,
             artifact_upload: None,
+            pending_result: None,
         });
         let accepted = TaskAcceptedPayload {
             task_id: task_id.clone(),
@@ -781,13 +1222,15 @@ impl Agent {
                 canceled_at: utc_now(),
                 reason: Some("Agent confirmed task cancellation".to_string()),
             };
+            if let Some(current) = active.as_mut() {
+                current.pending_result = Some(PendingTerminalResult::Canceled(canceled.clone()));
+            }
             send_envelope(
                 socket,
                 MessageType::TaskCanceled,
                 serde_json::to_value(canceled)?,
             )
             .await?;
-            preserve_active_log(active, pending_logs);
         }
         Ok(())
     }
@@ -865,73 +1308,23 @@ impl Agent {
                         .fail_active_task(socket, active, &error.to_string(), None, pending_logs)
                         .await;
                 }
-
-                let lease_remaining = DateTime::parse_from_rfc3339(&current.lease_expires_at)
-                    .ok()
-                    .and_then(|value| (value.with_timezone(&Utc) - Utc::now()).to_std().ok());
-                let Some(lease_remaining) = lease_remaining else {
-                    return self
-                        .fail_active_task(
-                            socket,
-                            active,
-                            "COMMAND_TIMEOUT: task lease expired before command start",
-                            None,
-                            pending_logs,
-                        )
-                        .await;
-                };
-                let command_budget = lease_remaining.saturating_sub(COMMAND_REPORT_RESERVE);
-                if command_budget.is_zero() {
-                    return self
-                        .fail_active_task(
-                            socket,
-                            active,
-                            "COMMAND_TIMEOUT: insufficient lease time for command and status reporting",
-                            None,
-                            pending_logs,
-                        )
-                        .await;
-                }
-                let command_timeout =
-                    Duration::from_secs(current.timeout_seconds).min(command_budget);
-                let shell = if cfg!(windows) {
-                    "cmd.exe /D /S /C"
-                } else {
-                    "/bin/sh -lc"
-                };
-                debug!(task_id = %current.task_id, shell, "Starting build command");
-                let execution = match start_command(&current.command, &source_path, command_timeout)
+                current.config_written = true;
+                match self
+                    .start_active_command(socket, active, execution_receiver)
+                    .await
                 {
-                    Ok(execution) => execution,
+                    Ok(()) => Ok(()),
                     Err(error) => {
-                        return self
-                            .fail_active_task(
-                                socket,
-                                active,
-                                &error.to_string(),
-                                None,
-                                pending_logs,
-                            )
-                            .await;
+                        self.fail_active_task(
+                            socket,
+                            active,
+                            &error.to_string(),
+                            None,
+                            pending_logs,
+                        )
+                        .await
                     }
-                };
-                *execution_receiver = Some(execution.receiver);
-                current.execution = Some(execution.task);
-                current.execution_cancel = execution.cancel;
-                let running = TaskStatusPayload {
-                    task_id: current.task_id.clone(),
-                    lease_token: current.lease_token.clone(),
-                    status: BuildTaskStatus::Running,
-                    occurred_at: utc_now(),
-                    reason: None,
-                    source_commit: current.source_commit.clone(),
-                };
-                send_envelope(
-                    socket,
-                    MessageType::TaskStatus,
-                    serde_json::to_value(running)?,
-                )
-                .await
+                }
             }
             Err(error) => {
                 self.fail_active_task(
@@ -978,6 +1371,7 @@ impl Agent {
                     if let Some(handle) = current.execution.take() {
                         let _ = handle.await;
                     }
+                    current.command_completed = true;
                 }
                 execution_receiver.take();
                 for (stream, chunk) in tail_logs {
@@ -1198,24 +1592,15 @@ impl Agent {
             artifact_bytes: manifest.total_bytes,
             source_commit: current.source_commit.clone(),
         };
+        if let Some(current) = active.as_mut() {
+            current.pending_result = Some(PendingTerminalResult::Completed(completed.clone()));
+        }
         send_envelope(
             socket,
             MessageType::TaskCompleted,
             serde_json::to_value(completed)?,
         )
         .await?;
-        if let Some(current) = active.as_mut() {
-            if let Some(workspace) = current.workspace.take() {
-                if let Err(error) = workspace.cleanup() {
-                    warn!(
-                        task_id = %current.task_id,
-                        error_code = error.code(),
-                        "completed task workspace cleanup failed"
-                    );
-                }
-            }
-        }
-        preserve_active_log(active, pending_logs);
         Ok(())
     }
 
@@ -1225,7 +1610,7 @@ impl Agent {
         active: &mut Option<ActiveTask>,
         reason: &str,
         exit_code: Option<i32>,
-        pending_logs: &mut HashMap<String, PendingLog>,
+        _pending_logs: &mut HashMap<String, PendingLog>,
     ) -> Result<(), AgentError> {
         let Some(current) = active.as_ref() else {
             return Ok(());
@@ -1237,13 +1622,15 @@ impl Agent {
             failed_at: utc_now(),
             exit_code,
         };
+        if let Some(current) = active.as_mut() {
+            current.pending_result = Some(PendingTerminalResult::Failed(failed.clone()));
+        }
         send_envelope(
             socket,
             MessageType::TaskFailed,
             serde_json::to_value(failed)?,
         )
         .await?;
-        preserve_active_log(active, pending_logs);
         Ok(())
     }
 
@@ -1329,8 +1716,12 @@ impl Agent {
         Ok(())
     }
 
-    async fn replay_pending_logs(&mut self, socket: &mut AgentSocket) -> Result<(), AgentError> {
-        for pending in self.pending_logs.values_mut() {
+    async fn replay_pending_logs(
+        &self,
+        socket: &mut AgentSocket,
+        pending_logs: &mut HashMap<String, PendingLog>,
+    ) -> Result<(), AgentError> {
+        for pending in pending_logs.values_mut() {
             let acknowledged = pending.log_buffer.acknowledged_sequence();
             let mut reader = pending.log_buffer.pending_reader()?;
             while let Some(entry) = reader.next()? {
@@ -1348,6 +1739,98 @@ impl Agent {
                 send_envelope(socket, MessageType::TaskLog, serde_json::to_value(payload)?).await?;
             }
         }
+        Ok(())
+    }
+
+    async fn replay_active_logs(
+        &self,
+        socket: &mut AgentSocket,
+        active: &mut Option<ActiveTask>,
+    ) -> Result<(), AgentError> {
+        let Some(task) = active.as_mut() else {
+            return Ok(());
+        };
+        let acknowledged = task.log_buffer.acknowledged_sequence();
+        let mut reader = task.log_buffer.pending_reader()?;
+        while let Some(entry) = reader.next()? {
+            if entry.sequence <= acknowledged {
+                continue;
+            }
+            let payload = TaskLogPayload {
+                task_id: task.task_id.clone(),
+                lease_token: task.lease_token.clone(),
+                sequence: entry.sequence,
+                stream: entry.stream,
+                chunk: entry.chunk,
+                emitted_at: entry.emitted_at,
+            };
+            send_envelope(socket, MessageType::TaskLog, serde_json::to_value(payload)?).await?;
+        }
+        Ok(())
+    }
+
+    async fn resend_pending_result(
+        &self,
+        socket: &mut AgentSocket,
+        active: &Option<ActiveTask>,
+    ) -> Result<(), AgentError> {
+        let Some(task) = active.as_ref() else {
+            return Ok(());
+        };
+        let Some(result) = task.pending_result.as_ref() else {
+            return Ok(());
+        };
+        let (message_type, payload) = match result {
+            PendingTerminalResult::Completed(value) => {
+                (MessageType::TaskCompleted, serde_json::to_value(value)?)
+            }
+            PendingTerminalResult::Failed(value) => {
+                (MessageType::TaskFailed, serde_json::to_value(value)?)
+            }
+            PendingTerminalResult::Canceled(value) => {
+                (MessageType::TaskCanceled, serde_json::to_value(value)?)
+            }
+        };
+        send_envelope(socket, message_type, payload).await
+    }
+
+    async fn handle_result_ack(
+        &self,
+        active: &mut Option<ActiveTask>,
+        payload: TaskResultAckPayload,
+    ) -> Result<(), AgentError> {
+        let Some(task) = active.as_ref() else {
+            return Ok(());
+        };
+        if task.task_id != payload.task_id {
+            return Err(AgentError::Protocol(
+                "task.result.ack taskId did not match active task".to_string(),
+            ));
+        }
+        let expected_status = match task.pending_result.as_ref() {
+            Some(PendingTerminalResult::Completed(_)) => BuildTaskStatus::Succeeded,
+            Some(PendingTerminalResult::Failed(_)) => BuildTaskStatus::Failed,
+            Some(PendingTerminalResult::Canceled(_)) => BuildTaskStatus::Canceled,
+            None => return Ok(()),
+        };
+        if payload.status != expected_status {
+            return Err(AgentError::Protocol(
+                "task.result.ack status did not match pending result".to_string(),
+            ));
+        }
+        let Some(mut completed) = active.take() else {
+            return Ok(());
+        };
+        if let Some(workspace) = completed.workspace.take() {
+            if let Err(error) = workspace.cleanup() {
+                warn!(
+                    task_id = %completed.task_id,
+                    error_code = error.code(),
+                    "terminal result acknowledged but workspace cleanup failed"
+                );
+            }
+        }
+        info!(task_id = %completed.task_id, status = ?payload.status, "Server acknowledged terminal task result");
         Ok(())
     }
 
@@ -1405,6 +1888,22 @@ fn build_artifact_manifest_payload(
     }
 }
 
+fn active_current_task(task: &ActiveTask) -> AgentCurrentTask {
+    let status = if task.artifact_manifest.is_some() || task.artifact_upload.is_some() {
+        BuildTaskStatus::Uploading
+    } else if task.execution.is_some() || task.execution_cancel.is_some() {
+        BuildTaskStatus::Running
+    } else {
+        BuildTaskStatus::Preparing
+    };
+    AgentCurrentTask {
+        task_id: task.task_id.clone(),
+        lease_token: task.lease_token.clone(),
+        status,
+        last_log_sequence: task.log_buffer.acknowledged_sequence(),
+    }
+}
+
 fn safe_artifact_failure(error: &ArtifactError) -> String {
     match error {
         ArtifactError::ScanInvalid => {
@@ -1426,23 +1925,6 @@ fn safe_artifact_failure(error: &ArtifactError) -> String {
             "ARTIFACT_UPLOAD_TIMEOUT: artifact upload timed out".to_string()
         }
     }
-}
-
-fn preserve_active_log(
-    active: &mut Option<ActiveTask>,
-    pending_logs: &mut HashMap<String, PendingLog>,
-) {
-    let Some(task) = active.take() else {
-        return;
-    };
-    pending_logs.insert(
-        task.task_id.clone(),
-        PendingLog {
-            task_id: task.task_id,
-            lease_token: task.lease_token,
-            log_buffer: task.log_buffer,
-        },
-    );
 }
 
 fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
@@ -1940,6 +2422,21 @@ mod tests {
         assert_eq!(retry.next_delay(), Duration::from_millis(25));
         retry.reset();
         assert_eq!(retry.next_delay(), Duration::from_millis(10));
+    }
+
+    #[tokio::test]
+    async fn retry_backoff_is_interrupted_by_shutdown() {
+        let (sender, mut receiver) = watch::channel(false);
+        let waiting =
+            tokio::spawn(
+                async move { wait_for_retry(Duration::from_secs(60), &mut receiver).await },
+            );
+        tokio::task::yield_now().await;
+        sender.send(true).expect("shutdown signal");
+        assert!(tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("retry wait should be interruptible")
+            .expect("retry wait task"));
     }
 
     #[test]
