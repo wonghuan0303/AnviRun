@@ -10,7 +10,7 @@ use build_agent_contracts::{
     TaskArtifactManifestAckPayload, TaskArtifactManifestPayload, TaskAssignmentPayload,
     TaskCancelPayload, TaskCanceledPayload, TaskClaimPayload, TaskCompletedPayload,
     TaskFailedPayload, TaskLogAckPayload, TaskLogPayload, TaskRecoveryAction, TaskRecoveryPayload,
-    TaskResultAckPayload, TaskStatusPayload,
+    TaskResultAckPayload, TaskStatusPayload, MAX_AGENT_WS_MESSAGE_BYTES,
 };
 use chrono::{DateTime, SecondsFormat, Utc};
 use futures_util::{SinkExt, StreamExt};
@@ -47,6 +47,8 @@ use crate::{AgentBuildInfo, AgentConfig};
 type AgentSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 const COMMAND_REPORT_RESERVE: Duration = Duration::from_secs(2);
 const EXECUTION_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+const ARTIFACT_MANIFEST_TOO_LARGE_REASON: &str =
+    "ARTIFACT_MANIFEST_TOO_LARGE: artifact manifest exceeds websocket message limit";
 
 #[derive(Debug, Error)]
 pub enum AgentError {
@@ -751,19 +753,8 @@ impl Agent {
                 };
                 current.artifact_manifest = Some(manifest);
             }
-            let Some(current) = active.as_ref() else {
-                return Ok(());
-            };
-            let manifest = current
-                .artifact_manifest
-                .as_ref()
-                .expect("artifact manifest was restored");
-            send_envelope(
-                socket,
-                MessageType::TaskArtifactManifest,
-                serde_json::to_value(build_artifact_manifest_payload(current, manifest))?,
-            )
-            .await?;
+            self.send_artifact_manifest(socket, active, pending_logs)
+                .await?;
             return Ok(());
         }
 
@@ -1464,14 +1455,9 @@ impl Agent {
                         let Some(current) = active.as_mut() else {
                             return Ok(());
                         };
-                        let manifest_payload = build_artifact_manifest_payload(current, &manifest);
                         current.artifact_manifest = Some(manifest);
-                        send_envelope(
-                            socket,
-                            MessageType::TaskArtifactManifest,
-                            serde_json::to_value(manifest_payload)?,
-                        )
-                        .await
+                        self.send_artifact_manifest(socket, active, pending_logs)
+                            .await
                     }
                     Some(exit_code) => {
                         self.fail_active_task(
@@ -1547,6 +1533,40 @@ impl Agent {
             current.artifact_upload = Some(upload);
         }
         Ok(())
+    }
+
+    async fn send_artifact_manifest(
+        &self,
+        socket: &mut AgentSocket,
+        active: &mut Option<ActiveTask>,
+        pending_logs: &mut HashMap<String, PendingLog>,
+    ) -> Result<(), AgentError> {
+        let encoded = {
+            let Some(current) = active.as_ref() else {
+                return Ok(());
+            };
+            let Some(manifest) = current.artifact_manifest.as_ref() else {
+                return Err(AgentError::Protocol(
+                    "artifact manifest was missing before send".to_string(),
+                ));
+            };
+            encode_artifact_manifest_message(build_artifact_manifest_payload(current, manifest))?
+        };
+        if encoded.len() > MAX_AGENT_WS_MESSAGE_BYTES {
+            return self
+                .fail_active_task(
+                    socket,
+                    active,
+                    ARTIFACT_MANIFEST_TOO_LARGE_REASON,
+                    None,
+                    pending_logs,
+                )
+                .await;
+        }
+        socket
+            .send(Message::Text(encoded.into()))
+            .await
+            .map_err(map_websocket_error)
     }
 
     async fn handle_artifact_upload_result(
@@ -1886,6 +1906,15 @@ fn build_artifact_manifest_payload(
         total_bytes: manifest.total_bytes,
         files: manifest.entries(),
     }
+}
+
+fn encode_artifact_manifest_message(
+    payload: TaskArtifactManifestPayload,
+) -> Result<String, AgentError> {
+    encode_envelope(
+        MessageType::TaskArtifactManifest,
+        serde_json::to_value(payload)?,
+    )
 }
 
 fn active_current_task(task: &ActiveTask) -> AgentCurrentTask {
@@ -2272,6 +2301,14 @@ async fn send_envelope(
     message_type: MessageType,
     payload: Value,
 ) -> Result<(), AgentError> {
+    let text = encode_envelope(message_type, payload)?;
+    socket
+        .send(Message::Text(text.into()))
+        .await
+        .map_err(map_websocket_error)
+}
+
+fn encode_envelope(message_type: MessageType, payload: Value) -> Result<String, AgentError> {
     let envelope = ProtocolEnvelope {
         id: Uuid::new_v4().to_string(),
         message_type,
@@ -2279,11 +2316,7 @@ async fn send_envelope(
         protocol_version: ProtocolVersion::V1,
         payload,
     };
-    let text = serde_json::to_string(&envelope)?;
-    socket
-        .send(Message::Text(text.into()))
-        .await
-        .map_err(map_websocket_error)
+    Ok(serde_json::to_string(&envelope)?)
 }
 
 async fn read_message(socket: &mut AgentSocket) -> Result<Option<DecodedMessage>, AgentError> {
@@ -2550,6 +2583,118 @@ mod tests {
         let mut reader = buffer.pending_reader().expect("pending reader");
         assert_eq!(reader.next().expect("next log").unwrap().sequence, 2);
         assert!(reader.next().expect("end of logs").is_none());
+    }
+
+    fn manifest_with_file_count(file_count: usize) -> ArtifactManifest {
+        let files = (0..file_count)
+            .map(|index| crate::artifacts::ScannedArtifact {
+                relative_path: format!("nested/file-{index:05}-{}.txt", "x".repeat(32)),
+                path: PathBuf::new(),
+                size: 1,
+                sha256: "a".repeat(64),
+            })
+            .collect::<Vec<_>>();
+        ArtifactManifest {
+            files,
+            total_bytes: file_count as u64,
+        }
+    }
+
+    fn manifest_payload(file_count: usize) -> TaskArtifactManifestPayload {
+        TaskArtifactManifestPayload {
+            task_id: Uuid::new_v4().to_string(),
+            lease_token: "lease-token-000001".to_string(),
+            artifact_dir: "dist".to_string(),
+            total_bytes: file_count as u64,
+            files: manifest_with_file_count(file_count).entries(),
+        }
+    }
+
+    fn active_task_with_manifest(root: &Path, manifest: ArtifactManifest) -> ActiveTask {
+        let task_id = Uuid::new_v4().to_string();
+        let config = serde_json::Map::new();
+        ActiveTask {
+            task_id: task_id.clone(),
+            lease_token: "lease-token-000001".to_string(),
+            lease_expires_at: "2099-08-30T03:00:00.000Z".to_string(),
+            source_commit: None,
+            config_written: true,
+            command_completed: true,
+            command: "build".to_string(),
+            config: config.clone(),
+            stdout_log_redactor: SensitiveLogRedactor::new(&config, &[]),
+            stderr_log_redactor: SensitiveLogRedactor::new(&config, &[]),
+            timeout_seconds: 10,
+            next_log_sequence: 1,
+            log_buffer: LogBuffer::new(root, &task_id, 1024 * 1024).expect("log buffer"),
+            workspace: None,
+            preparation: None,
+            execution: None,
+            execution_cancel: None,
+            artifact_dir: "dist".to_string(),
+            artifact_manifest: Some(manifest),
+            artifact_upload: None,
+            pending_result: None,
+        }
+    }
+
+    #[test]
+    fn artifact_manifest_size_check_uses_complete_utf8_envelope() {
+        let small = encode_artifact_manifest_message(manifest_payload(1)).expect("small manifest");
+        assert!(small.len() <= MAX_AGENT_WS_MESSAGE_BYTES);
+
+        let large = encode_artifact_manifest_message(manifest_payload(20_000))
+            .expect("large manifest encoding");
+        assert!(large.len() > MAX_AGENT_WS_MESSAGE_BYTES);
+    }
+
+    #[tokio::test]
+    async fn oversized_artifact_manifest_reports_failure_without_sending_manifest() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("listener address");
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("Agent TCP connection");
+            let mut socket =
+                accept_hdr_async(stream, |_: &Request, response: Response| Ok(response))
+                    .await
+                    .expect("WebSocket handshake");
+            let message = next_json(&mut socket).await;
+            assert_eq!(message["type"], "task.failed");
+            assert_eq!(
+                message["payload"]["reason"],
+                ARTIFACT_MANIFEST_TOO_LARGE_REASON
+            );
+        });
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let config = test_config(
+            &format!("ws://{address}"),
+            directory.path().join("state.json"),
+        );
+        let agent = Agent::from_config(config).expect("Agent should initialize");
+        let (mut socket, _) = connect_async(format!("ws://{address}"))
+            .await
+            .expect("connect");
+        let mut active = Some(active_task_with_manifest(
+            directory.path(),
+            manifest_with_file_count(20_000),
+        ));
+        let mut pending_logs = HashMap::new();
+
+        agent
+            .send_artifact_manifest(&mut socket, &mut active, &mut pending_logs)
+            .await
+            .expect("oversized manifest should become a task failure");
+        assert!(matches!(
+            active
+                .as_ref()
+                .and_then(|task| task.pending_result.as_ref()),
+            Some(PendingTerminalResult::Failed(failure))
+                if failure.reason == ARTIFACT_MANIFEST_TOO_LARGE_REASON
+        ));
+        server_task.await.expect("server task");
     }
 
     fn test_config(server_url: &str, state_file: PathBuf) -> AgentConfig {

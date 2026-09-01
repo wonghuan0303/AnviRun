@@ -127,10 +127,11 @@ export class TasksController {
     @Param('taskId') taskId: string,
     @Body() body: unknown,
     @CurrentUser() actor: AuthenticatedRequestUser,
+    @Req() request: Request,
   ) {
     try {
       const parsed = parseCancelTaskDto(body);
-      return await this.tasks.cancelTask(actor, taskId, parsed.reason);
+      return await this.tasks.cancelTask(actor, taskId, parsed.reason, requestId(request));
     } catch (error) {
       if (error instanceof ApiException) throw error;
       throw validationException();

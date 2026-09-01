@@ -371,10 +371,19 @@ export class TasksService {
     actor: AuthenticatedRequestUser,
     taskId: string,
     reason?: string,
+    requestId?: string,
   ): Promise<{ task: TaskResponse }> {
     this.assertUuid(taskId);
     await this.authorization.assertTaskAccess(actor, taskId);
     await this.queue.requestCancellation(taskId, reason);
+    await this.audit.record({
+      actorId: actor.id,
+      action: 'TASK_CANCEL_REQUESTED',
+      resourceType: 'BuildTask',
+      resourceId: taskId,
+      requestId,
+      metadata: { outcome: 'requested' },
+    });
     return this.getTask(actor, taskId);
   }
 
@@ -390,7 +399,21 @@ export class TasksService {
       select: { projectId: true },
     });
     if (!previous) throw new ApiException('RESOURCE_NOT_FOUND');
-    return this.createTask(actor, previous.projectId, requestId, creationIdempotencyKey);
+    const rebuilt = await this.createTask(
+      actor,
+      previous.projectId,
+      requestId,
+      creationIdempotencyKey,
+    );
+    await this.audit.record({
+      actorId: actor.id,
+      action: 'TASK_REBUILT',
+      resourceType: 'BuildTask',
+      resourceId: rebuilt.task.id,
+      requestId,
+      metadata: { previousTaskId: taskId },
+    });
+    return rebuilt;
   }
 
   private assertUuid(value: string): void {

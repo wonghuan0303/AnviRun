@@ -323,13 +323,25 @@ describe('T5.3 artifact PostgreSQL/API integration', () => {
     expect(otherList.status).toBe(404);
     expect(otherList.body.code).toBe('RESOURCE_NOT_FOUND');
 
+    const deleteRequestId = 'artifact-delete-audit-001';
     const deleted = await request(app.getHttpServer())
       .delete(`/api/artifacts/${artifactId}`)
-      .set('Authorization', `Bearer ${ownerToken}`);
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-request-id', deleteRequestId);
     expect(deleted.status).toBe(204);
     expect(
       (await prisma.artifact.findUniqueOrThrow({ where: { id: artifactId } })).deletedAt,
     ).not.toBeNull();
+    const deleteAudit = await prisma.auditLog.findFirstOrThrow({
+      where: { action: 'ARTIFACT_DELETED', resourceId: artifactId },
+    });
+    expect(deleteAudit.actorId).toBe(ownerId);
+    expect(deleteAudit.resourceType).toBe('Artifact');
+    expect(deleteAudit.requestId).toBe(deleteRequestId);
+    expect(deleteAudit.metadata).toEqual({ result: 'SUCCESS', taskId: task.id });
+    expect(JSON.stringify(deleteAudit.metadata)).not.toMatch(
+      /password|token|authorization|cookie|csrf|config|storagePath/i,
+    );
     const afterDelete = await request(app.getHttpServer())
       .get(`/api/tasks/${task.id}/artifacts`)
       .set('Authorization', `Bearer ${ownerToken}`);

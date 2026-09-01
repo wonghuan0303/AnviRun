@@ -35,7 +35,7 @@ WebSocket 信封使用数字 `protocolVersion`，当前版本为 `1`。未知版
 
 ## 产物协议
 
-命令成功后 Agent 发送 `task.status(UPLOADING)`，再发送 `task.artifact-manifest`，其中包含相对路径、字节数和 SHA-256。Server 校验清单后返回 `task.artifact-manifest-ack`；该 ACK 只表示元数据被接受，不代表文件已经落盘。Agent 对每个文件执行带 `leaseToken` 的 HTTP 流式上传，全部文件上传并校验成功后发送 `task.completed`。Server 只有在清单中的每个文件都已确认、统计值一致且租约有效时，才将任务推进到 `SUCCEEDED`。
+命令成功后 Agent 发送 `task.status(UPLOADING)`，再发送 `task.artifact-manifest`，其中包含相对路径、字节数和 SHA-256。清单完整 UTF-8 envelope 受共享的 Agent WebSocket 1 MiB 上限约束；超限时 Agent 发送 `ARTIFACT_MANIFEST_TOO_LARGE` 的 `task.failed`，不发送超大清单。Server 校验清单后返回 `task.artifact-manifest-ack`；该 ACK 只表示元数据被接受，不代表文件已经落盘。Agent 对每个文件执行带 `leaseToken` 的 HTTP 流式上传，全部文件上传并校验成功后发送 `task.completed`。Server 只有在清单中的每个文件都已确认、统计值一致且租约有效时，才将任务推进到 `SUCCEEDED`。
 
 产物路径只允许安全的相对路径；文件内容不在 WebSocket 中传输。实现层必须限制单任务总大小、校验流式 SHA-256、拒绝符号链接或 reparse point，并使用独占临时文件和刷盘后的安全移动。下载 API 不属于公共 WebSocket 协议，仍需复用 Server 的项目所有权授权。
 

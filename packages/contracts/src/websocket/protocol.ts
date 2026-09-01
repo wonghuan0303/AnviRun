@@ -14,6 +14,12 @@
 /** 当前协议版本。 */
 export const PROTOCOL_VERSION = 1;
 
+/** Agent 单条 WebSocket 消息的服务端上限；manifest 也必须遵守该限制。 */
+export const MAX_AGENT_WS_MESSAGE_BYTES = 1 * 1024 * 1024;
+
+/** 浏览器日志订阅 WebSocket 单条消息的服务端上限。 */
+export const MAX_CLIENT_WS_MESSAGE_BYTES = 64 * 1024;
+
 /**
  * 本实现能够处理的协议版本集合。
  *

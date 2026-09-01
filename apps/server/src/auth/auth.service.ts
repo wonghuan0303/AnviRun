@@ -113,14 +113,17 @@ export class AuthService {
     }
   }
 
-  private async recordLoginFailure(requestId?: string): Promise<void> {
-    await this.audit.record({
-      action: 'AUTH_LOGIN_FAILED',
-      resourceType: 'User',
-      resourceId: 'unknown',
-      requestId,
-      metadata: { outcome: 'rejected' },
-    });
+  async recordLoginFailure(requestId?: string): Promise<void> {
+    await this.audit
+      .record({
+        action: 'AUTH_LOGIN_FAILED',
+        resourceType: 'User',
+        resourceId: 'unknown',
+        requestId,
+        result: 'FAILURE',
+        metadata: { outcome: 'rejected' },
+      })
+      .catch(() => undefined);
   }
 
   private toPublicUser(user: {

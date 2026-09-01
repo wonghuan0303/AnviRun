@@ -45,4 +45,6 @@ salt；允许 Unicode，按字符限制 15-128，拒绝空白密码。登录限�
 生产环境必须显式配置 `ACCESS_TOKEN_SECRET` 和 `REFRESH_TOKEN_HASH_SECRET` 两个相互独立的高复杂度密钥；重复字符、示例值、占位值和开发/测试固定值都会被拒绝。
 
 认证成功/失败、刷新轮换/拒绝、退出、用户创建/禁用/重置和管理员初始化均写入 AuditLog。
-审计 metadata 不包含密码、Hash、Token、Cookie、Authorization Header 或完整请求体。
+审计 metadata 由现有 AuditService 过滤，只保留受控的安全上下文，并包含 `result: SUCCESS|FAILURE`；不包含密码、Hash、Token、Cookie、CSRF Token、Authorization Header、完整请求体或完整配置。
+
+请求体安全边界：JSON 和 URL encoded API 请求体上限为 1 MiB，超限以结构化 `VALIDATION_FAILED` 拒绝；WebSocket 消息大小限制和产物流式上传边界见 `docs/security.md`。系统面向可信内网部署，配置静态加密和更完整的 HTTPS/部署加固留到后续阶段。

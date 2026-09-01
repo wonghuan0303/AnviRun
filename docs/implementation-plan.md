@@ -388,13 +388,16 @@
 
 #### T6.2 安全加固与审计
 
+**当前状态：已完成（精简版 T6.2）**
+
 **实施内容**
 
-- HTTPS/WSS、CORS、Helmet、CSRF/Cookie 策略、限流和请求大小限制。
-- 敏感字段加密、遮蔽和密钥配置。
-- 登录、用户/Agent/模板变更、取消任务、删除产物审计。
-- 路径、上传、命令边界和权限渗透测试。
-- 依赖漏洞扫描和秘密扫描。
+- 复核 AccessTokenGuard、AdminGuard、OwnershipGuard、Project.ownerId 所有权和 Cookie/CSRF 行为；生产 `__Host-` Cookie 保持 Secure=true、Path=/、无 Domain。
+- 统一审计 metadata 过滤与 `result: SUCCESS|FAILURE`，覆盖登录、用户/Agent/模板/项目、任务创建/取消/重建和产物软删除。
+- JSON/URL encoded 请求体限制为 1 MiB，Agent/Client WebSocket 消息分别限制为 1 MiB/64 KiB；Agent 发送前按完整 UTF-8 envelope 检查 artifact manifest，超限以 `ARTIFACT_MANIFEST_TOO_LARGE` 失败收尾；保留产物流式上传、大小、Hash 和路径边界。
+- 补充错误响应、敏感数据、越权、路径、上传清理、WebSocket 大消息、依赖和秘密扫描回归。
+- 不强制覆盖 Prisma 工具链的跨主版本传递依赖；官方 advisory 路径记录为开发工具链风险，待 Prisma 兼容版本发布后升级直接父包。
+- 明确可信内网部署边界；配置静态加密、HTTPS 证书/强制 HTTPS、复杂限流和审计管理页面不在本阶段。
 
 **验收标准**
 

@@ -36,6 +36,7 @@ import { AgentTokenService, type AuthenticatedAgent } from './agent-token.servic
 import { TaskQueueService } from '../tasks/task-queue.service';
 import { TaskLogsService } from '../task-logs/task-logs.service';
 import { ArtifactsService } from '../artifacts/artifacts.service';
+import { MAX_AGENT_WS_MESSAGE_BYTES } from '../common/security-limits';
 
 interface ConnectionState {
   readonly agentId: string;
@@ -157,7 +158,10 @@ function resultAckMessage(
 
 @Injectable()
 export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
-  private readonly websocketServer = new WebSocketServer({ noServer: true });
+  private readonly websocketServer = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_AGENT_WS_MESSAGE_BYTES,
+  });
   private readonly states = new Map<WebSocket, ConnectionState>();
   private httpServer?: HttpServer;
   private upgradeHandler?: (request: IncomingMessage, socket: Socket, head: Buffer) => void;

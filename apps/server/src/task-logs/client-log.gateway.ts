@@ -9,6 +9,7 @@ import { TokenService } from '../auth/token.service';
 import { AuthorizationService } from '../authorization/authorization.service';
 import { PrismaService } from '../database/prisma.service';
 import { TaskLogsService, type TaskLogBroadcastEvent } from './task-logs.service';
+import { MAX_CLIENT_WS_MESSAGE_BYTES } from '../common/security-limits';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const AUTH_TIMEOUT_MS = 5_000;
@@ -29,7 +30,10 @@ interface ClientState {
 /** 面向浏览器的任务日志订阅协议；不复用 Agent 注册令牌。 */
 @Injectable()
 export class ClientLogGateway implements OnApplicationBootstrap, OnModuleDestroy {
-  private readonly websocketServer = new WebSocketServer({ noServer: true });
+  private readonly websocketServer = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_CLIENT_WS_MESSAGE_BYTES,
+  });
   private readonly states = new Map<WebSocket, ClientState>();
   private httpServer?: HttpServer;
   private upgradeHandler?: (

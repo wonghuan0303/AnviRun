@@ -57,6 +57,7 @@ export class AuthController {
     try {
       input = parseLoginDto(body);
     } catch {
+      await this.auth.recordLoginFailure(requestId(request));
       throw new ApiException('VALIDATION_FAILED');
     }
 

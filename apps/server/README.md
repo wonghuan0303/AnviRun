@@ -15,6 +15,8 @@
 错误响应统一为 contracts 的 `code/message/details/requestId`。不存在用户和错误密码均为
 `AUTH_INVALID_CREDENTIALS`，过期/签名错误 Access Token 为 `AUTH_TOKEN_EXPIRED`。
 
+服务端在生产启动时关闭默认 body parser，使用 1 MiB JSON/URL encoded 请求体上限；超限或格式错误返回结构化 `VALIDATION_FAILED`，不返回解析器错误、堆栈或本地路径。Agent `/ws/agent` 单条消息上限为 1 MiB，浏览器 `/ws/client` 单条消息上限为 64 KiB。Agent 会在发送 `task.artifact-manifest` 前按完整 UTF-8 envelope 检查该上限，超限发送 `ARTIFACT_MANIFEST_TOO_LARGE` 的 `task.failed`，不重复重连；产物内容仍通过独立流式 HTTP 上传，不受 JSON parser 限制。
+
 ## 首个管理员
 
 密码不允许作为命令行参数：
@@ -155,6 +157,12 @@ Agent 在任务进入 `UPLOADING` 后先通过 WebSocket 发送 `task.artifact-m
 任务详情、日志和产物接口都先执行 `AccessTokenGuard`，再执行 `OwnershipGuard`；USER 只能访问自己 `Project.ownerId` 下的任务，ADMIN 可访问所有未软删除项目。跨用户、非法 UUID、不存在和已软删除资源统一返回 `404 RESOURCE_NOT_FOUND`。任务响应只返回安全的项目、模板、Agent 和用户摘要，`leaseHash`、`storagePath`、Agent token、`passwordHash` 和 `tokenVersion` 不对外暴露。
 
 T5.4 页面接口不承载 T6.1 的断线恢复协议；Server/Agent 已在 T6.1 支持短断线租约对账和 Agent 重启孤立任务失败。系统不提供自动重试或日志搜索。
+
+## T6.2 内网安全与审计
+
+本阶段复用 `AccessTokenGuard`、`AdminGuard`、`OwnershipGuard`、`AuthorizationService`、`CookieService` 和既有 `AuditService`，不重新设计认证协议。权限、Cookie/CSRF 和敏感响应边界保持既有规则：生产 `__Host-` Cookie 必须 Secure=true、Path=/ 且不设置 Domain；Refresh Cookie 为 HttpOnly、SameSite=Strict，refresh/logout 继续校验 CSRF；Access Token 只在 Web 内存中保存。
+
+审计覆盖认证、用户、Agent、构建模板、Project、任务创建/取消/重建和 Artifact 软删除。审计 metadata 只包含受控安全上下文，并统一写入 `result: SUCCESS|FAILURE`；密码、Hash、Token、Cookie、Authorization Header、完整配置、敏感字段、storagePath、Prisma 错误和堆栈均不得进入 API 错误、普通日志或审计记录。T6.2 不包含 HTTPS 证书加载、配置静态加密、分布式限流、审计查询页面或部署/安装工作。
 
 ### T5.1 任务日志
 

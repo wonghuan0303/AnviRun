@@ -3,6 +3,9 @@
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
+/// Must stay synchronized with `@buildplatform/contracts` WebSocket limits.
+pub const MAX_AGENT_WS_MESSAGE_BYTES: usize = 1024 * 1024;
+
 /// Protocol versions are deliberately closed: an unknown number is rejected by Serde.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "u8", into = "u8")]
@@ -660,5 +663,10 @@ mod tests {
         );
         assert!(serde_json::from_str::<BuildTaskStatus>("\"DONE\"").is_err());
         assert!(fixture("valid-form-schema.json").is_array());
+    }
+
+    #[test]
+    fn websocket_message_limit_matches_typescript_contract() {
+        assert_eq!(MAX_AGENT_WS_MESSAGE_BYTES, 1024 * 1024);
     }
 }

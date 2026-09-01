@@ -351,9 +351,11 @@ describe('T4.1 task REST PostgreSQL integration', () => {
     expect(created.status).toBe(201);
     const taskId = created.body.task.id as string;
 
+    const cancelRequestId = 'task-cancel-audit-001';
     const canceled = await request(app.getHttpServer())
       .post('/api/tasks/' + taskId + '/cancel')
       .set('Authorization', 'Bearer ' + userAToken)
+      .set('x-request-id', cancelRequestId)
       .send({ reason: 'no longer needed' });
     expect(canceled.status).toBe(200);
     expect(canceled.body.task.status).toBe('CANCELED');
@@ -378,6 +380,17 @@ describe('T4.1 task REST PostgreSQL integration', () => {
     );
     expect(history.slice(-2).every((item) => item.source === 'USER')).toBe(true);
 
+    const cancelAudit = await prisma.auditLog.findFirstOrThrow({
+      where: { action: 'TASK_CANCEL_REQUESTED', resourceId: taskId },
+    });
+    expect(cancelAudit.actorId).toBe(userAId);
+    expect(cancelAudit.resourceType).toBe('BuildTask');
+    expect(cancelAudit.requestId).toBe(cancelRequestId);
+    expect(cancelAudit.metadata).toEqual({ result: 'SUCCESS', outcome: 'requested' });
+    expect(JSON.stringify(cancelAudit.metadata)).not.toMatch(
+      /password|token|authorization|cookie|csrf|config|storagePath|no longer needed/i,
+    );
+
     const duplicate = await request(app.getHttpServer())
       .post('/api/tasks/' + taskId + '/cancel')
       .set('Authorization', 'Bearer ' + userAToken)
@@ -385,12 +398,20 @@ describe('T4.1 task REST PostgreSQL integration', () => {
     expect(duplicate.status).toBe(200);
     expect(duplicate.body.task.status).toBe(BuildTaskStatus.CANCELED);
 
+    const auditCountBeforeCrossOwner = await prisma.auditLog.count({
+      where: { action: 'TASK_CANCEL_REQUESTED', resourceId: taskId },
+    });
     const crossOwner = await request(app.getHttpServer())
       .post('/api/tasks/' + taskId + '/cancel')
       .set('Authorization', 'Bearer ' + userBToken)
       .send({});
     expect(crossOwner.status).toBe(404);
     expect(crossOwner.body.code).toBe('RESOURCE_NOT_FOUND');
+    expect(
+      await prisma.auditLog.count({
+        where: { action: 'TASK_CANCEL_REQUESTED', resourceId: taskId },
+      }),
+    ).toBe(auditCountBeforeCrossOwner);
   });
 
   it('rebuilds an accessible task from the current project configuration without changing the old task', async () => {
@@ -403,9 +424,11 @@ describe('T4.1 task REST PostgreSQL integration', () => {
       data: { branch: 'feature/rebuild', config: { channel: 'current' } },
     });
 
+    const rebuildRequestId = 'task-rebuild-audit-001';
     const rebuilt = await request(app.getHttpServer())
       .post(`/api/tasks/${originalTaskId}/rebuild`)
       .set('Authorization', `Bearer ${userAToken}`)
+      .set('x-request-id', rebuildRequestId)
       .send({});
     expect(rebuilt.status).toBe(201);
     expect(rebuilt.body.task.id).not.toBe(originalTaskId);
@@ -415,6 +438,17 @@ describe('T4.1 task REST PostgreSQL integration', () => {
     expect(rebuilt.body.task.statusHistory).toEqual(
       expect.arrayContaining([expect.objectContaining({ fromStatus: null, toStatus: 'CREATED' })]),
     );
+
+    const rebuildAudit = await prisma.auditLog.findFirstOrThrow({
+      where: { action: 'TASK_REBUILT', resourceId: rebuilt.body.task.id },
+    });
+    expect(rebuildAudit.actorId).toBe(userAId);
+    expect(rebuildAudit.resourceType).toBe('BuildTask');
+    expect(rebuildAudit.requestId).toBe(rebuildRequestId);
+    expect(rebuildAudit.metadata).toEqual({
+      result: 'SUCCESS',
+      previousTaskId: originalTaskId,
+    });
 
     const unchanged = await prisma.buildTask.findUniqueOrThrow({ where: { id: originalTaskId } });
     expect(unchanged.branch).toBe('main');

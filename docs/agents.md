@@ -17,6 +17,8 @@ T2.1 实现 Server 侧 Agent 管理 API 和单实例原生 RFC 6455 WebSocket �
 
 Agent 注册令牌使用 `crypto.randomBytes(32)` 生成，格式为 `bpa_<base64url>`；数据库只保存 SHA-256 哈希。列表、详情、审计、错误响应和 WebSocket payload 都不包含令牌、令牌哈希或 Authorization Header。
 
+`/ws/agent` 单条消息限制为 1 MiB，超限由 WebSocket 层安全关闭；Agent 发送产物 manifest 前会先计算完整 UTF-8 envelope 大小，超限发送固定 `ARTIFACT_MANIFEST_TOO_LARGE` 的 `task.failed`，避免 WebSocket 1009 后重复重连。消息限制不影响产物内容，因为产物继续通过带租约的流式 HTTP 上传。Agent 日志和任务错误只输出脱敏后的安全原因，不输出完整配置、密码、Token 或 lease。
+
 ## WebSocket
 
 连接地址：`ws://<server>/ws/agent`。令牌只通过握手 Header 传递：
