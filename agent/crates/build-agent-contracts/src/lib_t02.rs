@@ -126,10 +126,10 @@ pub struct ProtocolEnvelope {
 }
 
 macro_rules! dto {
-    ($name:ident { $( $field:ident : $ty:ty ),* $(,)? }) => {
+    ($name:ident { $( $(#[$meta:meta])* $field:ident : $ty:ty ),* $(,)? }) => {
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
-        pub struct $name { $( pub $field: $ty, )* }
+        pub struct $name { $( $(#[$meta])* pub $field: $ty, )* }
     };
 }
 
@@ -140,7 +140,11 @@ dto!(AgentRegisteredPayload {
     heartbeat_timeout_seconds: u64,
     server_time: String
 });
-dto!(TaskAvailablePayload { agent_id: String, queued_task_count: Option<u64> });
+dto!(TaskAvailablePayload {
+    agent_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    queued_task_count: Option<u64>
+});
 dto!(TaskLogAckPayload {
     task_id: String,
     acknowledged_sequence: u64,
@@ -162,9 +166,12 @@ pub enum TaskRecoveryAction {
 dto!(TaskRecoveryPayload {
     task_id: String,
     action: TaskRecoveryAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
     status: Option<BuildTaskStatus>,
     acknowledged_log_sequence: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     recovery_deadline_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>
 });
 dto!(TaskResultAckPayload {
@@ -182,8 +189,19 @@ dto!(TaskAssignmentPayload {
     artifact_dir: String, timeout_seconds: u64, config: serde_json::Map<String, Value>,
     sensitive_config_keys: Vec<String>
 });
-dto!(TaskCancelPayload { task_id: String, lease_token: String, requested_at: String, reason: Option<String> });
-dto!(AgentTokenRevokedPayload { agent_id: String, revoked_at: String, reason: Option<String> });
+dto!(TaskCancelPayload {
+    task_id: String,
+    lease_token: String,
+    requested_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>
+});
+dto!(AgentTokenRevokedPayload {
+    agent_id: String,
+    revoked_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>
+});
 dto!(AgentCurrentTask {
     task_id: String,
     lease_token: String,
@@ -191,8 +209,15 @@ dto!(AgentCurrentTask {
     last_log_sequence: u64
 });
 dto!(AgentHelloPayload {
-    agent_id: Option<String>, agent_version: String, hostname: String, os: String, arch: String,
-    workspace_root: String, current_task: Option<AgentCurrentTask>
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_id: Option<String>,
+    agent_version: String,
+    hostname: String,
+    os: String,
+    arch: String,
+    workspace_root: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_task: Option<AgentCurrentTask>
 });
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(transparent)]
@@ -216,15 +241,25 @@ pub struct AgentHeartbeatPayload {
     pub agent_id: String,
     pub current_task_id: RequiredNullable<String>,
 }
-dto!(TaskClaimPayload { agent_id: String, task_id: Option<String> });
+dto!(TaskClaimPayload {
+    agent_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_id: Option<String>
+});
 dto!(TaskAcceptedPayload {
     task_id: String,
     lease_token: String,
     accepted_at: String
 });
 dto!(TaskStatusPayload {
-    task_id: String, lease_token: String, status: BuildTaskStatus, occurred_at: String,
-    reason: Option<String>, source_commit: Option<String>
+    task_id: String,
+    lease_token: String,
+    status: BuildTaskStatus,
+    occurred_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_commit: Option<String>
 });
 dto!(TaskLogPayload {
     task_id: String,
@@ -244,13 +279,30 @@ dto!(TaskArtifactManifestPayload {
     files: Vec<ArtifactManifestEntry>
 });
 dto!(TaskCompletedPayload {
-    task_id: String, lease_token: String, exit_code: i32, finished_at: String,
-    artifact_count: u64, artifact_bytes: u64, source_commit: Option<String>
+    task_id: String,
+    lease_token: String,
+    exit_code: i32,
+    finished_at: String,
+    artifact_count: u64,
+    artifact_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_commit: Option<String>
 });
 dto!(TaskFailedPayload {
-    task_id: String, lease_token: String, reason: String, failed_at: String, exit_code: Option<i32>
+    task_id: String,
+    lease_token: String,
+    reason: String,
+    failed_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exit_code: Option<i32>
 });
-dto!(TaskCanceledPayload { task_id: String, lease_token: String, canceled_at: String, reason: Option<String> });
+dto!(TaskCanceledPayload {
+    task_id: String,
+    lease_token: String,
+    canceled_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>
+});
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProtocolEnvelopeTyped<T> {
@@ -645,6 +697,31 @@ mod tests {
         assert_eq!(serialized["type"], "task.log");
         assert_eq!(serialized["protocolVersion"], 1);
         assert_eq!(serialized["payload"]["leaseToken"], "lease-token-000001");
+    }
+
+    #[test]
+    fn optional_wire_fields_are_omitted_when_absent() {
+        let status = TaskStatusPayload {
+            task_id: "task-1".to_string(),
+            lease_token: "lease-token-000001".to_string(),
+            status: BuildTaskStatus::Preparing,
+            occurred_at: "2026-08-25T00:00:00Z".to_string(),
+            reason: None,
+            source_commit: None,
+        };
+        let serialized = serde_json::to_value(status).expect("task status should serialize");
+        assert!(serialized.get("reason").is_none());
+        assert!(serialized.get("sourceCommit").is_none());
+
+        let failed = TaskFailedPayload {
+            task_id: "task-1".to_string(),
+            lease_token: "lease-token-000001".to_string(),
+            reason: "safe failure".to_string(),
+            failed_at: "2026-08-25T00:00:00Z".to_string(),
+            exit_code: None,
+        };
+        let serialized = serde_json::to_value(failed).expect("task failure should serialize");
+        assert!(serialized.get("exitCode").is_none());
     }
 
     #[test]

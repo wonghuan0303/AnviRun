@@ -10,7 +10,7 @@
 
 ## 当前进度
 
-已完成 T0.1～T6.3 精简版：Web、Server、TypeScript contracts 与 Rust Agent 均可安装、检查、测试和构建；当前提供 Windows x64 内网本机部署脚本、同源 Web 静态托管、readiness、数据备份恢复和 Agent 发布包。T6.4 端到端发布门禁尚未实现。
+已完成 T0.1～T6.4：Web、Server、TypeScript contracts 与 Rust Agent 均可安装、检查、测试和构建；当前提供 Windows x64 内网本机部署脚本、同源 Web 静态托管、readiness、数据备份恢复、Agent 发布包以及真实 Server + Rust Agent + PostgreSQL E2E 发布门禁。
 
 ## 目录结构
 
@@ -109,4 +109,14 @@ Server 设置 `WEB_STATIC_ROOT` 后可与 API、WebSocket 同源托管 `apps/web
 `/api`、`/health`、`/ws` 不会被 SPA 回退接管。健康检查、备份恢复、升级回滚与故障排查见
 [`docs/windows-deployment.md`](docs/windows-deployment.md) 和 [`docs/operations.md`](docs/operations.md)。
 
-当前不提供 Server/Web Docker 镜像、Windows Service、Linux/macOS 安装模板或 T6.4 发布门禁。
+当前不提供 Server/Web Docker 镜像、Windows Service 或 Linux/macOS 安装模板；这些部署形态按当前内网单机需求延期。
+
+## Windows 第一版发布门禁（T6.4）
+
+在 Windows x64、Docker PostgreSQL healthy 且仅使用隔离测试库的环境中执行：
+
+```powershell
+pwsh -File .\deploy\windows\release-check.ps1
+```
+
+该入口按顺序运行 Node/Prisma/数据库/Rust/Agent 发布检查，并创建随机隔离数据库和临时目录运行真实构建闭环；完成后清理自身资源，不会修改 `buildplatform_dev`，也不会自动 commit。验收映射、P0/P1 规则、发布产物和已知限制见 [`docs/release-check.md`](docs/release-check.md)。

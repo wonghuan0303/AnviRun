@@ -3,7 +3,7 @@
 本文档描述在全新环境中安装依赖、启动各子项目并执行检查的完整步骤。业务设计见
 [产品与系统设计](product-design.md)，任务拆分见 [分阶段实施计划](implementation-plan.md)。
 
-当前仓库已完成 T0.1～T6.3 精简版：Web、Server、契约包与 Rust Agent 可构建，Server 已接入 PostgreSQL + Prisma 数据层，并提供 Windows 内网本机部署脚本、readiness、同源静态托管、备份恢复和 Windows x64 Agent 发布包。T6.4 发布门禁仍未实现。
+当前仓库已完成 T0.1～T6.4：Web、Server、契约包与 Rust Agent 可构建，Server 已接入 PostgreSQL + Prisma 数据层，并提供 Windows 内网本机部署脚本、readiness、同源静态托管、备份恢复、Windows x64 Agent 发布包和真实 Server + Rust Agent + PostgreSQL 发布门禁。
 
 ## 1. 环境要求
 

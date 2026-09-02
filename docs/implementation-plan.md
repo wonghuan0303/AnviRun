@@ -410,7 +410,7 @@
 
 已完成 `/health/ready`、可选 `WEB_STATIC_ROOT` 同源静态托管、显式可信内网 HTTP Cookie 模式、Windows PowerShell 构建/启动/健康检查/备份恢复/Agent 打包脚本，以及 Windows x64 Agent ZIP 和 SHA-256。大目录备份使用 Windows tar.gz 并在恢复前校验条目安全性。文档覆盖目录约定、管理员初始化、升级、回滚和故障排查。当前部署继续使用现有 Docker PostgreSQL，Server/Web/Agent 直接在 Windows 主机前台运行。
 
-Docker 应用镜像、Windows Service、Linux/macOS 服务模板与发布包、自动更新和日志轮转按当前需求延期；T6.4 端到端发布门禁仍未完成。
+Docker 应用镜像、Windows Service、Linux/macOS 服务模板与发布包、自动更新和日志轮转按当前需求延期；T6.4 端到端发布门禁已完成。
 
 **实施内容**
 
@@ -426,6 +426,8 @@ Docker 应用镜像、Windows Service、Linux/macOS 服务模板与发布包、�
 - Docker 应用镜像、Windows Service、Linux/macOS 包和系统服务模板不在本精简版范围内。
 
 #### T6.4 端到端验收与发布门禁
+
+**当前状态：已完成（Windows x64 可信内网第一版发布门禁，2026-09-02）**
 
 **实施内容**
 

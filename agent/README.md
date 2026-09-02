@@ -89,7 +89,7 @@ cargo test --all-features
 cargo build
 ```
 
-当前 T4.3 已实现 platform.config.json、跨平台构建命令和 `RUNNING`/`UPLOADING`/`FAILED` 生命周期上报；T5.1 已实现有界磁盘日志缓冲、连续序号、Server ACK、同进程短暂断线回放、文件持久化和浏览器订阅；T5.3 已实现 artifactDir 扫描、清单 ACK、流式上传和 `SUCCEEDED` 闭环；T6.1 已补充短断线恢复、终态 ACK 和任务创建幂等。T6.2 及更后续阶段仍未实现。
+当前 T4.3 已实现 platform.config.json、跨平台构建命令和 `RUNNING`/`UPLOADING`/`FAILED` 生命周期上报；T5.1 已实现有界磁盘日志缓冲、连续序号、Server ACK、同进程短暂断线回放、文件持久化和浏览器订阅；T5.3 已实现 artifactDir 扫描、清单 ACK、流式上传和 `SUCCEEDED` 闭环；T6.1 已补充短断线恢复、终态 ACK 和任务创建幂等。T6.2～T6.4 已按 Windows 可信内网精简范围实现；第一版真实 Server + Rust Agent + PostgreSQL 验收入口为 `deploy/windows/release-check.ps1`。
 
 ## Windows x64 发布
 
@@ -98,3 +98,5 @@ T6.3 精简部署使用 `deploy/windows/package-agent.ps1` 构建
 同名 SHA-256 文件。发布包只包含可执行文件、配置示例、版本和说明，不包含 state、工作区、
 日志、源码、target 或真实 Token。Agent 继续以前台进程运行，不安装 Windows Service；安装、
 升级、备份恢复与故障排查见 `docs/windows-deployment.md` 和 `docs/operations.md`。
+
+第一版发布验收可由仓库根目录的 deploy/windows/release-check.ps1 重复执行。它会使用临时本地 Git fixture、隔离 PostgreSQL 和真实 Windows x64 Agent，验证成功构建、日志、产物、取消、离线重连及 Agent 执行槽释放；详细映射见 docs/release-check.md。

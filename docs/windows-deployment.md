@@ -2,6 +2,8 @@
 
 本文面向单台 Windows 内网主机：PostgreSQL 继续运行在现有 Docker 容器中，Server 和 Web 直接运行在主机，Rust Agent 运行 `build-agent.exe`。本方案不创建 Server/Web 镜像、不安装 Windows Service，也不提供自动更新。
 
+第一版发布前应运行 [`release-check.md`](release-check.md) 中的统一门禁。它会在独立的随机 `buildplatform_e2e_*` 数据库和临时目录中运行真实 Server/Agent 构建闭环；`buildplatform_dev` 永远不作为门禁清理目标。
+
 ## 目录建议
 
 目录可以自定义，脚本不依赖固定盘符。一个可用的示例是：
