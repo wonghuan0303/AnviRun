@@ -406,20 +406,24 @@
 
 #### T6.3 部署、Agent 安装与运维
 
+**当前状态：精简版已完成（Windows 内网本机部署）**
+
+已完成 `/health/ready`、可选 `WEB_STATIC_ROOT` 同源静态托管、显式可信内网 HTTP Cookie 模式、Windows PowerShell 构建/启动/健康检查/备份恢复/Agent 打包脚本，以及 Windows x64 Agent ZIP 和 SHA-256。大目录备份使用 Windows tar.gz 并在恢复前校验条目安全性。文档覆盖目录约定、管理员初始化、升级、回滚和故障排查。当前部署继续使用现有 Docker PostgreSQL，Server/Web/Agent 直接在 Windows 主机前台运行。
+
+Docker 应用镜像、Windows Service、Linux/macOS 服务模板与发布包、自动更新和日志轮转按当前需求延期；T6.4 端到端发布门禁仍未完成。
+
 **实施内容**
 
-- Docker Compose 提供 Server、Web、PostgreSQL 和持久化存储。
-- 增加数据库迁移、备份恢复、日志轮转和磁盘容量说明。
-- Server 增加 liveness/readiness。
-- Rust Agent 产出 Windows、macOS、Linux 发布包和 SHA-256。
-- 提供 Windows Service、launchd、systemd 安装模板。
-- 编写管理员手册、Agent 安装手册和故障排查文档。
+- Server 增加 liveness/readiness，并支持可选 `WEB_STATIC_ROOT` 同源托管 Web 构建结果。
+- 提供 Windows PowerShell 构建、启动、健康检查、PostgreSQL/Artifact/Task log 备份恢复脚本。
+- Rust Agent 提供 Windows x64 release ZIP、配置说明和 SHA-256。
+- 编写 Windows 管理员初始化、升级、回滚和故障排查文档。
 
 **验收标准**
 
-- 一台新服务器可按文档完成部署和升级。
-- 三类系统 Agent 可安装为后台服务并自动启动。
-- 数据库和产物备份可以恢复到新环境。
+- 一台 Windows 内网主机可按文档完成部署和升级。
+- Server、Web 和 Agent 可以前台进程运行，数据库和本地任务数据可恢复到隔离新环境。
+- Docker 应用镜像、Windows Service、Linux/macOS 包和系统服务模板不在本精简版范围内。
 
 #### T6.4 端到端验收与发布门禁
 

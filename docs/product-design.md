@@ -403,7 +403,7 @@ Agent 到 Server：
 
 ## 12. 安全与可靠性
 
-- 生产环境必须使用 HTTPS/WSS。
+- 生产环境默认必须使用 HTTPS/WSS；T6.3 精简部署仅在明确启用可信内网 HTTP 开关时允许非 Secure Cookie。
 - 用户接口和 Agent 接口使用不同认证 Guard。
 - Agent 注册令牌和 Refresh Token 只保存哈希。
 - 敏感配置字段使用服务端主密钥进行字段级加密，日志与 API 默认遮蔽。

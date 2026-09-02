@@ -90,3 +90,11 @@ cargo build
 ```
 
 当前 T4.3 已实现 platform.config.json、跨平台构建命令和 `RUNNING`/`UPLOADING`/`FAILED` 生命周期上报；T5.1 已实现有界磁盘日志缓冲、连续序号、Server ACK、同进程短暂断线回放、文件持久化和浏览器订阅；T5.3 已实现 artifactDir 扫描、清单 ACK、流式上传和 `SUCCEEDED` 闭环；T6.1 已补充短断线恢复、终态 ACK 和任务创建幂等。T6.2 及更后续阶段仍未实现。
+
+## Windows x64 发布
+
+T6.3 精简部署使用 `deploy/windows/package-agent.ps1` 构建
+`x86_64-pc-windows-msvc` release 包，生成 `build-agent-<version>-windows-x64.zip` 和
+同名 SHA-256 文件。发布包只包含可执行文件、配置示例、版本和说明，不包含 state、工作区、
+日志、源码、target 或真实 Token。Agent 继续以前台进程运行，不安装 Windows Service；安装、
+升级、备份恢复与故障排查见 `docs/windows-deployment.md` 和 `docs/operations.md`。

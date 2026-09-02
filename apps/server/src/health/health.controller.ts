@@ -1,6 +1,12 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Res } from '@nestjs/common';
+import type { Response } from 'express';
 
-import { HealthService, type HealthStatus, type LivenessStatus } from './health.service';
+import {
+  HealthService,
+  type HealthStatus,
+  type LivenessStatus,
+  type ReadinessStatus,
+} from './health.service';
 
 @Controller('health')
 export class HealthController {
@@ -14,5 +20,12 @@ export class HealthController {
   @Get('live')
   getLiveness(): LivenessStatus {
     return this.healthService.getLiveness();
+  }
+
+  @Get('ready')
+  async getReadiness(@Res({ passthrough: true }) response: Response): Promise<ReadinessStatus> {
+    const readiness = await this.healthService.getReadiness();
+    response.status(readiness.status === 'ok' ? 200 : 503);
+    return readiness;
   }
 }

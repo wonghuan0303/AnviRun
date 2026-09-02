@@ -75,6 +75,86 @@ describe('T1.2 auth primitives', () => {
     expect(response.clearCookie.mock.calls[1][1]).toEqual(csrfOptions);
   });
 
+  it('supports explicitly enabled production HTTP cookies without weakening the defaults', () => {
+    const secrets = {
+      NODE_ENV: 'production',
+      ACCESS_TOKEN_SECRET: 'Access-token-http-mode-key-1234567890!@#',
+      REFRESH_TOKEN_HASH_SECRET: 'Refresh-http-mode-key-9876543210$%^',
+    };
+    expect(() => resolveAuthConfig({ ...secrets, AUTH_COOKIE_SECURE: 'false' })).toThrow(
+      /ALLOW_INSECURE_HTTP/,
+    );
+
+    const config = resolveAuthConfig({
+      ...secrets,
+      ALLOW_INSECURE_HTTP: 'true',
+      AUTH_COOKIE_SECURE: 'false',
+      AUTH_COOKIE_SAME_SITE: 'strict',
+      AUTH_COOKIE_NAME: 'buildplatform_refresh',
+      AUTH_CSRF_COOKIE_NAME: 'buildplatform_csrf',
+    });
+    expect(config.allowInsecureHttp).toBe(true);
+    expect(config.insecureHttpMode).toBe(true);
+    expect(config.cookieSecure).toBe(false);
+    expect(config.cookieName).not.toMatch(/^__Host-/);
+    expect(config.csrfCookieName).not.toMatch(/^__Host-/);
+    expect(config.cookiePath).toBe('/');
+    expect(config.csrfCookiePath).toBe('/');
+
+    expect(() =>
+      resolveAuthConfig({
+        ...secrets,
+        ALLOW_INSECURE_HTTP: 'true',
+        AUTH_COOKIE_SECURE: 'false',
+        AUTH_COOKIE_SAME_SITE: 'lax',
+        AUTH_COOKIE_NAME: 'buildplatform_refresh',
+        AUTH_CSRF_COOKIE_NAME: 'buildplatform_csrf',
+      }),
+    ).toThrow(/AUTH_COOKIE_SAME_SITE=strict/);
+    expect(() =>
+      resolveAuthConfig({
+        ...secrets,
+        ALLOW_INSECURE_HTTP: 'true',
+        AUTH_COOKIE_SECURE: 'false',
+        AUTH_COOKIE_NAME: '__Host-buildplatform_refresh',
+        AUTH_CSRF_COOKIE_NAME: 'buildplatform_csrf',
+      }),
+    ).toThrow(/non-__Host-/);
+    expect(() =>
+      resolveAuthConfig({
+        ...secrets,
+        ALLOW_INSECURE_HTTP: 'true',
+        AUTH_COOKIE_SECURE: 'false',
+        AUTH_COOKIE_NAME: 'buildplatform_refresh',
+        AUTH_CSRF_COOKIE_NAME: 'buildplatform_csrf',
+        AUTH_COOKIE_DOMAIN: 'example.invalid',
+      }),
+    ).toThrow(/AUTH_COOKIE_DOMAIN/);
+
+    const response = { cookie: jest.fn(), clearCookie: jest.fn() };
+    const cookies = new CookieService({ values: config });
+    cookies.setAuthCookies(response as never, 'refresh-value', 'csrf-value');
+    const refreshOptions = response.cookie.mock.calls[0][2] as Record<string, unknown>;
+    const csrfOptions = response.cookie.mock.calls[1][2] as Record<string, unknown>;
+    expect(refreshOptions).toMatchObject({
+      httpOnly: true,
+      secure: false,
+      sameSite: 'strict',
+      path: '/',
+    });
+    expect(csrfOptions).toMatchObject({
+      httpOnly: false,
+      secure: false,
+      sameSite: 'strict',
+      path: '/',
+    });
+    expect(Object.hasOwn(refreshOptions, 'domain')).toBe(false);
+    expect(Object.hasOwn(csrfOptions, 'domain')).toBe(false);
+    cookies.clearAuthCookies(response as never);
+    expect(response.clearCookie.mock.calls[0][1]).toEqual(refreshOptions);
+    expect(response.clearCookie.mock.calls[1][1]).toEqual(csrfOptions);
+  });
+
   it('parses auth durations and rejects unsafe cookie configuration', () => {
     const config = resolveAuthConfig({
       NODE_ENV: 'test',

@@ -5,7 +5,7 @@ BuildPlatform 面向可信内网、单 Server 实例和固定用户/Agent 部署
 ## 认证与所有权
 
 - Access Token 只由 Web 前端保存在内存；Token、Cookie 和租约不会放入 URL、API 响应、普通日志或审计 metadata。
-- Refresh Cookie 保持 HttpOnly、SameSite=Strict；refresh/logout 继续校验 CSRF。生产 `__Host-` Cookie 使用 Secure=true、Path=/ 且不设置 Domain。
+- Refresh Cookie 保持 HttpOnly、SameSite=Strict；refresh/logout 继续校验 CSRF。生产默认使用 `__Host-` Cookie、Secure=true、Path=/ 且不设置 Domain；可信内网 HTTP 例外必须显式启用 `ALLOW_INSECURE_HTTP` 并改用非 `__Host-`、非 Secure Cookie。
 - USER 只能访问自己 Project.ownerId 继承的任务、日志和 Artifact；ADMIN 可访问全部未软删除资源。跨用户、非法 UUID、不存在和软删除资源统一表现为 `RESOURCE_NOT_FOUND`。
 
 ## 请求和消息边界
@@ -20,6 +20,6 @@ BuildPlatform 面向可信内网、单 Server 实例和固定用户/Agent 部署
 
 ## 已知限制
 
-本阶段不提供配置静态加密、KMS/Vault、通用分布式限流、HTTPS 证书加载、强制 HTTPS/HSTS、复杂 CORS/CSP 策略或审计管理页面。HTTPS/WSS、部署加固、备份和 Agent 服务安装属于 T6.3；更完整的发布门禁属于 T6.4。
+本阶段不提供配置静态加密、KMS/Vault、通用分布式限流、HTTPS 证书加载、强制 HTTPS/HSTS、复杂 CORS/CSP 策略或审计管理页面。T6.3 精简版提供 Windows 可信内网 HTTP 例外和基础备份恢复，但不自动配置 HTTPS/WSS、反向代理或 Agent 服务安装；更完整的发布门禁属于 T6.4。
 
 官方 npm audit 当前报告的两个高危 advisory（`effect` 的 GHSA-38f7-945m-qr2g/CVE-2026-32887、`deepmerge-ts` 的 GHSA-ggr8-5vv4-36mx/CVE-2026-40345）路径均为 `@prisma/client -> prisma -> @prisma/config`。它们属于 Prisma CLI/config 开发工具链；本仓库不通过 root override 强制替换其跨主版本传递依赖，生产安装应排除 `prisma` 开发依赖。待 Prisma 发布兼容修复后再按直接父包升级。

@@ -3,7 +3,7 @@
 本文档描述在全新环境中安装依赖、启动各子项目并执行检查的完整步骤。业务设计见
 [产品与系统设计](product-design.md)，任务拆分见 [分阶段实施计划](implementation-plan.md)。
 
-当前仓库已完成 T0.1、T0.2 和 T1.1：Web、Server、契约包与 Rust Agent 可构建，Server 已接入 PostgreSQL + Prisma 数据层。登录、Agent 协议、动态表单与任务逻辑仍按实施计划在后续任务实现。
+当前仓库已完成 T0.1～T6.3 精简版：Web、Server、契约包与 Rust Agent 可构建，Server 已接入 PostgreSQL + Prisma 数据层，并提供 Windows 内网本机部署脚本、readiness、同源静态托管、备份恢复和 Windows x64 Agent 发布包。T6.4 发布门禁仍未实现。
 
 ## 1. 环境要求
 
@@ -109,8 +109,11 @@ cd agent
 cargo run -p build-agent
 ```
 
-预期结果：输出一行版本信息，例如 `build-agent 0.1.0 (windows/x86_64)`，进程随即退出。
-Agent 当前不会连接 Server。
+预期结果：输出版本信息后按配置连接 Server，并以前台长期运行。测试或只查看版本时可执行：
+
+```powershell
+cargo run -p build-agent -- --version
+```
 
 ## 5. 统一检查命令
 
@@ -198,3 +201,12 @@ pnpm run db:test
 
 `db:test` 会从 migration deploy 开始，运行真实 PostgreSQL 测试，包括外键/唯一约束、软删除、
 稳定分页、BIGINT、Agent 执行槽 partial unique index 和两个并发领取事务。
+
+## T6.3 Windows 部署补充
+
+Windows 内网本机部署不需要 Server/Web Docker 镜像：PostgreSQL 使用现有 Docker 容器，Server
+和 Agent 以前台进程运行，Web 由 Server 通过 `WEB_STATIC_ROOT` 同源托管。部署、备份恢复、
+升级回滚和故障排查见 [`docs/windows-deployment.md`](windows-deployment.md)。
+
+部署健康检查使用 `/health/live` 和 `/health/ready`；ready 会执行数据库 `SELECT 1`、检查
+任务日志/产物目录可写性，并在启用静态托管时检查 `index.html`。

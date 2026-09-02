@@ -62,3 +62,9 @@ pnpm --filter @buildplatform/web run test
 动态表单预览只使用 @buildplatform/contracts 的 validateFormSchema 和明确白名单控件，
 不会根据 JSON 动态加载 Vue 组件、HTML、事件或插槽。T3.4 不包含任务、日志、产物和
 WebSocket 实时刷新；构建任务由 T4.1 负责。
+
+## T6.3 同源部署
+
+生产构建输出 `dist/` 可复制到 Server 的 `WEB_STATIC_ROOT`。Server 会为 `/` 和无扩展名
+Vue history 路由返回 `index.html`，而 `/api/*`、`/health/*`、`/ws/*` 继续交给 Server，
+不存在的带扩展名资源返回 404。部署流程见 `docs/windows-deployment.md`。

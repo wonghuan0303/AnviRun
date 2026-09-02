@@ -39,8 +39,9 @@ pnpm run db:seed
 pnpm --filter @buildplatform/server run dev
 ```
 
-生产环境必须显式设置两个相互独立的高复杂度随机 `ACCESS_TOKEN_SECRET` 和 `REFRESH_TOKEN_HASH_SECRET`，并拒绝重复字符、示例值、占位值及开发/测试固定值；同时启用
-`AUTH_COOKIE_SECURE=true`。完整环境变量见 `apps/server/.env.example`，认证设计见
+生产环境必须显式设置两个相互独立的高复杂度随机 `ACCESS_TOKEN_SECRET` 和 `REFRESH_TOKEN_HASH_SECRET`，并拒绝重复字符、示例值、占位值及开发/测试固定值。默认生产认证启用
+`AUTH_COOKIE_SECURE=true`、`__Host-` Cookie、Path=/ 且不设置 Domain。仅可信内网 HTTP 部署可显式设置
+`ALLOW_INSECURE_HTTP=true`、`AUTH_COOKIE_SECURE=false`、非 `__Host-` Cookie 名和 `SameSite=Strict`；该模式会输出 warning，不适合公网，接入 HTTPS 后应关闭。完整环境变量见 `apps/server/.env.example`，认证设计见
 `docs/authentication.md`。认证测试必须使用独立 `buildplatform_test`，不得清理
 `buildplatform_dev`。
 
@@ -177,3 +178,13 @@ T5.4 页面接口不承载 T6.1 的断线恢复协议；Server/Agent 已在 T6.1
 Agent 的 `task.log` 由 `/ws/agent` 接收并按任务追加到文件型 NDJSON 日志，文件路径为 `<TASK_LOG_ROOT>/<taskId 前两位>/<taskId>.ndjson`。PostgreSQL 只保存 `lastLogSequence`、`logSize`、短期日志租约和敏感键快照，不保存日志正文。重复序号会返回当前 ACK，乱序序号不会写入；成功追加后 Server 返回 `task.log.ack`，其中包含连续序号和持久化偏移。
 
 已登录用户可通过 `GET /api/tasks/:taskId/logs?offset=&limit=` 增量读取历史日志，并通过 `/ws/client` 发送首条 `auth` 消息后订阅实时日志。订阅与 HTTP 查询均复用 `AuthorizationService.assertTaskLogAccess`，跨用户资源统一表现为 `404 RESOURCE_NOT_FOUND`。Server 和 Agent 都会遮蔽敏感配置值；敏感字段本身仍完整写入 Agent 的 `platform.config.json`。日志读取按偏移和有界大小流式处理，不把完整日志加载进 PostgreSQL 或内存。
+
+## Windows 内网部署（T6.3 精简版）
+
+Server 可通过 `WEB_STATIC_ROOT` 可选托管 `apps/web/dist`，与 API 和 WebSocket 使用同源访问。`/` 与无扩展名 Vue history 路由回退到 `index.html`；`/api/*`、`/health/*`、`/ws/*` 不参与 SPA 回退，不存在的带扩展名资源返回 404。静态根必须包含可读的 `index.html`，缺失时启动失败，`/health/ready` 也会报告 Web 不可用。
+
+`/health/live` 只检查 Node 进程响应，不访问数据库或磁盘；`/health/ready` 执行 `SELECT 1`，对 `TASK_LOG_ROOT` 和 `ARTIFACT_STORAGE_ROOT` 做独占临时文件写入/同步/删除探针，并检查可选 Web 入口。ready 成功返回 200，失败返回 503；响应不包含数据库 URL、密钥、绝对路径、Prisma 错误或堆栈。
+
+Windows 本机部署脚本位于 `deploy/windows/`：`build.ps1`、`start-server.ps1`、`start-agent.ps1`、`check-health.ps1`、`backup.ps1`、`restore.ps1` 和 `package-agent.ps1`。脚本支持带空格路径，使用 `-LiteralPath`，Server/Agent 前台运行，迁移失败不启动 Server，不自动 seed 或创建管理员。完整目录、升级回滚、备份恢复和故障排查见 `docs/windows-deployment.md` 与 `docs/operations.md`。
+
+生产配置必须显式提供两个独立强密钥；默认使用 HTTPS 以满足 Secure Cookie，可信内网 HTTP 例外必须显式开启 `ALLOW_INSECURE_HTTP`，不提供默认管理员、Windows Service、应用 Docker 镜像或 Linux/macOS 安装包。

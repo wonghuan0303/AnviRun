@@ -16,6 +16,8 @@ export interface AuthConfigValues {
   csrfCookieName: string;
   cookiePath: string;
   csrfCookiePath: string;
+  allowInsecureHttp: boolean;
+  insecureHttpMode: boolean;
   loginRateLimitWindowMs: number;
   loginRateLimitMax: number;
   nodeEnv: string;
@@ -74,6 +76,7 @@ function isExampleSecret(secret: string): boolean {
 export function resolveAuthConfig(env: Record<string, string | undefined>): AuthConfigValues {
   const nodeEnv = env.NODE_ENV?.trim() || 'development';
   const production = nodeEnv === 'production';
+  const allowInsecureHttp = parseBoolean(env.ALLOW_INSECURE_HTTP, false, 'ALLOW_INSECURE_HTTP');
   const accessTokenSecret =
     env.ACCESS_TOKEN_SECRET?.trim() ||
     (nodeEnv === 'test' ? TEST_ACCESS_SECRET : DEV_ACCESS_SECRET);
@@ -100,12 +103,20 @@ export function resolveAuthConfig(env: Record<string, string | undefined>): Auth
   }
 
   const cookieSecure = parseBoolean(env.AUTH_COOKIE_SECURE, production, 'AUTH_COOKIE_SECURE');
-  if (production && !cookieSecure) throw new Error('AUTH_COOKIE_SECURE must be true in production');
+  const insecureHttpMode = production && allowInsecureHttp && !cookieSecure;
+  if (production && !cookieSecure && !allowInsecureHttp) {
+    throw new Error(
+      'AUTH_COOKIE_SECURE must be true in production unless ALLOW_INSECURE_HTTP=true is explicitly enabled',
+    );
+  }
 
   const cookieSameSite = (env.AUTH_COOKIE_SAME_SITE?.trim().toLowerCase() ||
     'strict') as AuthCookieSameSite;
   if (cookieSameSite !== 'strict' && cookieSameSite !== 'lax') {
     throw new Error('AUTH_COOKIE_SAME_SITE must be strict or lax');
+  }
+  if (insecureHttpMode && cookieSameSite !== 'strict') {
+    throw new Error('insecure production HTTP mode requires AUTH_COOKIE_SAME_SITE=strict');
   }
 
   const cookieName =
@@ -114,8 +125,21 @@ export function resolveAuthConfig(env: Record<string, string | undefined>): Auth
   const csrfCookieName =
     env.AUTH_CSRF_COOKIE_NAME?.trim() ||
     (production ? '__Host-buildplatform_csrf' : 'buildplatform_csrf');
-  if (production && (!cookieName.startsWith('__Host-') || !csrfCookieName.startsWith('__Host-'))) {
+  if (
+    production &&
+    !insecureHttpMode &&
+    (!cookieName.startsWith('__Host-') || !csrfCookieName.startsWith('__Host-'))
+  ) {
     throw new Error('production auth cookies must use __Host- names');
+  }
+  if (
+    insecureHttpMode &&
+    (cookieName.startsWith('__Host-') || csrfCookieName.startsWith('__Host-'))
+  ) {
+    throw new Error('insecure production HTTP mode requires non-__Host- cookie names');
+  }
+  if (production && env.AUTH_COOKIE_DOMAIN?.trim()) {
+    throw new Error('AUTH_COOKIE_DOMAIN is not supported for production auth cookies');
   }
 
   return {
@@ -131,6 +155,8 @@ export function resolveAuthConfig(env: Record<string, string | undefined>): Auth
     csrfCookieName,
     cookiePath: production ? '/' : '/api/auth',
     csrfCookiePath: '/',
+    allowInsecureHttp,
+    insecureHttpMode,
     loginRateLimitWindowMs: parseDuration(env.LOGIN_RATE_LIMIT_WINDOW, 300) * 1000,
     loginRateLimitMax: parsePositiveInteger(env.LOGIN_RATE_LIMIT_MAX, 5, 'LOGIN_RATE_LIMIT_MAX'),
     nodeEnv,
@@ -154,6 +180,8 @@ export class AuthConfigService {
       AUTH_COOKIE_SAME_SITE: configService.get<string>('AUTH_COOKIE_SAME_SITE'),
       AUTH_COOKIE_NAME: configService.get<string>('AUTH_COOKIE_NAME'),
       AUTH_CSRF_COOKIE_NAME: configService.get<string>('AUTH_CSRF_COOKIE_NAME'),
+      ALLOW_INSECURE_HTTP: configService.get<string>('ALLOW_INSECURE_HTTP'),
+      AUTH_COOKIE_DOMAIN: configService.get<string>('AUTH_COOKIE_DOMAIN'),
       LOGIN_RATE_LIMIT_WINDOW: configService.get<string>('LOGIN_RATE_LIMIT_WINDOW'),
       LOGIN_RATE_LIMIT_MAX: configService.get<string>('LOGIN_RATE_LIMIT_MAX'),
     });

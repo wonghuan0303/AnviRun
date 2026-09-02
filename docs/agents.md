@@ -109,3 +109,10 @@ Server 通过 POST /api/tasks/:taskId/cancel 发起取消。排队任务直接�
 Rust 侧使用 Windows Job Object 或 Unix process group；Unix 先发送 SIGTERM，短暂宽限后发送 SIGKILL，Windows 使用 Job Object 的组级终止。T6.1 只处理单实例短断线恢复和幂等确认，不实现跨实例协调、自动重试或 T6.2 之后的安全/运维能力。
 
 日志正文存放在 Server 的 `TASK_LOG_ROOT` 文件目录中，路径按任务 UUID 分片并使用 NDJSON。PostgreSQL 只记录最后连续序号、文件偏移和短期日志租约；文件恢复时会截断残缺、非法或跳号尾部，并以已同步的连续文件记录对齐元数据。Agent 使用 `BUILD_AGENT_LOG_BUFFER_MAX_BYTES` 控制有界本地缓冲，ACK 先校验上限，达到压缩阈值或全部确认时才安全压缩已确认前缀；同一进程短暂重连时回放未确认日志。服务端 HTTP 历史读取和 `/ws/client` 浏览器订阅都复用任务所有权检查，浏览器历史按固定订阅尾分页并与实时 offset 去重衔接。完整取消、进程树终止和产物上传不属于 T5.1。
+
+## Windows 内网运行
+
+当前 T6.3 只提供 Windows x64 前台运行包。使用 `deploy/windows/package-agent.ps1` 生成 ZIP
+和 SHA-256，解压后以 `start-agent.ps1 -ConfigPath <build-agent.toml> -AgentExecutable <build-agent.exe>`
+启动。该流程不安装 Windows Service；Token 只放在受限配置文件中。Server/Web 同源部署和备份
+恢复见 `docs/windows-deployment.md`。

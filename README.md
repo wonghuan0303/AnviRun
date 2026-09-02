@@ -10,7 +10,7 @@
 
 ## 当前进度
 
-已完成 **T0.1 Monorepo 骨架**、**T0.2 公共业务契约** 与 **T1.1 PostgreSQL/Prisma 数据层**：Web、Server、TypeScript contracts 与 Rust Agent 均可安装、检查、测试和构建。登录、Agent 连接、动态表单业务页面与任务执行逻辑仍按实施计划在后续任务实现。
+已完成 T0.1～T6.3 精简版：Web、Server、TypeScript contracts 与 Rust Agent 均可安装、检查、测试和构建；当前提供 Windows x64 内网本机部署脚本、同源 Web 静态托管、readiness、数据备份恢复和 Agent 发布包。T6.4 端到端发布门禁尚未实现。
 
 ## 目录结构
 
@@ -23,7 +23,7 @@ buildPlatform/
 ├─ packages/
 │  └─ contracts/           # Web/Server/Agent 公共业务协议与共享 fixtures
 ├─ docs/                   # 设计与开发文档
-└─ deploy/                 # 部署与运维资产（T6.3 填充）
+└─ deploy/                 # Windows 内网部署与运维脚本
 ```
 
 ## 环境要求
@@ -99,3 +99,14 @@ pnpm run db:seed
 `buildplatform_dev`。完整 Docker、测试库重建和用户名规范化说明见[本地开发说明](docs/local-development.md)。
 
 根级数据库命令：`db:generate`、`db:migrate`、`db:migrate:deploy`、`db:seed`、`db:test`。
+
+## Windows 内网部署（T6.3 精简版）
+
+部署形态为现有 Docker PostgreSQL + Windows 主机 Server/Web/Agent。使用
+`deploy/windows/build.ps1` 构建，`start-server.ps1` 迁移并前台启动 Server，
+`start-agent.ps1` 前台运行 Agent；`package-agent.ps1` 生成 Windows x64 ZIP 和 SHA-256。
+Server 设置 `WEB_STATIC_ROOT` 后可与 API、WebSocket 同源托管 `apps/web/dist`，
+`/api`、`/health`、`/ws` 不会被 SPA 回退接管。健康检查、备份恢复、升级回滚与故障排查见
+[`docs/windows-deployment.md`](docs/windows-deployment.md) 和 [`docs/operations.md`](docs/operations.md)。
+
+当前不提供 Server/Web Docker 镜像、Windows Service、Linux/macOS 安装模板或 T6.4 发布门禁。
