@@ -4,6 +4,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
 use fs2::{available_space, FileExt};
+use safe_write::safe_write;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -19,6 +21,8 @@ pub enum WorkspaceError {
     AlreadyExists,
     #[error("WORKSPACE_CLEANUP_REFUSED: unsafe workspace cleanup was refused")]
     CleanupRefused,
+    #[error("WORKSPACE_PROJECT_BUSY: project workspace is already in use")]
+    ProjectBusy,
     #[error("INSUFFICIENT_DISK_SPACE: minimum free disk space is not available")]
     InsufficientDiskSpace,
 }
@@ -31,6 +35,7 @@ impl WorkspaceError {
             Self::PathEscape => "WORKSPACE_PATH_ESCAPE",
             Self::AlreadyExists => "WORKSPACE_ALREADY_EXISTS",
             Self::CleanupRefused => "WORKSPACE_CLEANUP_REFUSED",
+            Self::ProjectBusy => "WORKSPACE_PROJECT_BUSY",
             Self::InsufficientDiskSpace => "INSUFFICIENT_DISK_SPACE",
         }
     }
@@ -40,6 +45,7 @@ impl WorkspaceError {
 pub struct WorkspaceManager {
     root: PathBuf,
     tasks_root: PathBuf,
+    projects_root: PathBuf,
     minimum_free_space_bytes: u64,
 }
 
@@ -51,6 +57,8 @@ pub struct TaskWorkspace {
     source_path: PathBuf,
     active_lock: Mutex<Option<File>>,
 }
+
+pub type ProjectWorkspace = TaskWorkspace;
 
 const ACTIVE_LOCK_FILE: &str = ".build-agent-active.lock";
 
@@ -80,9 +88,26 @@ impl WorkspaceManager {
         {
             return Err(WorkspaceError::PathEscape);
         }
+        let projects_path = root.join("projects");
+        if let Ok(metadata) = fs::symlink_metadata(&projects_path) {
+            if has_reparse_metadata(&metadata) || !metadata.is_dir() {
+                return Err(WorkspaceError::PathEscape);
+            }
+        } else {
+            fs::create_dir(&projects_path).map_err(|_| WorkspaceError::NotWritable)?;
+        }
+        let projects_root =
+            fs::canonicalize(&projects_path).map_err(|_| WorkspaceError::PathEscape)?;
+        if !is_within(&root, &projects_root)
+            || projects_root == root
+            || contains_reparse_point(&root, &projects_root)
+        {
+            return Err(WorkspaceError::PathEscape);
+        }
         let manager = Self {
             root,
             tasks_root,
+            projects_root,
             minimum_free_space_bytes,
         };
         manager.check_writable()?;
@@ -99,6 +124,10 @@ impl WorkspaceManager {
         &self.tasks_root
     }
 
+    pub fn projects_root(&self) -> &Path {
+        &self.projects_root
+    }
+
     pub fn minimum_free_space_bytes(&self) -> u64 {
         self.minimum_free_space_bytes
     }
@@ -106,6 +135,62 @@ impl WorkspaceManager {
     pub fn preflight(&self) -> Result<(), WorkspaceError> {
         self.check_writable()?;
         self.check_disk_space()
+    }
+
+    /// Open a persistent project checkout and hold its exclusive lock until
+    /// the build reaches its terminal-result acknowledgement.
+    pub fn open_project(&self, project_id: &str) -> Result<TaskWorkspace, WorkspaceError> {
+        self.preflight()?;
+        let canonical_id = Uuid::parse_str(project_id)
+            .map_err(|_| WorkspaceError::Invalid)?
+            .to_string();
+        let project_dir = self.projects_root.join(&canonical_id);
+        match fs::symlink_metadata(&project_dir) {
+            Ok(metadata) if has_reparse_metadata(&metadata) || !metadata.is_dir() => {
+                return Err(WorkspaceError::PathEscape);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&project_dir).map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::AlreadyExists {
+                        WorkspaceError::ProjectBusy
+                    } else {
+                        WorkspaceError::NotWritable
+                    }
+                })?;
+            }
+            Err(_) => return Err(WorkspaceError::PathEscape),
+        }
+        let workspace = TaskWorkspace {
+            task_id: canonical_id,
+            tasks_root: self.projects_root.clone(),
+            task_dir: project_dir.clone(),
+            source_path: project_dir.join("source"),
+            active_lock: Mutex::new(None),
+        };
+        workspace.verify_project_dir()?;
+        let lock_path = workspace.task_dir.join(".build-agent-project.lock");
+        if let Ok(metadata) = fs::symlink_metadata(&lock_path) {
+            if has_reparse_metadata(&metadata) || !metadata.is_file() {
+                return Err(WorkspaceError::PathEscape);
+            }
+        }
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|_| WorkspaceError::ProjectBusy)?;
+        if lock.try_lock_exclusive().is_err() {
+            drop(lock);
+            return Err(WorkspaceError::ProjectBusy);
+        }
+        *workspace
+            .active_lock
+            .lock()
+            .map_err(|_| WorkspaceError::CleanupRefused)? = Some(lock);
+        Ok(workspace)
     }
 
     pub fn create_task(&self, task_id: &str) -> Result<TaskWorkspace, WorkspaceError> {
@@ -168,7 +253,7 @@ impl WorkspaceManager {
                 return Err(WorkspaceError::CleanupRefused);
             }
         };
-        if lock.lock_exclusive().is_err() {
+        if lock.try_lock_exclusive().is_err() {
             drop(lock);
             let _ = workspace.cleanup_inner();
             return Err(WorkspaceError::CleanupRefused);
@@ -287,6 +372,10 @@ impl WorkspaceManager {
 }
 
 impl TaskWorkspace {
+    pub fn project_id(&self) -> &str {
+        &self.task_id
+    }
+
     pub fn task_id(&self) -> &str {
         &self.task_id
     }
@@ -299,8 +388,99 @@ impl TaskWorkspace {
         &self.source_path
     }
 
+    /// Release the project lock without deleting the persistent source.
+    pub fn release(&self) -> Result<(), WorkspaceError> {
+        let Some(lock) = self
+            .active_lock
+            .lock()
+            .map_err(|_| WorkspaceError::CleanupRefused)?
+            .take()
+        else {
+            return Ok(());
+        };
+        FileExt::unlock(&lock).map_err(|_| WorkspaceError::CleanupRefused)?;
+        drop(lock);
+        Ok(())
+    }
+
+    pub fn cache_matches_url(&self, url: &str) -> Result<bool, WorkspaceError> {
+        self.verify_project_dir()?;
+        let source_metadata = match fs::symlink_metadata(&self.source_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(_) => return Ok(false),
+        };
+        if has_reparse_metadata(&source_metadata) || !source_metadata.is_dir() {
+            return Ok(false);
+        }
+        let git_path = self.source_path.join(".git");
+        let git_metadata = match fs::symlink_metadata(&git_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(_) => return Ok(false),
+        };
+        if has_reparse_metadata(&git_metadata) || !git_metadata.is_dir() {
+            return Ok(false);
+        }
+        let fingerprint_path = self.task_dir.join(".build-agent-url.sha256");
+        let fingerprint_metadata = match fs::symlink_metadata(&fingerprint_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(_) => return Ok(false),
+        };
+        if has_reparse_metadata(&fingerprint_metadata) || !fingerprint_metadata.is_file() {
+            return Ok(false);
+        }
+        let actual = match fs::read_to_string(fingerprint_path) {
+            Ok(actual) => actual,
+            Err(_) => return Ok(false),
+        };
+        Ok(actual.trim() == url_fingerprint(url))
+    }
+
+    /// Rebuild only this project cache. The removal is non-following and is
+    /// scoped to the validated `<projects_root>/<projectId>` directory.
+    pub fn rebuild_source(&self) -> Result<(), WorkspaceError> {
+        self.verify_project_dir()?;
+        remove_entry_if_present(&self.source_path)?;
+        remove_entry_if_present(&self.task_dir.join(".build-agent-url.sha256"))?;
+        Ok(())
+    }
+
+    pub fn record_url(&self, url: &str) -> Result<(), WorkspaceError> {
+        self.verify_project_dir()?;
+        let path = self.task_dir.join(".build-agent-url.sha256");
+        if let Ok(metadata) = fs::symlink_metadata(&path) {
+            if has_reparse_metadata(&metadata) || !metadata.is_file() {
+                return Err(WorkspaceError::PathEscape);
+            }
+        }
+        let value = format!("{}\n", url_fingerprint(url));
+        safe_write(&path, value.into_bytes()).map_err(|_| WorkspaceError::NotWritable)
+    }
+
     pub fn cleanup(&self) -> Result<(), WorkspaceError> {
         self.cleanup_inner()
+    }
+
+    fn verify_project_dir(&self) -> Result<(), WorkspaceError> {
+        let projects_root =
+            fs::canonicalize(&self.tasks_root).map_err(|_| WorkspaceError::PathEscape)?;
+        let metadata = fs::symlink_metadata(&self.task_dir).map_err(|_| WorkspaceError::Invalid)?;
+        if has_reparse_metadata(&metadata) || !metadata.is_dir() {
+            return Err(WorkspaceError::PathEscape);
+        }
+        let canonical = fs::canonicalize(&self.task_dir).map_err(|_| WorkspaceError::PathEscape)?;
+        let expected = Uuid::parse_str(&self.task_id)
+            .map_err(|_| WorkspaceError::Invalid)?
+            .to_string();
+        if !is_within(&projects_root, &canonical)
+            || canonical == projects_root
+            || canonical.file_name().and_then(|name| name.to_str()) != Some(expected.as_str())
+        {
+            return Err(WorkspaceError::PathEscape);
+        }
+        Ok(())
     }
 
     fn verify_paths(&self) -> Result<(), WorkspaceError> {
@@ -326,8 +506,11 @@ impl TaskWorkspace {
         {
             return Err(WorkspaceError::PathEscape);
         }
-        let source_metadata =
-            fs::symlink_metadata(&self.source_path).map_err(|_| WorkspaceError::Invalid)?;
+        let source_metadata = match fs::symlink_metadata(&self.source_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err(WorkspaceError::Invalid),
+        };
         if has_reparse_metadata(&source_metadata) || !source_metadata.is_dir() {
             return Err(WorkspaceError::PathEscape);
         }
@@ -377,14 +560,33 @@ impl TaskWorkspace {
 
 impl Drop for TaskWorkspace {
     fn drop(&mut self) {
-        let _ = self.cleanup_inner();
+        let _ = self.release();
+    }
+}
+
+fn url_fingerprint(url: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(url.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn remove_entry_if_present(path: &Path) -> Result<(), WorkspaceError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => remove_tree_safe(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(WorkspaceError::CleanupRefused),
     }
 }
 
 fn remove_tree_safe(path: &Path) -> Result<(), WorkspaceError> {
     let metadata = fs::symlink_metadata(path).map_err(|_| WorkspaceError::CleanupRefused)?;
     if has_reparse_metadata(&metadata) || metadata.file_type().is_symlink() {
-        fs::remove_file(path).map_err(|_| WorkspaceError::CleanupRefused)?;
+        let result = if metadata.is_dir() {
+            fs::remove_dir(path)
+        } else {
+            fs::remove_file(path)
+        };
+        result.map_err(|_| WorkspaceError::CleanupRefused)?;
         return Ok(());
     }
     if !metadata.is_dir() {
@@ -592,5 +794,65 @@ mod tests {
             Err(WorkspaceError::CleanupRefused)
         ));
         assert!(workspace.task_dir().exists());
+    }
+
+    #[test]
+    fn url_change_and_corrupt_source_rebuild_only_the_project_cache() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let manager = WorkspaceManager::new(directory.path(), 0).expect("workspace manager");
+        let project_id = task_id();
+        let project = manager
+            .open_project(&project_id)
+            .expect("project workspace");
+        fs::create_dir_all(project.source_path().join(".git")).expect("git directory");
+        fs::write(project.source_path().join("keep.txt"), "cached").expect("cached source");
+        project
+            .record_url("https://example.test/old.git")
+            .expect("fingerprint");
+        let project_dir = project.task_dir().to_path_buf();
+        project.release().expect("release");
+        drop(project);
+
+        let project = manager.open_project(&project_id).expect("reopen project");
+        assert!(project
+            .cache_matches_url("https://example.test/old.git")
+            .expect("cache check"));
+        assert!(!project
+            .cache_matches_url("https://example.test/new.git")
+            .expect("changed URL cache check"));
+        fs::remove_dir_all(project.source_path()).expect("corrupt source");
+        fs::write(project.source_path(), "not a directory").expect("corrupt marker");
+        project.rebuild_source().expect("safe rebuild");
+        assert!(project_dir.is_dir());
+        assert!(!project.source_path().exists());
+        assert!(project_dir.starts_with(manager.projects_root()));
+    }
+
+    #[test]
+    fn project_lock_is_non_blocking_and_reopens_after_release() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let manager = WorkspaceManager::new(directory.path(), 0).expect("workspace manager");
+        let project_id = task_id();
+        let first = manager
+            .open_project(&project_id)
+            .expect("first project workspace");
+        fs::create_dir_all(first.source_path().join(".git")).expect("git directory");
+        fs::write(first.source_path().join("keep.txt"), "cached").expect("cached source");
+
+        let started = std::time::Instant::now();
+        assert!(matches!(
+            manager.open_project(&project_id),
+            Err(WorkspaceError::ProjectBusy)
+        ));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+
+        first.release().expect("release first lock");
+        let reopened = manager
+            .open_project(&project_id)
+            .expect("reopen project workspace");
+        assert_eq!(
+            fs::read_to_string(reopened.source_path().join("keep.txt")).unwrap(),
+            "cached"
+        );
     }
 }

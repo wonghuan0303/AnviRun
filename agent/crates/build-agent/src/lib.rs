@@ -16,7 +16,7 @@ mod workspace;
 pub use config::{AgentConfig, ConfigError};
 pub use connection::{Agent, AgentError, RunExit};
 pub use git::{GitClient, GitError};
-pub use workspace::{TaskWorkspace, WorkspaceError, WorkspaceManager};
+pub use workspace::{ProjectWorkspace, TaskWorkspace, WorkspaceError, WorkspaceManager};
 
 /// Agent 的基础标识信息，用于启动日志与后续向 Server 上报。
 #[derive(Debug, Clone, PartialEq, Eq)]

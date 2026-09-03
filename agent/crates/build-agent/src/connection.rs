@@ -34,13 +34,16 @@ use tokio_tungstenite::{
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::artifacts::{scan_artifacts, upload_manifest, ArtifactError, ArtifactManifest};
+use crate::artifacts::{
+    scan_artifacts, upload_manifest, validate_artifact_directory, ArtifactError, ArtifactManifest,
+};
 use crate::config::ConfigError;
 use crate::execution::{start_command, ExecutionEvent, ExecutionResult};
 use crate::git::GitClient;
 use crate::log_buffer::{BufferedLogEntry, LogBuffer, LogBufferError};
 use crate::preparation::{prepare_task_with_cancel, PreparationFailure, PreparationResult};
 use crate::task_config::write_platform_config;
+use crate::workspace::TaskWorkspace;
 use crate::workspace::{WorkspaceError, WorkspaceManager};
 use crate::{AgentBuildInfo, AgentConfig};
 
@@ -49,6 +52,7 @@ const COMMAND_REPORT_RESERVE: Duration = Duration::from_secs(2);
 const EXECUTION_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const ARTIFACT_MANIFEST_TOO_LARGE_REASON: &str =
     "ARTIFACT_MANIFEST_TOO_LARGE: artifact manifest exceeds websocket message limit";
+const ARTIFACT_CLEAN_FAILED_REASON: &str = "GIT_CLEAN_FAILED: previous artifact cleanup failed";
 
 #[derive(Debug, Error)]
 pub enum AgentError {
@@ -143,6 +147,7 @@ struct ActiveTask {
     lease_expires_at: String,
     source_commit: Option<String>,
     config_written: bool,
+    artifact_cleaned: bool,
     command_completed: bool,
     command: String,
     config: serde_json::Map<String, Value>,
@@ -282,7 +287,6 @@ impl Agent {
                     &mut active,
                     &mut result_receiver,
                     &mut execution_receiver,
-                    self.workspace.as_ref(),
                     &mut pending_logs,
                 )
                 .await;
@@ -306,7 +310,6 @@ impl Agent {
                         &mut active,
                         &mut result_receiver,
                         &mut execution_receiver,
-                        self.workspace.as_ref(),
                         &mut pending_logs,
                     )
                     .await;
@@ -318,7 +321,6 @@ impl Agent {
                         &mut active,
                         &mut result_receiver,
                         &mut execution_receiver,
-                        self.workspace.as_ref(),
                         &mut pending_logs,
                     )
                     .await;
@@ -341,7 +343,6 @@ impl Agent {
                             &mut active,
                             &mut result_receiver,
                             &mut execution_receiver,
-                            self.workspace.as_ref(),
                             &mut pending_logs,
                         )
                         .await;
@@ -357,7 +358,6 @@ impl Agent {
                         &mut active,
                         &mut result_receiver,
                         &mut execution_receiver,
-                        self.workspace.as_ref(),
                         &mut pending_logs,
                     )
                     .await;
@@ -374,16 +374,9 @@ impl Agent {
         active: &mut Option<ActiveTask>,
         result_receiver: &mut mpsc::UnboundedReceiver<PreparationEvent>,
         execution_receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
-        workspace_manager: Option<&WorkspaceManager>,
         pending_logs: &mut HashMap<String, PendingLog>,
     ) {
-        if let Some(pending) = cancel_active_task(
-            active,
-            result_receiver,
-            execution_receiver,
-            workspace_manager,
-        )
-        .await
+        if let Some(pending) = cancel_active_task(active, result_receiver, execution_receiver).await
         {
             // Preserve the durable log buffer for a future reconnect. This is
             // distinct from ABANDON, where the Server has explicitly
@@ -671,13 +664,8 @@ impl Agent {
                 None
             }
             TaskRecoveryAction::Abandon => {
-                if let Some(pending) = cancel_active_task(
-                    active,
-                    result_receiver,
-                    execution_receiver,
-                    self.workspace.as_ref(),
-                )
-                .await
+                if let Some(pending) =
+                    cancel_active_task(active, result_receiver, execution_receiver).await
                 {
                     pending_logs.remove(&pending.task_id);
                 }
@@ -772,6 +760,28 @@ impl Agent {
                     .expect("workspace was checked above")
                     .source_path()
                     .to_path_buf();
+                if !snapshot.artifact_cleaned
+                    && (validate_artifact_directory(&source_path, &snapshot.artifact_dir).is_err()
+                        || self
+                            .git
+                            .clean_artifact_directory(
+                                &source_path,
+                                &snapshot.artifact_dir,
+                                Duration::from_secs(snapshot.timeout_seconds.max(1)),
+                            )
+                            .await
+                            .is_err())
+                {
+                    return self
+                        .fail_active_task(
+                            socket,
+                            active,
+                            ARTIFACT_CLEAN_FAILED_REASON,
+                            None,
+                            pending_logs,
+                        )
+                        .await;
+                }
                 if let Err(error) = write_platform_config(&source_path, &snapshot.config) {
                     return self
                         .fail_active_task(socket, active, &error.to_string(), None, pending_logs)
@@ -1042,6 +1052,7 @@ impl Agent {
             lease_expires_at: assignment.lease_expires_at.clone(),
             source_commit: None,
             config_written: false,
+            artifact_cleaned: false,
             command_completed: false,
             command: assignment.command.clone(),
             config: assignment.config.clone(),
@@ -1127,20 +1138,33 @@ impl Agent {
             warn!(task_id = %cancel.task_id, "ignored task cancellation for a different lease");
             return Ok(());
         }
-        let task_id = current.task_id.clone();
-
-        let preparation_cleanup_failed = {
+        let (preparation_cleanup_failed, preparation_workspace) = {
             let Some(current) = active.as_mut() else {
                 return Ok(());
             };
-            stop_preparation(
-                &mut current.preparation,
-                result_receiver,
-                self.workspace.as_ref(),
-                &task_id,
-            )
-            .await
+            stop_preparation(&mut current.preparation, result_receiver).await
         };
+        if let Some(workspace) = preparation_workspace {
+            if let Some(current) = active.as_mut() {
+                if current.workspace.is_none() {
+                    current.workspace = Some(workspace);
+                } else if workspace.release().is_err() {
+                    // Preserve the cleanup failure signal if a completion race
+                    // produced a second workspace for the same task.
+                    return self
+                        .fail_active_task(
+                            socket,
+                            active,
+                            "TASK_CANCEL_CLEANUP_FAILED: task workspace cleanup failed",
+                            None,
+                            pending_logs,
+                        )
+                        .await;
+                }
+            } else if workspace.release().is_err() {
+                return Ok(());
+            }
+        }
 
         let artifact_upload = active
             .as_mut()
@@ -1185,16 +1209,7 @@ impl Agent {
         }
 
         self.flush_log_tails(socket, active).await?;
-        let workspace_cleanup_failed = if let Some(current) = active.as_mut() {
-            current
-                .workspace
-                .take()
-                .is_some_and(|workspace| workspace.cleanup().is_err())
-        } else {
-            true
-        };
-        let cleanup_failed = preparation_cleanup_failed || workspace_cleanup_failed;
-        if cleanup_failed {
+        if preparation_cleanup_failed {
             self.fail_active_task(
                 socket,
                 active,
@@ -1294,6 +1309,30 @@ impl Agent {
                     .expect("workspace was just stored")
                     .source_path()
                     .to_path_buf();
+                if !current.artifact_cleaned {
+                    if validate_artifact_directory(&source_path, &current.artifact_dir).is_err()
+                        || self
+                            .git
+                            .clean_artifact_directory(
+                                &source_path,
+                                &current.artifact_dir,
+                                Duration::from_secs(current.timeout_seconds.max(1)),
+                            )
+                            .await
+                            .is_err()
+                    {
+                        return self
+                            .fail_active_task(
+                                socket,
+                                active,
+                                ARTIFACT_CLEAN_FAILED_REASON,
+                                None,
+                                pending_logs,
+                            )
+                            .await;
+                    }
+                    current.artifact_cleaned = true;
+                }
                 if let Err(error) = write_platform_config(&source_path, &current.config) {
                     return self
                         .fail_active_task(socket, active, &error.to_string(), None, pending_logs)
@@ -1317,7 +1356,10 @@ impl Agent {
                     }
                 }
             }
-            Err(error) => {
+            Err(mut error) => {
+                if let Some(workspace) = error.workspace.take() {
+                    current.workspace = Some(*workspace);
+                }
                 self.fail_active_task(
                     socket,
                     active,
@@ -1842,7 +1884,7 @@ impl Agent {
             return Ok(());
         };
         if let Some(workspace) = completed.workspace.take() {
-            if let Err(error) = workspace.cleanup() {
+            if let Err(error) = workspace.release() {
                 warn!(
                     task_id = %completed.task_id,
                     error_code = error.code(),
@@ -2178,9 +2220,7 @@ fn safe_relative_path(value: &str) -> bool {
 async fn stop_preparation(
     preparation: &mut Option<PreparationHandle>,
     result_receiver: &mut mpsc::UnboundedReceiver<PreparationEvent>,
-    workspace_manager: Option<&WorkspaceManager>,
-    task_id: &str,
-) -> bool {
+) -> (bool, Option<TaskWorkspace>) {
     let mut stopped = true;
     if let Some(mut handle) = preparation.take() {
         if let Some(cancel) = handle.cancel.take() {
@@ -2195,54 +2235,45 @@ async fn stop_preparation(
             let _ = handle.task.await;
         }
     }
-    let mut cleanup_failed = drain_preparation_results(result_receiver);
-    if let Some(manager) = workspace_manager {
-        if manager.cleanup_task(task_id).is_err() {
-            cleanup_failed = true;
-        }
-    } else {
-        cleanup_failed = true;
-    }
-    !stopped || cleanup_failed
+    let (drain_failed, workspace) = drain_preparation_results(result_receiver);
+    (!stopped || drain_failed, workspace)
 }
 
 fn drain_preparation_results(
     result_receiver: &mut mpsc::UnboundedReceiver<PreparationEvent>,
-) -> bool {
+) -> (bool, Option<TaskWorkspace>) {
     let mut cleanup_failed = false;
+    let mut workspace_to_keep = None;
     while let Ok(event) = result_receiver.try_recv() {
         match event.result {
             Ok(result) => {
-                if result.workspace.cleanup().is_err() {
+                if workspace_to_keep.is_none() {
+                    workspace_to_keep = Some(result.workspace);
+                } else if result.workspace.release().is_err() {
                     cleanup_failed = true;
                 }
             }
             Err(mut failure) => {
                 if let Some(workspace) = failure.workspace.take() {
-                    if workspace.cleanup().is_err() {
+                    if workspace_to_keep.is_none() {
+                        workspace_to_keep = Some(*workspace);
+                    } else if workspace.release().is_err() {
                         cleanup_failed = true;
                     }
                 }
             }
         }
     }
-    cleanup_failed
+    (cleanup_failed, workspace_to_keep)
 }
 
 async fn cancel_active_task(
     active: &mut Option<ActiveTask>,
     result_receiver: &mut mpsc::UnboundedReceiver<PreparationEvent>,
     execution_receiver: &mut Option<mpsc::Receiver<ExecutionEvent>>,
-    workspace_manager: Option<&WorkspaceManager>,
 ) -> Option<PendingLog> {
     let task = if let Some(mut task) = active.take() {
-        let _ = stop_preparation(
-            &mut task.preparation,
-            result_receiver,
-            workspace_manager,
-            &task.task_id,
-        )
-        .await;
+        let _ = stop_preparation(&mut task.preparation, result_receiver).await;
         if let Some(handle) = task.artifact_upload.take() {
             handle.abort();
             let _ = handle.await;
@@ -2280,7 +2311,10 @@ async fn cancel_active_task(
         None
     };
     execution_receiver.take();
-    let _ = drain_preparation_results(result_receiver);
+    let (_, workspace) = drain_preparation_results(result_receiver);
+    if let Some(workspace) = workspace {
+        let _ = workspace.release();
+    }
     task
 }
 
@@ -2619,6 +2653,7 @@ mod tests {
             lease_expires_at: "2099-08-30T03:00:00.000Z".to_string(),
             source_commit: None,
             config_written: true,
+            artifact_cleaned: true,
             command_completed: true,
             command: "build".to_string(),
             config: config.clone(),
@@ -2840,6 +2875,7 @@ mod tests {
         let task_id_for_server = task_id.clone();
         let task_id_for_asserts = task_id.clone();
         let project_id = Uuid::new_v4().to_string();
+        let project_id_for_asserts = project_id.clone();
         let template_id = Uuid::new_v4().to_string();
         let source_url = source.path().to_string_lossy().into_owned();
         let command_for_server = if cfg!(windows) {
@@ -2972,7 +3008,7 @@ mod tests {
                                     "timestamp": "2026-08-24T03:00:01.000Z",
                                     "protocolVersion": 1,
                                     "payload": {
-                                        "taskId": task_id_for_asserts,
+                                        "taskId": task_id_for_asserts.clone(),
                                         "accepted": false,
                                         "artifactCount": 0,
                                         "artifactBytes": 0
@@ -2994,6 +3030,24 @@ mod tests {
                         output.push_str(message["payload"]["chunk"].as_str().expect("log chunk"));
                     }
                     Some("task.failed") => {
+                        socket
+                            .send(Message::Text(
+                                serde_json::json!({
+                                    "id": "server-result-ack",
+                                    "type": "task.result.ack",
+                                    "timestamp": "2026-08-24T03:00:02.000Z",
+                                    "protocolVersion": 1,
+                                    "payload": {
+                                        "taskId": task_id_for_asserts.clone(),
+                                        "status": "FAILED",
+                                        "acknowledgedAt": "2026-08-24T03:00:02.000Z"
+                                    }
+                                })
+                                .to_string()
+                                .into(),
+                            ))
+                            .await
+                            .expect("terminal result ACK");
                         return;
                     }
                     _ => {}
@@ -3018,8 +3072,8 @@ mod tests {
         let task_directory = directory
             .path()
             .join("workspace")
-            .join("tasks")
-            .join(&task_id);
+            .join("projects")
+            .join(&project_id_for_asserts);
         let config_contents =
             fs::read_to_string(task_directory.join("source").join("platform.config.json"))
                 .expect("successful command should leave configuration available");
@@ -3048,21 +3102,25 @@ mod tests {
                 .expect("Agent run"),
             RunExit::Shutdown
         );
-        assert!(!directory
+        assert!(directory
             .path()
             .join("workspace")
-            .join("tasks")
-            .join(&task_id)
-            .exists());
+            .join("projects")
+            .join(&project_id_for_asserts)
+            .join("source")
+            .join(".git")
+            .is_dir());
     }
 
     #[tokio::test]
-    async fn reports_preparation_failure_without_leaking_task_secrets_and_cleans_workspace() {
+    async fn reports_preparation_failure_without_leaking_task_secrets_and_retains_project_cache_dir(
+    ) {
         let directory = tempfile::tempdir().expect("temporary directory");
         let missing_source = directory.path().join("missing-source");
         let task_id = Uuid::new_v4().to_string();
         let task_id_for_server = task_id.clone();
         let project_id = Uuid::new_v4().to_string();
+        let project_id_for_asserts = project_id.clone();
         let template_id = Uuid::new_v4().to_string();
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -3164,11 +3222,18 @@ mod tests {
             RunExit::Shutdown
         );
         server_task.await.expect("server task");
+        assert!(directory
+            .path()
+            .join("workspace")
+            .join("projects")
+            .join(&project_id_for_asserts)
+            .is_dir());
         assert!(!directory
             .path()
             .join("workspace")
-            .join("tasks")
-            .join(&task_id)
+            .join("projects")
+            .join(&project_id_for_asserts)
+            .join("source")
             .exists());
     }
     #[tokio::test]

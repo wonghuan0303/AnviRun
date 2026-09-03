@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -27,6 +27,14 @@ pub enum GitError {
     Unavailable,
     #[error("GIT_CLONE_FAILED: Git clone failed")]
     CloneFailed { diagnostic: String },
+    #[error("GIT_REPOSITORY_INVALID: cached Git repository is invalid")]
+    RepositoryInvalid,
+    #[error("GIT_FETCH_FAILED: Git fetch failed")]
+    FetchFailed { diagnostic: String },
+    #[error("GIT_CHECKOUT_FAILED: Git checkout failed")]
+    CheckoutFailed { diagnostic: String },
+    #[error("GIT_CLEAN_FAILED: previous artifact cleanup failed")]
+    CleanFailed { diagnostic: String },
     #[error("GIT_BRANCH_NOT_FOUND: requested Git branch was not found")]
     BranchNotFound { diagnostic: String },
     #[error("GIT_AUTH_FAILED: Git authentication or permission failed")]
@@ -46,6 +54,10 @@ impl GitError {
             Self::StartFailed => "GIT_START_FAILED",
             Self::Unavailable => "GIT_UNAVAILABLE",
             Self::CloneFailed { .. } => "GIT_CLONE_FAILED",
+            Self::RepositoryInvalid => "GIT_REPOSITORY_INVALID",
+            Self::FetchFailed { .. } => "GIT_FETCH_FAILED",
+            Self::CheckoutFailed { .. } => "GIT_CHECKOUT_FAILED",
+            Self::CleanFailed { .. } => "GIT_CLEAN_FAILED",
             Self::BranchNotFound { .. } => "GIT_BRANCH_NOT_FOUND",
             Self::AuthFailed { .. } => "GIT_AUTH_FAILED",
             Self::Timeout => "GIT_TIMEOUT",
@@ -57,6 +69,9 @@ impl GitError {
     pub fn diagnostic(&self) -> Option<&str> {
         match self {
             Self::CloneFailed { diagnostic }
+            | Self::FetchFailed { diagnostic }
+            | Self::CheckoutFailed { diagnostic }
+            | Self::CleanFailed { diagnostic }
             | Self::BranchNotFound { diagnostic }
             | Self::AuthFailed { diagnostic } => Some(diagnostic),
             _ => None,
@@ -209,6 +224,119 @@ impl GitClient {
             return Err(GitError::AuthFailed { diagnostic });
         }
         Err(GitError::CloneFailed { diagnostic })
+    }
+
+    pub async fn verify_repository(
+        &self,
+        source_path: &Path,
+        timeout: Duration,
+    ) -> Result<(), GitError> {
+        let args = vec![
+            OsString::from("-C"),
+            process_path(source_path).as_os_str().to_os_string(),
+            OsString::from("rev-parse"),
+            OsString::from("--git-dir"),
+        ];
+        let output = self.run(&args, None, timeout).await?;
+        if output.success && !String::from_utf8_lossy(&output.stdout).trim().is_empty() {
+            return Ok(());
+        }
+        Err(GitError::RepositoryInvalid)
+    }
+
+    pub async fn verify_repository_with_cancel(
+        &self,
+        source_path: &Path,
+        timeout: Duration,
+        cancel: &mut oneshot::Receiver<()>,
+    ) -> Result<(), GitError> {
+        let args = vec![
+            OsString::from("-C"),
+            process_path(source_path).as_os_str().to_os_string(),
+            OsString::from("rev-parse"),
+            OsString::from("--git-dir"),
+        ];
+        let output = self.run_with_cancel(&args, None, timeout, cancel).await?;
+        if output.success && !String::from_utf8_lossy(&output.stdout).trim().is_empty() {
+            return Ok(());
+        }
+        Err(GitError::RepositoryInvalid)
+    }
+
+    pub async fn fetch_and_checkout(
+        &self,
+        source_path: &Path,
+        branch: &str,
+        timeout: Duration,
+    ) -> Result<(), GitError> {
+        let (fetch_args, checkout_args) = branch_args(source_path, branch)?;
+        let output = self.run(&fetch_args, None, timeout).await?;
+        if !output.success {
+            return Err(classify_fetch_failure(&output.stderr));
+        }
+        let output = self.run(&checkout_args, None, timeout).await?;
+        if !output.success {
+            return Err(classify_checkout_failure(&output.stderr));
+        }
+        Ok(())
+    }
+
+    pub async fn fetch_and_checkout_with_cancel(
+        &self,
+        source_path: &Path,
+        branch: &str,
+        timeout: Duration,
+        cancel: &mut oneshot::Receiver<()>,
+    ) -> Result<(), GitError> {
+        let (fetch_args, checkout_args) = branch_args(source_path, branch)?;
+        let output = self
+            .run_with_cancel(&fetch_args, None, timeout, cancel)
+            .await?;
+        if !output.success {
+            return Err(classify_fetch_failure(&output.stderr));
+        }
+        let output = self
+            .run_with_cancel(&checkout_args, None, timeout, cancel)
+            .await?;
+        if !output.success {
+            return Err(classify_checkout_failure(&output.stderr));
+        }
+        Ok(())
+    }
+
+    pub async fn clean_artifact_directory(
+        &self,
+        source_path: &Path,
+        artifact_dir: &str,
+        timeout: Duration,
+    ) -> Result<(), GitError> {
+        let args = clean_args(source_path, artifact_dir)?;
+        let output = self.run(&args, None, timeout).await?;
+        if output.success {
+            Ok(())
+        } else {
+            Err(GitError::CleanFailed {
+                diagnostic: sanitized_diagnostic(&output.stderr),
+            })
+        }
+    }
+
+    pub async fn clean_artifact_directory_with_cancel(
+        &self,
+        source_path: &Path,
+        artifact_dir: &str,
+        timeout: Duration,
+        cancel: &mut oneshot::Receiver<()>,
+    ) -> Result<(), GitError> {
+        let args = clean_args(source_path, artifact_dir)?;
+        let output = self.run_with_cancel(&args, None, timeout, cancel).await?;
+        if output.success {
+            Ok(())
+        } else {
+            Err(GitError::CleanFailed {
+                diagnostic: sanitized_diagnostic(&output.stderr),
+            })
+        }
     }
 
     pub async fn rev_parse(
@@ -375,6 +503,122 @@ impl GitClient {
             },
         }
     }
+}
+
+fn clean_args(source_path: &Path, artifact_dir: &str) -> Result<Vec<OsString>, GitError> {
+    let path = Path::new(artifact_dir);
+    if artifact_dir.is_empty()
+        || artifact_dir.contains('\\')
+        || path.is_absolute()
+        || !path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+    {
+        return Err(GitError::CleanFailed {
+            diagnostic: "artifact directory path is invalid".to_string(),
+        });
+    }
+    Ok(vec![
+        OsString::from("-C"),
+        process_path(source_path).as_os_str().to_os_string(),
+        OsString::from("clean"),
+        OsString::from("-fdx"),
+        OsString::from("--"),
+        OsString::from(artifact_dir),
+    ])
+}
+
+fn branch_args(
+    source_path: &Path,
+    branch: &str,
+) -> Result<(Vec<OsString>, Vec<OsString>), GitError> {
+    if !valid_branch_name(branch) {
+        return Err(GitError::BranchNotFound {
+            diagnostic: "requested branch name is invalid".to_string(),
+        });
+    }
+    let remote_ref = format!("refs/remotes/origin/{branch}");
+    let refspec = format!("+refs/heads/{branch}:{remote_ref}");
+    let path = process_path(source_path).as_os_str().to_os_string();
+    let fetch_args = vec![
+        OsString::from("-C"),
+        path.clone(),
+        OsString::from("fetch"),
+        OsString::from("--prune"),
+        OsString::from("--no-tags"),
+        OsString::from("origin"),
+        OsString::from(refspec),
+    ];
+    let checkout_args = vec![
+        OsString::from("-C"),
+        path,
+        OsString::from("checkout"),
+        OsString::from("--detach"),
+        OsString::from("--force"),
+        OsString::from(remote_ref),
+    ];
+    Ok((fetch_args, checkout_args))
+}
+
+fn valid_branch_name(branch: &str) -> bool {
+    !branch.is_empty()
+        && !branch
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+        && !branch.starts_with('-')
+        && !branch.starts_with('/')
+        && !branch.ends_with('/')
+        && !branch.ends_with('.')
+        && !branch.to_ascii_lowercase().ends_with(".lock")
+        && !branch.contains("..")
+        && !branch.contains("@{")
+        && !branch
+            .chars()
+            .any(|character| matches!(character, '~' | '^' | ':' | '?' | '*' | '[' | '\\'))
+}
+
+fn classify_fetch_failure(stderr: &[u8]) -> GitError {
+    let diagnostic = sanitized_diagnostic(stderr);
+    let lower = diagnostic.to_ascii_lowercase();
+    if (lower.contains("remote branch") && lower.contains("not found"))
+        || lower.contains("couldn't find remote ref")
+        || lower.contains("could not find remote ref")
+    {
+        return GitError::BranchNotFound { diagnostic };
+    }
+    if lower.contains("authentication failed")
+        || lower.contains("could not read username")
+        || lower.contains("permission denied")
+        || lower.contains("access denied")
+        || lower.contains("403")
+    {
+        return GitError::AuthFailed { diagnostic };
+    }
+    if repository_diagnostic(&lower) {
+        return GitError::RepositoryInvalid;
+    }
+    GitError::FetchFailed { diagnostic }
+}
+
+fn classify_checkout_failure(stderr: &[u8]) -> GitError {
+    let diagnostic = sanitized_diagnostic(stderr);
+    let lower = diagnostic.to_ascii_lowercase();
+    if repository_diagnostic(&lower) {
+        return GitError::RepositoryInvalid;
+    }
+    if lower.contains("pathspec") && lower.contains("did not match") {
+        return GitError::BranchNotFound { diagnostic };
+    }
+    GitError::CheckoutFailed { diagnostic }
+}
+
+fn repository_diagnostic(lower: &str) -> bool {
+    lower.contains("not a git repository")
+        || lower.contains("does not appear to be a git repository")
+        || lower.contains("no such remote")
+        || lower.contains("bad object")
+        || lower.contains("invalid object")
+        || lower.contains("object file") && lower.contains("empty")
 }
 
 async fn terminate_process_group(child: &mut command_group::AsyncGroupChild) {

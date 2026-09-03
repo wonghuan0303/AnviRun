@@ -79,6 +79,40 @@ pub async fn scan_artifacts(
     Ok(ArtifactManifest { files, total_bytes })
 }
 
+/// Validate the source and artifact path without mutating it. Git clean is
+/// used by the Agent to remove only untracked/ignored output, preserving
+/// tracked repository files that are part of the source tree.
+pub fn validate_artifact_directory(source: &Path, artifact_dir: &str) -> Result<(), ArtifactError> {
+    validate_relative_path(artifact_dir)?;
+    let source_metadata = fs::symlink_metadata(source).map_err(|_| ArtifactError::ScanInvalid)?;
+    if !source_metadata.is_dir() || has_reparse_metadata(&source_metadata) {
+        return Err(ArtifactError::ScanInvalid);
+    }
+    validate_output_components(source, &source.join(artifact_dir))
+}
+
+fn validate_output_components(source: &Path, target: &Path) -> Result<(), ArtifactError> {
+    let relative = target
+        .strip_prefix(source)
+        .map_err(|_| ArtifactError::ScanUnsafe)?;
+    let mut current = source.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(value) = component else {
+            return Err(ArtifactError::ScanUnsafe);
+        };
+        current.push(value);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if has_reparse_metadata(&metadata) => {
+                return Err(ArtifactError::ScanUnsafe);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err(ArtifactError::ScanInvalid),
+        }
+    }
+    Ok(())
+}
+
 async fn scan_directory(
     root: &Path,
     current: &Path,

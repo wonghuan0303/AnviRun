@@ -83,19 +83,19 @@ Rust Agent 使用 rustls native roots 支持 WSS，避免依赖系统 OpenSSL；
 
 T4.2 在 T2.2 连接闭环上增加最小任务准备流程：Agent 收到 `task.available` 后仅在空闲时发送 `task.claim`，校验匹配的 `task.assignment`，先发送 `task.accepted`，再通过受控 Tokio 任务准备工作区。准备期间心跳持续发送 `currentTaskId`，单个 Agent 不会并行准备第二个任务；重复 assignment 不会创建第二份工作区或启动第二次 Git。
 
-工作区根目录在 Agent 启动时创建并规范化为绝对路径，不能是文件系统根目录。任务目录固定为 `<workspace_root>/tasks/<UUID>/source`，taskId 必须先解析为 UUID，路径创建前后检查边界、符号链接和 Windows reparse point。每个活动任务持有跨平台锁文件；Agent 重启时只清理合法 UUID 且确认未持锁的残留目录，持锁目录或无法判断锁状态时保留。清理只接受已验证的 `TaskWorkspace`，安全递归删除不跟随仓库中的符号链接；进程关闭、token 撤销或取消时终止本地任务，普通 WebSocket 短断线则保留 ActiveTask、工作区和日志缓冲等待 T6.1 恢复裁决。
+工作区根目录在 Agent 启动时创建并规范化为绝对路径，不能是文件系统根目录。项目目录固定为 `<workspace_root>/projects/<projectId>/source`，projectId 必须先解析为 UUID，路径创建/复用前后检查边界、符号链接和 Windows reparse point。每个项目工作区持有跨进程独占锁；Agent 重启不清理项目缓存，锁由操作系统释放后可安全复用，另一 Agent 进程不能同时使用同一 projectId。旧版 `<workspace_root>/tasks` 残留目录仍只在确认未持锁时清理。取消时在终态 ACK 前保留 ActiveTask、项目 source 和项目锁；进程关闭、token 撤销或 ABANDON 等无终态 ACK 的销毁路径才释放项目锁，普通 WebSocket 短断线则保留 ActiveTask、项目 source 和日志缓冲等待 T6.1 恢复裁决。
 
 Agent 启动和接收 assignment 时检查 workspace 可写性、`tasks` 目录写探针、最低可用磁盘空间和系统 Git。新增配置 `minimum_free_space_bytes` / `BUILD_AGENT_MINIMUM_FREE_SPACE_BYTES`，默认 `1073741824` 字节（1 GiB），必须是 0 到 JavaScript 安全整数范围内的非负整数，环境变量优先于 TOML。相对 `workspace_root` 按配置文件所在目录解析。
 
-Git 只调用系统 `git`，不使用 libgit2、Shell 或脚本解释器。clone 使用 `git clone --branch <branch> --single-branch -- <url> <source>` 参数数组，设置 `GIT_TERMINAL_PROMPT=0`，超时受任务 `timeoutSeconds` 限制。成功后执行 `git -C <source> rev-parse --verify HEAD`，只接受 40/64 位十六进制 SHA 并以小写回传。工作区/Git 失败发送 `CODE: safe message` 格式的 `task.failed`，不包含 token、配置值、凭据或堆栈。
+Git 只调用系统 `git`，不使用 libgit2、Shell 或脚本解释器。项目首次构建使用 `git clone --branch <branch> --single-branch -- <url> <source>` 参数数组；后续构建使用 `git -C <source> fetch --prune --no-tags origin <refspec>` 并强制 checkout 到 `refs/remotes/origin/<branch>`，将工作树可靠对齐到 assignment branch 的最新远端提交。项目目录保存 URL 的 SHA-256 指纹，不保存完整 URL 或凭据；URL 改变、指纹缺失、缓存不是合法 Git 仓库或缓存损坏时，在项目锁内安全重建该 projectId 的 source。所有操作设置 `GIT_TERMINAL_PROMPT=0`，超时受任务 `timeoutSeconds` 限制。成功后执行 `git -C <source> rev-parse --verify HEAD`，只接受 40/64 位十六进制 SHA 并以小写回传。工作区/Git 失败发送 `CODE: safe message` 格式的 `task.failed`，不包含 token、配置值、凭据或堆栈。
 
 ## T4.3 Rust Agent 配置与命令执行
 
 T4.3 在任务 source 目录写入 `platform.config.json`：完整保留 assignment `config` 的字段，按 UTF-8 pretty JSON 写入并保留一个末尾换行。`sensitiveConfigKeys` 不会删除或改变配置内容，只用于 Agent 输出中的敏感值遮蔽和诊断保护。写入使用 source 内 create-new 临时文件、刷盘后替换，拒绝 source/目标的符号链接或 Windows reparse point，不在错误和日志中输出完整配置。
 
-配置写入成功后 Agent 发送 `PREPARING`、启动模板 command 并发送 `RUNNING`。Windows 使用 `cmd.exe /D /S /C`，Unix 使用 `/bin/sh -lc`，工作目录固定为 source；配置不会插入 command、环境变量或参数。stdout/stderr 并发以有界分片读取，非 UTF-8 使用 lossy 解码，日志序号按任务从 1 递增；Server 当前只安全接收而不持久化日志。命令预算不超过“租约剩余时间减去最终状态上报余量”；直接 Shell 超时会取消两个 reader，正常退出后的管道排空也有有限宽限期。0 退出发送 `UPLOADING`，扫描 artifactDir 后发送清单并等待 Server ACK，再逐文件上传和发送 `task.completed`；非零、超时、启动、配置、输出或产物错误发送 `task.failed`，带可选 exitCode，并清理失败任务工作区。
+配置写入成功后 Agent 发送 `PREPARING`、启动模板 command 并发送 `RUNNING`。Windows 使用 `cmd.exe /D /S /C`，Unix 使用 `/bin/sh -lc`，工作目录固定为 project source；每次构建覆盖本次 assignment 的 `platform.config.json`，并在启动命令前定向清理 artifactDir，避免旧 artifact 混入，同时保留依赖和其他源码。配置不会插入 command、环境变量或参数。stdout/stderr 并发以有界分片读取，非 UTF-8 使用 lossy 解码，日志序号按任务从 1 递增；Server 当前只安全接收而不持久化日志。命令预算不超过“租约剩余时间减去最终状态上报余量”；直接 Shell 超时会取消两个 reader，正常退出后的管道排空也有有限宽限期。0 退出发送 `UPLOADING`，扫描 artifactDir 后发送清单并等待 Server ACK，再逐文件上传和发送 `task.completed`；非零、超时、启动、配置、输出或产物错误发送 `task.failed`，带可选 exitCode，但保留项目 source。
 
-普通 WebSocket 短断线时，Server 将 PREPARING/RUNNING/UPLOADING 置为 `AGENT_LOST` 并保留租约、执行槽、日志和产物状态；Agent 重连 hello 携带 taskId、leaseToken、阶段和最后确认日志序号，Server 在 5 分钟恢复窗口内发送 `task.recovery(RESUME)`，超时或 Agent 重启且没有 currentTask 时以 `ABANDON`/`FAILED` 收尾。若任务已进入 `CANCELING`，Server 保留取消确认窗口并发送 `task.recovery(CANCEL)`，Agent 只清理、不恢复执行，成功后回传 `task.canceled`。恢复不会重新执行 Git、命令或上传。任务成功、失败或取消事务提交后 Server 发送 `task.result.ack`，Agent 仅在匹配 ACK 后清理工作区和本地 ActiveTask；重复终态消息不新增状态历史。token 撤销、进程退出和用户取消仍走终止/清理路径。
+普通 WebSocket 短断线时，Server 将 PREPARING/RUNNING/UPLOADING 置为 `AGENT_LOST` 并保留租约、执行槽、日志和产物状态；Agent 重连 hello 携带 taskId、leaseToken、阶段和最后确认日志序号，Server 在 5 分钟恢复窗口内发送 `task.recovery(RESUME)`，超时或 Agent 重启且没有 currentTask 时以 `ABANDON`/`FAILED` 收尾。若任务已进入 `CANCELING`，Server 保留取消确认窗口并发送 `task.recovery(CANCEL)`，Agent 只停止任务、不删除项目 source，成功后回传 `task.canceled`。恢复不会重新执行 Git、命令或上传。任务成功、失败或取消事务提交后 Server 发送 `task.result.ack`，Agent 仅在匹配 ACK 后释放项目锁和本地 ActiveTask，项目缓存继续保留；重复终态消息不新增状态历史。token 撤销、进程退出和 ABANDON 等无终态 ACK 路径仍走终止/释放锁流程；用户取消则保留锁直到对应终态 ACK。
 
 Server 接收 `task.status` 的 `PREPARING`、`RUNNING`、`UPLOADING` 状态，并按 Agent、activeTaskId、租约和当前状态顺序校验；合法转换统一经 TaskStateService，重复相同状态幂等。`task.failed` 可结束 PREPARING、RUNNING 或 UPLOADING，保存可选退出码、清理租约和执行槽。T5.1 的 `task.log` 会在校验租约和连续序号后落盘，Server 返回 `task.log.ack`；浏览器日志订阅另行校验项目所有权。
 Server 接收 `task.status` 的 `PREPARING`、`RUNNING`、`UPLOADING` 状态，并按 Agent、activeTaskId、租约和当前状态顺序校验；合法转换统一经 TaskStateService，重复相同状态幂等。`task.failed` 可结束 PREPARING、RUNNING 或 UPLOADING，保存可选退出码、清理租约和执行槽。T5.1 的 `task.log` 会在校验租约和连续序号后落盘，Server 返回 `task.log.ack`；浏览器日志订阅另行校验项目所有权。
@@ -104,7 +104,7 @@ Server 接收 `task.status` 的 `PREPARING`、`RUNNING`、`UPLOADING` 状态，�
 
 ## T5.2 取消协议
 
-Server 通过 POST /api/tasks/:taskId/cancel 发起取消。排队任务直接以 CANCELING -> CANCELED 收尾；执行任务发送 task.cancel，payload 携带 taskId、进程内短暂租约明文、requestedAt 和可选 reason。Agent 只接受与当前任务及租约完全匹配的请求，停止整个任务进程树、确认清理 workspace 后回传 task.canceled；清理失败回传带 `TASK_CANCEL_CLEANUP_FAILED` 的安全 task.failed。重复取消请求/回执不重复写历史，取消期间普通 status 不能覆盖 CANCELING；合法 Agent、任务、活动租约和 leaseToken 的普通 task.failed 可以将 CANCELING 收尾为 FAILED。CANCELING 断线保留租约和执行槽，重连后通过 `task.recovery(CANCEL)` 完成清理；发送失败或超时未确认才由 Server 以 CANCELING -> FAILED 释放执行槽。
+Server 通过 POST /api/tasks/:taskId/cancel 发起取消。排队任务直接以 CANCELING -> CANCELED 收尾；执行任务发送 task.cancel，payload 携带 taskId、进程内短暂租约明文、requestedAt 和可选 reason。Agent 只接受与当前任务及租约完全匹配的请求，停止整个任务进程树、确认清理 workspace 后回传 task.canceled，并在匹配的 `task.result.ack` 前保留项目锁；清理失败回传带 `TASK_CANCEL_CLEANUP_FAILED` 的安全 task.failed，同样等待终态 ACK 释放锁。重复取消请求/回执不重复写历史，取消期间普通 status 不能覆盖 CANCELING；合法 Agent、任务、活动租约和 leaseToken 的普通 task.failed 可以将 CANCELING 收尾为 FAILED。CANCELING 断线保留租约和执行槽，重连后通过 `task.recovery(CANCEL)` 完成清理；发送失败或超时未确认才由 Server 以 CANCELING -> FAILED 释放执行槽。
 
 Rust 侧使用 Windows Job Object 或 Unix process group；Unix 先发送 SIGTERM，短暂宽限后发送 SIGKILL，Windows 使用 Job Object 的组级终止。T6.1 只处理单实例短断线恢复和幂等确认，不实现跨实例协调、自动重试或 T6.2 之后的安全/运维能力。
 
