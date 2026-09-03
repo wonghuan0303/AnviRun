@@ -1,6 +1,6 @@
 # T6.2 内网部署安全边界
 
-BuildPlatform 面向可信内网、单 Server 实例和固定用户/Agent 部署。部署仍应使用独立账号、最小权限，并避免在日志、工单或聊天中粘贴密码、Cookie、CSRF Token、Access/Refresh Token、Agent 注册令牌或任务租约。
+AnvilRun 面向可信内网、单 Server 实例和固定用户/Agent 部署。部署仍应使用独立账号、最小权限，并避免在日志、工单或聊天中粘贴密码、Cookie、CSRF Token、Access/Refresh Token、Agent 注册令牌或任务租约。
 
 ## 认证与所有权
 

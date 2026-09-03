@@ -10,7 +10,7 @@ describe('HomeView', () => {
       global: { plugins: [ElementPlus], stubs: { RouterLink: { template: '<a><slot /></a>' } } },
     });
 
-    expect(wrapper.text()).toContain('@buildplatform/contracts');
+    expect(wrapper.text()).toContain('@anvilrun/contracts');
     expect(wrapper.text()).toContain('共享契约包');
   });
 

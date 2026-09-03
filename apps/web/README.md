@@ -1,6 +1,6 @@
-# @buildplatform/web
+# @anvilrun/web
 
-通用构建任务平台 Web 前端，使用 Vue 3、TypeScript、Vite、Element Plus、Pinia 和 Vue Router。
+AnvilRun（铸程）构建任务平台 Web 前端，使用 Vue 3、TypeScript、Vite、Element Plus、Pinia 和 Vue Router。
 
 ## T3.2 已实现
 
@@ -35,7 +35,7 @@ T5.4 页面不负责 T6.1 断线恢复协议；Server/Agent 已支持短断线�
 ```bash
 cp .env.example .env          # Windows PowerShell: Copy-Item .env.example .env
 pnpm run contracts:build      # 首次运行前在仓库根目录构建共享契约包
-pnpm --filter @buildplatform/web run dev
+pnpm --filter @anvilrun/web run dev
 ```
 
 默认地址为 http://127.0.0.1:5173/。开发服务器将同源 /api 代理到
@@ -51,15 +51,15 @@ Refresh Cookie 保持 HttpOnly；开发环境 CSRF Cookie 使用可由管理页�
 ## 命令
 
 ```bash
-pnpm --filter @buildplatform/web run dev
-pnpm --filter @buildplatform/web run build
-pnpm --filter @buildplatform/web run type-check
-pnpm --filter @buildplatform/web run test
+pnpm --filter @anvilrun/web run dev
+pnpm --filter @anvilrun/web run build
+pnpm --filter @anvilrun/web run type-check
+pnpm --filter @anvilrun/web run test
 ```
 
 ## 约定
 
-动态表单预览只使用 @buildplatform/contracts 的 validateFormSchema 和明确白名单控件，
+动态表单预览只使用 @anvilrun/contracts 的 validateFormSchema 和明确白名单控件，
 不会根据 JSON 动态加载 Vue 组件、HTML、事件或插槽。T3.4 不包含任务、日志、产物和
 WebSocket 实时刷新；构建任务由 T4.1 负责。
 

@@ -3,7 +3,7 @@
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
-/// Must stay synchronized with `@buildplatform/contracts` WebSocket limits.
+/// Must stay synchronized with `@anvilrun/contracts` WebSocket limits.
 pub const MAX_AGENT_WS_MESSAGE_BYTES: usize = 1024 * 1024;
 
 /// Protocol versions are deliberately closed: an unknown number is rejected by Serde.

@@ -33,7 +33,7 @@ async function logout(): Promise<void> {
 <template>
   <el-container class="app-shell">
     <el-aside width="220px" class="app-shell__aside">
-      <div class="app-shell__brand">Build Platform</div>
+      <div class="app-shell__brand">AnvilRun</div>
       <el-menu :default-active="route.path" router>
         <el-menu-item v-for="item in menu" :key="item.name" :index="item.path">{{
           item.label

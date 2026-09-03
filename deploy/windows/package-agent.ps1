@@ -44,7 +44,7 @@ try {
   Copy-Item -LiteralPath $agentSource -Destination (Join-Path $stage 'build-agent.exe')
   Copy-Item -LiteralPath $exampleSource -Destination (Join-Path $stage 'build-agent.toml.example')
   @'
-Build Platform Agent Windows x64
+AnvilRun Agent Windows x64
 
 Copy build-agent.toml.example to build-agent.toml and replace the one-time
 registration token. Run build-agent.exe --config build-agent.toml in the

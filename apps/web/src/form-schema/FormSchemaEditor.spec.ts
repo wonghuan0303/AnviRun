@@ -2,7 +2,7 @@ import { defineComponent, nextTick, ref } from 'vue';
 import { describe, expect, it } from 'vitest';
 import { mount } from '@vue/test-utils';
 import ElementPlus from 'element-plus';
-import type { FormSchemaIssue } from '@buildplatform/contracts';
+import type { FormSchemaIssue } from '@anvilrun/contracts';
 
 import FormSchemaEditor from './FormSchemaEditor.vue';
 

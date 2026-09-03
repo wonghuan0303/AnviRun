@@ -1,6 +1,6 @@
-# @buildplatform/server
+# @anvilrun/server
 
-通用构建任务平台 NestJS 服务端。当前包含 T1.1 PostgreSQL/Prisma 数据层和 T1.2 本地账号认证。
+AnvilRun（铸程）构建任务平台 NestJS 服务端，负责认证授权、项目与任务队列、Agent WebSocket、日志和产物管理。
 
 ## 认证接口
 
@@ -22,7 +22,7 @@
 密码不允许作为命令行参数：
 
 ```powershell
-pnpm --filter @buildplatform/server run admin:init -- --username admin --password-stdin
+pnpm --filter @anvilrun/server run admin:init -- --username admin --password-stdin
 ```
 
 TTY 中密码隐藏输入；自动化场景从 stdin 提供密码。CLI 使用 PostgreSQL advisory lock，
@@ -36,7 +36,7 @@ Copy-Item .env.example .env
 pnpm run db:generate
 pnpm run db:migrate
 pnpm run db:seed
-pnpm --filter @buildplatform/server run dev
+pnpm --filter @anvilrun/server run dev
 ```
 
 生产环境必须显式设置两个相互独立的高复杂度随机 `ACCESS_TOKEN_SECRET` 和 `REFRESH_TOKEN_HASH_SECRET`，并拒绝重复字符、示例值、占位值及开发/测试固定值。默认生产认证启用
@@ -83,7 +83,7 @@ const artifactWhere = authorization.artifactScope(actor, clientWhere);
 
 Agent 管理接口位于 `/api/admin/agents`，全部要求 `AccessTokenGuard, AdminGuard`。管理员可以创建、分页查询、修改名称、启用、停用、轮换注册令牌和删除 Agent；普通用户统一返回 `FORBIDDEN`。创建或轮换响应中的 `registrationToken` 只显示一次，数据库、列表、详情、审计和错误响应只保存/展示 SHA-256 哈希之外的安全摘要，不返回明文令牌。
 
-Agent 使用原生 RFC 6455 连接 `/ws/agent`，令牌只放在握手 Header：`Authorization: Bearer <agent-token>`。Server 复用 `@buildplatform/contracts` 校验 protocol envelope、`agent.hello` 和 `agent.heartbeat`，合法 hello 后返回 `agent.registered`。心跳间隔为 15 秒，连续 45 秒未收到心跳后置为 `OFFLINE`；停用或轮换令牌会发送 `agent.token.revoked` 并断开旧连接。
+Agent 使用原生 RFC 6455 连接 `/ws/agent`，令牌只放在握手 Header：`Authorization: Bearer <agent-token>`。Server 复用 `@anvilrun/contracts` 校验 protocol envelope、`agent.hello` 和 `agent.heartbeat`，合法 hello 后返回 `agent.registered`。心跳间隔为 15 秒，连续 45 秒未收到心跳后置为 `OFFLINE`；停用或轮换令牌会发送 `agent.token.revoked` 并断开旧连接。
 
 连接注册表为单 Server 实例内存结构，同一 Agent 只保留一个连接。后续 T2.2 Rust Agent 应直接复用上述公共协议；WSS、重连退避、任务领取和任务执行不属于 T2.1。详细流程见 `docs/agents.md`。
 
@@ -93,7 +93,7 @@ Agent 使用原生 RFC 6455 连接 `/ws/agent`，令牌只放在握手 Header：
 
 普通登录用户使用 `/api/build-templates` 读取已启用模板摘要和动态 `formSchema`，不能读取停用模板。公共响应不包含构建命令、产物目录、创建者或 Agent tokenHash。
 
-服务端复用 `@buildplatform/contracts` 的 `validateFormSchema`，校验 Git URL、Shell 命令、工作区内相对产物目录和正整数超时。绑定 Agent 必须存在且 `enabled=true`；OFFLINE 但启用的 Agent 可以绑定。删除被 Project 或 BuildTask 引用的模板返回 409。
+服务端复用 `@anvilrun/contracts` 的 `validateFormSchema`，校验 Git URL、Shell 命令、工作区内相对产物目录和正整数超时。绑定 Agent 必须存在且 `enabled=true`；OFFLINE 但启用的 Agent 可以绑定。删除被 Project 或 BuildTask 引用的模板返回 409。
 
 T3.1 不包含模板版本、Git 拉取、项目、任务派发或 Web 管理页面。
 
@@ -112,7 +112,7 @@ T3.1 不包含模板版本、Git 拉取、项目、任务派发或 Web 管理页
 
 所有详情、更新、配置保存和删除接口先运行 `AccessTokenGuard`，再运行 `OwnershipGuard` 并声明 `@OwnedResource('project', 'projectId')`。USER 的 Prisma 查询通过 `AuthorizationService.projectScope` 强制注入当前用户和 `deletedAt: null`；ADMIN 可查看全部未删除项目，并可用 `ownerId` 作额外筛选。跨用户、已删除、非法 UUID 和不存在项目统一返回 `404 RESOURCE_NOT_FOUND`。
 
-项目配置保存在 Project 的单个 JSONB `config` 字段中。Server 使用 `@buildplatform/contracts` 的 `validateFormConfigValues` 过滤未知字段、校验控件值并应用默认值；`PUT /config` 才会持久化规范化结果。详情通过 `analyzeFormConfigCompatibility` 返回 `valid`、`effectiveConfig`、`missingFields`、`obsoleteFields`、`typeConflictFields`、`issues`、`templateEnabled`、`agentEnabled` 和 `buildable`，读取详情不会改写数据库。模板新增带默认值字段不会破坏旧配置，新增无默认值的必填字段、类型变化或 options 变化会使项目不可构建；模板/Agent 停用时项目仍可读但不可构建。 详情/创建/更新/配置保存响应包含当前模板 `formSchema`，便于项目配置页面渲染；分页列表只返回模板安全摘要，不携带 `formSchema`，避免无必要地扩大列表响应。
+项目配置保存在 Project 的单个 JSONB `config` 字段中。Server 使用 `@anvilrun/contracts` 的 `validateFormConfigValues` 过滤未知字段、校验控件值并应用默认值；`PUT /config` 才会持久化规范化结果。详情通过 `analyzeFormConfigCompatibility` 返回 `valid`、`effectiveConfig`、`missingFields`、`obsoleteFields`、`typeConflictFields`、`issues`、`templateEnabled`、`agentEnabled` 和 `buildable`，读取详情不会改写数据库。模板新增带默认值字段不会破坏旧配置，新增无默认值的必填字段、类型变化或 options 变化会使项目不可构建；模板/Agent 停用时项目仍可读但不可构建。 详情/创建/更新/配置保存响应包含当前模板 `formSchema`，便于项目配置页面渲染；分页列表只返回模板安全摘要，不携带 `formSchema`，避免无必要地扩大列表响应。
 
 T3.3 不包含 Web 项目页面、构建任务创建、Git 访问、Agent 派发、模板版本或配置加密。
 

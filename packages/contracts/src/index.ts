@@ -1,7 +1,7 @@
 /** Web、Server 与 Rust Agent 共享的公共业务契约包。 */
 
 /** 契约包名称，便于运行期自检与日志输出。 */
-export const CONTRACTS_PACKAGE_NAME = '@buildplatform/contracts';
+export const CONTRACTS_PACKAGE_NAME = '@anvilrun/contracts';
 
 /** 契约包版本，与 WebSocket protocolVersion 不同。 */
 export const CONTRACTS_PACKAGE_VERSION = '0.1.0';

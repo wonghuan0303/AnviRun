@@ -1,7 +1,7 @@
 import {
   MAX_AGENT_WS_MESSAGE_BYTES as CONTRACT_MAX_AGENT_WS_MESSAGE_BYTES,
   MAX_CLIENT_WS_MESSAGE_BYTES as CONTRACT_MAX_CLIENT_WS_MESSAGE_BYTES,
-} from '@buildplatform/contracts';
+} from '@anvilrun/contracts';
 
 /**
  * Small, explicit payload limits for the trusted-intranet deployment.

@@ -46,8 +46,8 @@ try {
   $env:DATABASE_URL = $TestDatabaseUrl
 
   Invoke-Checked 'pnpm' @('install', '--frozen-lockfile')
-  Invoke-Checked 'pnpm' @('--filter', '@buildplatform/server', 'run', 'db:generate')
-  Invoke-Checked 'pnpm' @('--filter', '@buildplatform/server', 'run', 'db:migrate:deploy')
+  Invoke-Checked 'pnpm' @('--filter', '@anvilrun/server', 'run', 'db:generate')
+  Invoke-Checked 'pnpm' @('--filter', '@anvilrun/server', 'run', 'db:migrate:deploy')
   Invoke-Checked 'pnpm' @('lint')
   Invoke-Checked 'pnpm' @('type-check')
   Invoke-Checked 'pnpm' @('test')

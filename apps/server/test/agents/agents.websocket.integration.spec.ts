@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { AgentStatus, UserRole } from '@prisma/client';
-import { AGENT_HEARTBEAT_TIMEOUT_SECONDS, PROTOCOL_VERSION } from '@buildplatform/contracts';
+import { AGENT_HEARTBEAT_TIMEOUT_SECONDS, PROTOCOL_VERSION } from '@anvilrun/contracts';
 import request from 'supertest';
 import WebSocket from 'ws';
 

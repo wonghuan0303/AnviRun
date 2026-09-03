@@ -12,7 +12,7 @@ import type {
   TaskArtifactManifestAckMessage,
   TaskArtifactManifestMessage,
   TaskCompletedMessage,
-} from '@buildplatform/contracts';
+} from '@anvilrun/contracts';
 
 import type { AuthenticatedRequestUser } from '../auth/auth.types';
 import { AuthorizationService } from '../authorization/authorization.service';

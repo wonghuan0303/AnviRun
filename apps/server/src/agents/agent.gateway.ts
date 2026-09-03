@@ -8,7 +8,7 @@ import {
   AGENT_HEARTBEAT_TIMEOUT_SECONDS,
   PROTOCOL_VERSION,
   validateProtocolMessage,
-} from '@buildplatform/contracts';
+} from '@anvilrun/contracts';
 import type {
   AgentHeartbeatMessage,
   AgentHelloMessage,
@@ -25,7 +25,7 @@ import type {
   TaskStatusMessage,
   TaskRecoveryMessage,
   TaskResultAckMessage,
-} from '@buildplatform/contracts';
+} from '@anvilrun/contracts';
 import { AgentStatus, BuildTaskStatus } from '@prisma/client';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 

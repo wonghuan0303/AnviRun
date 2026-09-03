@@ -167,7 +167,7 @@ async function createGitFixture() {
   await copyFile(fixtureSource, join(fixtureRepo, 'build-fixture.mjs'));
   await writeFile(join(fixtureRepo, 'README.md'), 'T6.4 isolated deterministic fixture\n', 'utf8');
   run('git', ['init'], fixtureRepo);
-  run('git', ['config', 'user.name', 'Build Platform E2E'], fixtureRepo);
+  run('git', ['config', 'user.name', 'AnvilRun E2E'], fixtureRepo);
   run('git', ['config', 'user.email', 'buildplatform-e2e@example.test'], fixtureRepo);
   run('git', ['add', '.'], fixtureRepo);
   run('git', ['commit', '-m', 'e2e fixture'], fixtureRepo);

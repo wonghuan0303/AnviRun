@@ -1,8 +1,8 @@
 {
-  "name": "@buildplatform/contracts",
+  "name": "@anvilrun/contracts",
   "version": "0.1.0",
   "private": true,
-  "description": "Web、Server 与 Rust Agent 共享的公共业务契约（T0.2）",
+  "description": "AnvilRun Web、Server 与 Rust Agent 共享的公共业务契约",
   "license": "UNLICENSED",
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",

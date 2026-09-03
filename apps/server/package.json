@@ -1,8 +1,8 @@
 {
-  "name": "@buildplatform/server",
+  "name": "@anvilrun/server",
   "version": "0.1.0",
   "private": true,
-  "description": "通用构建任务平台 NestJS 服务端",
+  "description": "AnvilRun（铸程）构建任务平台 NestJS 服务端",
   "license": "UNLICENSED",
   "engines": {
     "node": ">=20.19.0"
@@ -19,10 +19,10 @@
     "db:migrate": "prisma migrate dev --schema prisma/schema.prisma",
     "db:migrate:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
     "db:seed": "prisma db seed --schema prisma/schema.prisma",
-    "db:test": "pnpm --filter @buildplatform/contracts run build && prisma migrate deploy --schema prisma/schema.prisma && jest --config test/jest-database.config.js --runInBand"
+    "db:test": "pnpm --filter @anvilrun/contracts run build && prisma migrate deploy --schema prisma/schema.prisma && jest --config test/jest-database.config.js --runInBand"
   },
   "dependencies": {
-    "@buildplatform/contracts": "workspace:*",
+    "@anvilrun/contracts": "workspace:*",
     "@nestjs/common": "^11.0.0",
     "@nestjs/config": "^4.0.0",
     "@nestjs/core": "^11.0.0",

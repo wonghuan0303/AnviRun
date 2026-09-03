@@ -1,4 +1,4 @@
-import type { FormConfigIssue } from '@buildplatform/contracts';
+import type { FormConfigIssue } from '@anvilrun/contracts';
 
 export function removeIssuesForField(
   issues: readonly FormConfigIssue[],

@@ -6,7 +6,7 @@
 进程列表或日志：
 
 ```powershell
-pnpm --filter @buildplatform/server run admin:init -- --username admin --password-stdin
+pnpm --filter @anvilrun/server run admin:init -- --username admin --password-stdin
 ```
 
 TTY 会隐藏密码输入；自动化场景把密码通过标准输入传给命令即可。成功输出只包含管理员

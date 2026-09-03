@@ -1,4 +1,4 @@
-import { parseBuildTaskStatus, type BuildTaskStatus } from '@buildplatform/contracts';
+import { parseBuildTaskStatus, type BuildTaskStatus } from '@anvilrun/contracts';
 
 export interface TaskListQuery {
   readonly page: number;

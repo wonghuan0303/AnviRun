@@ -108,7 +108,7 @@ try {
     Copy-Item -LiteralPath $entry.FullName -Destination $webRoot -Recurse -Force
   }
 
-  Invoke-Checked 'pnpm' @('--filter', '@buildplatform/server', 'run', 'db:migrate:deploy')
+  Invoke-Checked 'pnpm' @('--filter', '@anvilrun/server', 'run', 'db:migrate:deploy')
 
   $nodePath = (Get-Command node).Source
   $serverEntry = Join-Path $repo 'apps\server\dist\main.js'

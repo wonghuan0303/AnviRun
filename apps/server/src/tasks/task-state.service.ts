@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma, BuildTaskStatus } from '@prisma/client';
-import { canTransitionTaskStatus } from '@buildplatform/contracts';
+import { canTransitionTaskStatus } from '@anvilrun/contracts';
 
 import { ApiException } from '../common/api-exception';
 

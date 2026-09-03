@@ -6,7 +6,7 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    name: 'buildplatform/ignores',
+    name: 'anvilrun/ignores',
     ignores: [
       '**/node_modules/**',
       '**/dist/**',
@@ -16,7 +16,7 @@ export default tseslint.config(
     ],
   },
   {
-    name: 'buildplatform/language-options',
+    name: 'anvilrun/language-options',
     files: ['**/*.{js,mjs,cjs,ts,mts,cts,vue}'],
     languageOptions: {
       ecmaVersion: 2022,
@@ -28,14 +28,14 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   ...pluginVue.configs['flat/recommended'],
   {
-    name: 'buildplatform/web-browser-globals',
+    name: 'anvilrun/web-browser-globals',
     files: ['apps/web/**/*.{ts,vue}'],
     languageOptions: {
       globals: { ...globals.browser },
     },
   },
   {
-    name: 'buildplatform/web-sfc',
+    name: 'anvilrun/web-sfc',
     files: ['apps/web/**/*.vue'],
     languageOptions: {
       parserOptions: {
@@ -48,7 +48,7 @@ export default tseslint.config(
     },
   },
   {
-    name: 'buildplatform/shared-rules',
+    name: 'anvilrun/shared-rules',
     rules: {
       '@typescript-eslint/no-unused-vars': [
         'error',

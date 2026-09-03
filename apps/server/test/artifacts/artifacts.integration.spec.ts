@@ -8,7 +8,7 @@ import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import type { Response as ExpressResponse } from 'express';
 import request, { type Response } from 'supertest';
-import type { TaskArtifactManifestMessage } from '@buildplatform/contracts';
+import type { TaskArtifactManifestMessage } from '@anvilrun/contracts';
 
 import { AppModule } from '../../src/app.module';
 import { ArtifactsService } from '../../src/artifacts/artifacts.service';

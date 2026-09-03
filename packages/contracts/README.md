@@ -1,4 +1,4 @@
-# @buildplatform/contracts
+# @anvilrun/contracts
 
 Web、Server 与 Rust Agent 之间共享的公共业务契约。T0.2 建立了角色、Agent 状态、任务状态机、动态表单、WebSocket 消息和 REST 错误响应的协议基线。
 
@@ -19,9 +19,9 @@ packages/contracts/
 ## 命令
 
 ```bash
-pnpm --filter @buildplatform/contracts run build
-pnpm --filter @buildplatform/contracts run type-check
-pnpm --filter @buildplatform/contracts run test
+pnpm --filter @anvilrun/contracts run build
+pnpm --filter @anvilrun/contracts run type-check
+pnpm --filter @anvilrun/contracts run test
 cargo test --manifest-path agent/Cargo.toml
 ```
 

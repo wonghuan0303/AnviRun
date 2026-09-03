@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { AgentStatus, BuildTaskStatus, PrismaClient } from '@prisma/client';
-import { BUILD_TASK_STATUSES } from '@buildplatform/contracts';
+import { BUILD_TASK_STATUSES } from '@anvilrun/contracts';
 
 import { claimAgentExecutionSlot } from '../../src/database/execution-slot';
 import { listActiveProjectsPage } from '../../src/database/project-query';

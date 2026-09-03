@@ -29,8 +29,8 @@ rustup component add rustfmt clippy
 ## 2. 安装依赖
 
 ```bash
-git clone <仓库地址> buildPlatform
-cd buildPlatform
+git clone <仓库地址> anvilrun
+cd anvilrun
 pnpm install
 ```
 
@@ -67,7 +67,7 @@ Copy-Item apps/web/.env.example apps/web/.env
 
 ### 4.1 共享契约包
 
-Web 与 Server 通过包名引用 `@buildplatform/contracts` 的编译产物，因此首次开发前需要
+Web 与 Server 通过包名引用 `@anvilrun/contracts` 的编译产物，因此首次开发前需要
 先构建一次：
 
 ```bash
@@ -86,7 +86,7 @@ pnpm run dev:server
 
 ```bash
 curl http://127.0.0.1:3000/health
-# {"status":"ok","service":"@buildplatform/server","contracts":{"name":"@buildplatform/contracts","version":"0.1.0"},"uptimeSeconds":0}
+# {"status":"ok","service":"@anvilrun/server","contracts":{"name":"@anvilrun/contracts","version":"0.1.0"},"uptimeSeconds":0}
 
 curl http://127.0.0.1:3000/health/live
 # {"status":"ok"}
@@ -99,7 +99,7 @@ pnpm run dev:web
 ```
 
 预期结果：终端输出本地地址（默认 `http://localhost:5173/`），页面顶部显示
-“通用构建任务平台”，正文卡片显示前端技术栈、共享契约包版本、API 基地址，以及
+“AnvilRun（铸程）构建任务平台”，正文卡片显示前端技术栈、共享契约包版本、API 基地址，以及
 “当前为 T1.1 数据层建设阶段”的提示。
 
 ### 4.4 Rust Agent
@@ -152,7 +152,7 @@ CI 使用 `.nvmrc` 指定 Node 版本，使用 `package.json` 的 `packageManage
 **`pnpm install` 报告 Node 版本不满足要求**
 升级到 Node 20.19 或更高版本；推荐使用 `.nvmrc` 中的 24。
 
-**Server 或 Web 的 `type-check` 报告找不到 `@buildplatform/contracts`**
+**Server 或 Web 的 `type-check` 报告找不到 `@anvilrun/contracts`**
 先执行 `pnpm run contracts:build`，或直接使用根目录的 `pnpm run type-check`。
 
 **`cargo fmt` / `cargo clippy` 提示组件缺失**

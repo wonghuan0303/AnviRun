@@ -51,8 +51,8 @@ describe('HealthController', () => {
     const status = controller.getHealth();
 
     expect(status.status).toBe('ok');
-    expect(status.service).toBe('@buildplatform/server');
-    expect(status.contracts.name).toBe('@buildplatform/contracts');
+    expect(status.service).toBe('@anvilrun/server');
+    expect(status.contracts.name).toBe('@anvilrun/contracts');
     expect(status.contracts.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(status.uptimeSeconds).toBeGreaterThanOrEqual(0);
   });

@@ -2,7 +2,7 @@ import { nextTick } from 'vue';
 import { mount } from '@vue/test-utils';
 import { describe, expect, it } from 'vitest';
 import ElementPlus from 'element-plus';
-import type { FormConfigIssue, FormSchema } from '@buildplatform/contracts';
+import type { FormConfigIssue, FormSchema } from '@anvilrun/contracts';
 
 import FormConfigEditor from './FormConfigEditor.vue';
 

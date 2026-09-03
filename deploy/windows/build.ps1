@@ -37,8 +37,8 @@ try {
 
   Invoke-Checked 'pnpm' @('install', '--frozen-lockfile')
   Invoke-Checked 'pnpm' @('run', 'contracts:build')
-  Invoke-Checked 'pnpm' @('--filter', '@buildplatform/server', 'run', 'build')
-  Invoke-Checked 'pnpm' @('--filter', '@buildplatform/web', 'run', 'build')
+  Invoke-Checked 'pnpm' @('--filter', '@anvilrun/server', 'run', 'build')
+  Invoke-Checked 'pnpm' @('--filter', '@anvilrun/web', 'run', 'build')
   Invoke-Checked 'cargo' @('build', '--release', '--locked', '--manifest-path', 'agent/Cargo.toml')
   Write-Output 'Build completed.'
 }

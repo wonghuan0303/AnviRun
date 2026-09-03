@@ -1,5 +1,5 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from '@nestjs/common';
-import { createApiErrorResponse, isApiErrorCode } from '@buildplatform/contracts';
+import { createApiErrorResponse, isApiErrorCode } from '@anvilrun/contracts';
 import type { Request, Response } from 'express';
 
 import { ApiException } from '../api-exception';

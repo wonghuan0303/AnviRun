@@ -9,7 +9,7 @@
 目录可以自定义，脚本不依赖固定盘符。一个可用的示例是：
 
 ```text
-C:\BuildPlatform\
+C:\AnvilRun\
   app\                 # 仓库或构建产物
     web\               # apps/web/dist 的内容
   data\
@@ -39,15 +39,15 @@ pwsh -File .\deploy\windows\build.ps1
 
 脚本会检查 Node/pnpm/Cargo，执行 `pnpm install --frozen-lockfile`，构建 contracts、Server、Web，并执行 Rust release 构建。脚本不会修改数据库，也不会写入生产环境变量。
 
-将 `apps\web\dist` 复制到部署目录，例如 `C:\BuildPlatform\app\web`。
+将 `apps\web\dist` 复制到部署目录，例如 `C:\AnvilRun\app\web`。
 
 ## Server 配置与启动
 
 复制并编辑 `deploy/windows/server.env.example`。必须替换数据库连接中的占位密码，并生成两个相互独立的高复杂度密钥：
 
 ```powershell
-Copy-Item .\deploy\windows\server.env.example C:\BuildPlatform\config\server.env
-pwsh -File .\deploy\windows\start-server.ps1 -EnvironmentFile C:\BuildPlatform\config\server.env
+Copy-Item .\deploy\windows\server.env.example C:\AnvilRun\config\server.env
+pwsh -File .\deploy\windows\start-server.ps1 -EnvironmentFile C:\AnvilRun\config\server.env
 ```
 
 启动脚本会先执行 `prisma migrate deploy`，迁移失败时不会启动 Server；Server 以前台进程运行，使用 Ctrl+C 停止。它不会 seed、创建默认管理员或打印环境变量。
@@ -73,7 +73,7 @@ $secure = Read-Host 'Admin password' -AsSecureString
 $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
 try {
   $password = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
-  $password | pnpm --filter @buildplatform/server run admin:init -- --username admin --password-stdin
+  $password | pnpm --filter @anvilrun/server run admin:init -- --username admin --password-stdin
 } finally {
   [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
   Remove-Variable password -ErrorAction SilentlyContinue
@@ -87,13 +87,13 @@ try {
 构建 Windows x64 发布包：
 
 ```powershell
-pwsh -File .\deploy\windows\package-agent.ps1 -OutputDirectory C:\BuildPlatform\releases
+pwsh -File .\deploy\windows\package-agent.ps1 -OutputDirectory C:\AnvilRun\releases
 ```
 
 脚本生成 `build-agent-<version>-windows-x64.zip` 及同名 `.sha256`，内容仅包含 `build-agent.exe`、配置示例、版本和说明，不包含源码、target、state、工作区、日志或真实 Token。解压后编辑配置，再以前台方式运行：
 
 ```powershell
-pwsh -File C:\BuildPlatform\app\deploy\windows\start-agent.ps1 -ConfigPath C:\BuildPlatform\config\build-agent.toml -AgentExecutable C:\BuildPlatform\agent\build-agent.exe
+pwsh -File C:\AnvilRun\app\deploy\windows\start-agent.ps1 -ConfigPath C:\AnvilRun\config\build-agent.toml -AgentExecutable C:\AnvilRun\agent\build-agent.exe
 ```
 
 Ctrl+C 会停止 Agent。当前不安装 Windows Service；Agent Token 只放在受限配置文件中，不作为命令行参数、不粘贴到工单。
@@ -114,12 +114,12 @@ pwsh -File .\deploy\windows\check-health.ps1 -ServerUrl http://127.0.0.1:3000
 
 ```powershell
 pwsh -File .\deploy\windows\backup.ps1 `
-  -OutputDirectory C:\BuildPlatform\backups `
+  -OutputDirectory C:\AnvilRun\backups `
   -PostgresContainer buildplatform-postgres-t11 `
   -DatabaseName buildplatform_dev `
   -DatabaseUser buildplatform `
-  -ArtifactDirectory C:\BuildPlatform\data\artifacts `
-  -TaskLogDirectory C:\BuildPlatform\data\task-logs
+  -ArtifactDirectory C:\AnvilRun\data\artifacts `
+  -TaskLogDirectory C:\AnvilRun\data\task-logs
 ```
 
 脚本生成唯一备份目录，使用容器内 `pg_dump --format=custom`、Windows `tar.exe` 生成 `artifacts.tar.gz` 和 `task-logs.tar.gz`，以及 `manifest.json`。tar 从数据根目录执行，保留隐藏文件、空目录和完整相对目录结构，不写入源目录绝对路径；tar 不可用时明确失败，不回退到 ZIP。manifest 记录文件名、SHA-256、数据库名、创建时间和可获得的 Git Commit。源目录不存在会失败，不伪造成功；不会读取 `.env`、删除既有备份或打印数据库密码。
@@ -128,10 +128,10 @@ pwsh -File .\deploy\windows\backup.ps1 `
 
 ```powershell
 pwsh -File .\deploy\windows\restore.ps1 `
-  -BackupDirectory C:\BuildPlatform\backups\buildplatform-backup-... `
+  -BackupDirectory C:\AnvilRun\backups\buildplatform-backup-... `
   -TargetDatabaseName buildplatform_restore_20260901 `
-  -TargetArtifactDirectory C:\BuildPlatform\restore\artifacts `
-  -TargetTaskLogDirectory C:\BuildPlatform\restore\task-logs `
+  -TargetArtifactDirectory C:\AnvilRun\restore\artifacts `
+  -TargetTaskLogDirectory C:\AnvilRun\restore\task-logs `
   -PostgresContainer buildplatform-postgres-t11 `
   -DatabaseUser buildplatform
 ```

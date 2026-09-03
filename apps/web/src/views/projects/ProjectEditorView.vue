@@ -9,7 +9,7 @@ import {
   type FormConfigIssue,
   type FormConfigValues,
   type FormSchema,
-} from '@buildplatform/contracts';
+} from '@anvilrun/contracts';
 
 import * as projectApi from '@/api/project';
 import * as templateApi from '@/api/build-templates';

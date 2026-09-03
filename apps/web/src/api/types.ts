@@ -1,8 +1,4 @@
-import type {
-  FormConfigCompatibility,
-  FormConfigValues,
-  FormSchema,
-} from '@buildplatform/contracts';
+import type { FormConfigCompatibility, FormConfigValues, FormSchema } from '@anvilrun/contracts';
 
 export type UserRole = 'ADMIN' | 'USER';
 export type UserStatus = 'ACTIVE' | 'DISABLED';

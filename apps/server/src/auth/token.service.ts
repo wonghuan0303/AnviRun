@@ -1,6 +1,6 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
-import { isUserRole } from '@buildplatform/contracts';
+import { isUserRole } from '@anvilrun/contracts';
 
 import { ApiException } from '../common/api-exception';
 import { AuthConfigService } from '../config/auth.config';

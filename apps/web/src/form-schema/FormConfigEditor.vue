@@ -8,7 +8,7 @@ import {
   type FormFieldOptionValue,
   type FormFieldValue,
   type FormSchema,
-} from '@buildplatform/contracts';
+} from '@anvilrun/contracts';
 
 const props = withDefaults(
   defineProps<{

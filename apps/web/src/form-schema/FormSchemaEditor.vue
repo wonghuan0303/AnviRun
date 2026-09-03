@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
-import type { FormSchema, FormSchemaIssue } from '@buildplatform/contracts';
+import type { FormSchema, FormSchemaIssue } from '@anvilrun/contracts';
 
 import FormSchemaPreview from './FormSchemaPreview.vue';
 import { parseFormSchemaText, type JsonSyntaxIssue } from './schema';

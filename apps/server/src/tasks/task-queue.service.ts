@@ -17,7 +17,7 @@ import {
   type TaskStatusMessage,
   type AgentCurrentTask,
   type AgentReportableTaskStatus,
-} from '@buildplatform/contracts';
+} from '@anvilrun/contracts';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 
 import { ApiException } from '../common/api-exception';

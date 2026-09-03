@@ -9,6 +9,6 @@ describe('useAppStore', () => {
   });
 
   it('exposes the application name', () => {
-    expect(useAppStore().appName).toBe('通用构建任务平台');
+    expect(useAppStore().appName).toBe('AnvilRun（铸程）构建任务平台');
   });
 });

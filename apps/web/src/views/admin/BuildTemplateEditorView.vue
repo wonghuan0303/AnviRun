@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import type { FormSchema, FormSchemaIssue } from '@buildplatform/contracts';
+import type { FormSchema, FormSchemaIssue } from '@anvilrun/contracts';
 
 import * as agentsApi from '@/api/agents';
 import * as templatesApi from '@/api/build-templates';

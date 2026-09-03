@@ -1,4 +1,4 @@
-import { containsControlCharacters } from '@buildplatform/contracts';
+import { containsControlCharacters } from '@anvilrun/contracts';
 
 export interface CreateProjectInput {
   readonly name: string;

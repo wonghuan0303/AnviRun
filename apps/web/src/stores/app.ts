@@ -8,7 +8,7 @@ import { ref } from 'vue';
  * 当前用户与权限状态在 T1.2、T1.3 加入。
  */
 export const useAppStore = defineStore('app', () => {
-  const appName = ref('通用构建任务平台');
+  const appName = ref('AnvilRun（铸程）构建任务平台');
 
   return { appName };
 });

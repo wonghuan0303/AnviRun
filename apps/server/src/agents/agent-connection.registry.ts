@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { WebSocket } from 'ws';
-import type { ServerToAgentMessage } from '@buildplatform/contracts';
+import type { ServerToAgentMessage } from '@anvilrun/contracts';
 
 interface RegisteredConnection {
   readonly socket: WebSocket;

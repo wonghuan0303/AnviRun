@@ -69,7 +69,8 @@ function isExampleSecret(secret: string): boolean {
     normalized.includes('placeholder') ||
     normalized.includes('dev-only') ||
     normalized.includes('test-fixed') ||
-    normalized.includes('buildplatform')
+    normalized.includes('buildplatform') ||
+    normalized.includes('anvilrun')
   );
 }
 

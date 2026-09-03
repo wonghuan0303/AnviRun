@@ -39,8 +39,8 @@ if (-not $env:DATABASE_URL) { throw 'DATABASE_URL is required in the environment
 
 Push-Location $repo
 try {
-  Invoke-Checked 'pnpm' @('--filter', '@buildplatform/server', 'run', 'db:migrate:deploy')
-  & pnpm --filter '@buildplatform/server' run start
+  Invoke-Checked 'pnpm' @('--filter', '@anvilrun/server', 'run', 'db:migrate:deploy')
+  & pnpm --filter '@anvilrun/server' run start
   if ($LASTEXITCODE -ne 0) { throw "Server exited with code $LASTEXITCODE" }
 }
 finally {

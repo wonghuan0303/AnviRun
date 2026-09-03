@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import { join, parse, resolve } from 'node:path';
 import { Injectable } from '@nestjs/common';
-import { getContractsPackageInfo } from '@buildplatform/contracts';
+import { getContractsPackageInfo } from '@anvilrun/contracts';
 
 import { SERVICE_NAME } from '../config/server.config';
 import { PrismaService } from '../database/prisma.service';

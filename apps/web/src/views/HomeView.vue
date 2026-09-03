@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { getContractsPackageInfo } from '@buildplatform/contracts';
+import { getContractsPackageInfo } from '@anvilrun/contracts';
 import { computed } from 'vue';
 
 const contracts = getContractsPackageInfo();

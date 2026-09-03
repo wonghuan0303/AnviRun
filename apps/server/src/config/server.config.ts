@@ -1,5 +1,5 @@
 /** 服务名称，用于日志与健康检查响应。 */
-export const SERVICE_NAME = '@buildplatform/server';
+export const SERVICE_NAME = '@anvilrun/server';
 
 /** 监听地址默认值：默认只监听本机，部署时通过 SERVER_HOST 显式放开。 */
 export const DEFAULT_SERVER_HOST = '127.0.0.1';

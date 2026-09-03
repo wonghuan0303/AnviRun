@@ -3,7 +3,7 @@ import {
   getApiErrorHttpStatus,
   type ApiErrorCode,
   type ApiErrorDetails,
-} from '@buildplatform/contracts';
+} from '@anvilrun/contracts';
 import { HttpException } from '@nestjs/common';
 
 /** 内部业务异常：由统一过滤器转换为公共 API 错误契约。 */

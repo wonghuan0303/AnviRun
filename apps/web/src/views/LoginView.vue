@@ -44,8 +44,8 @@ async function submit(): Promise<void> {
     <el-card class="login-card" shadow="always">
       <template #header>
         <div class="login-card__title">
-          <span>Build Platform</span>
-          <small>通用构建任务平台</small>
+          <span>AnvilRun</span>
+          <small>AnvilRun（铸程）构建任务平台</small>
         </div>
       </template>
       <el-alert

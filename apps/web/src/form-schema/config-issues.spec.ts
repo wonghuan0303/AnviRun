@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { FormConfigIssue } from '@buildplatform/contracts';
+import type { FormConfigIssue } from '@anvilrun/contracts';
 
 import { removeIssuesForField } from './config-issues';
 

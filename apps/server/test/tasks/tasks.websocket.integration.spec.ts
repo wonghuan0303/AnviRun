@@ -10,7 +10,7 @@ import {
   validateProtocolMessage,
   type AgentCurrentTask,
   type TaskAssignmentMessage,
-} from '@buildplatform/contracts';
+} from '@anvilrun/contracts';
 import request from 'supertest';
 import WebSocket from 'ws';
 

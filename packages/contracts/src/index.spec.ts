@@ -9,7 +9,7 @@ import { MAX_AGENT_WS_MESSAGE_BYTES, MAX_CLIENT_WS_MESSAGE_BYTES } from './webso
 
 describe('contracts package skeleton', () => {
   it('exposes the package name', () => {
-    expect(CONTRACTS_PACKAGE_NAME).toBe('@buildplatform/contracts');
+    expect(CONTRACTS_PACKAGE_NAME).toBe('@anvilrun/contracts');
   });
 
   it('exposes a semver-like package version', () => {

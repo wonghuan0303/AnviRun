@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { FormField, FormSchema } from '@buildplatform/contracts';
+import type { FormField, FormSchema } from '@anvilrun/contracts';
 
 defineProps<{ schema: FormSchema }>();
 

@@ -38,7 +38,7 @@ importers:
 
   apps/server:
     dependencies:
-      '@buildplatform/contracts':
+      '@anvilrun/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
       '@nestjs/common':
@@ -114,7 +114,7 @@ importers:
 
   apps/web:
     dependencies:
-      '@buildplatform/contracts':
+      '@anvilrun/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
       element-plus:

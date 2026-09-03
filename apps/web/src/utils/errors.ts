@@ -1,5 +1,5 @@
 import { ApiError } from '@/api/client';
-import type { FormConfigIssue, FormConfigIssueCode } from '@buildplatform/contracts';
+import type { FormConfigIssue, FormConfigIssueCode } from '@anvilrun/contracts';
 
 const messages: Record<string, string> = {
   AUTH_INVALID_CREDENTIALS: '用户名或密码错误',

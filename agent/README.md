@@ -1,4 +1,4 @@
-# Build Agent
+# AnvilRun Agent
 
 Rust Agent 是一个长期运行的跨平台连接进程，负责连接 Server、注册、心跳、领取任务、准备 Git 源码并运行最小构建命令。
 
