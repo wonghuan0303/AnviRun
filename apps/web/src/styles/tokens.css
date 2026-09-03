@@ -1,0 +1,138 @@
+:root {
+  /* Brand Palette - Copper / Forge Amber Accent */
+  --ar-color-primary: #c2410c;
+  --ar-color-primary-hover: #ea580c;
+  --ar-color-primary-active: #9a3412;
+  --ar-color-primary-subtle: #ffedd5;
+  --ar-color-primary-text: #9a3412;
+
+  /* Neutral Slate Palette */
+  --ar-color-slate-950: #020617;
+  --ar-color-slate-900: #0f172a;
+  --ar-color-slate-800: #1e293b;
+  --ar-color-slate-700: #334155;
+  --ar-color-slate-600: #475569;
+  --ar-color-slate-500: #64748b;
+  --ar-color-slate-400: #94a3b8;
+  --ar-color-slate-300: #cbd5e1;
+  --ar-color-slate-200: #e2e8f0;
+  --ar-color-slate-100: #f1f5f9;
+  --ar-color-slate-50: #f8fafc;
+  --ar-color-white: #ffffff;
+
+  /* Surface & Background */
+  --ar-bg-body: #f8fafc;
+  --ar-bg-card: #ffffff;
+  --ar-bg-sidebar: #0f172a;
+  --ar-bg-sidebar-active: #1e293b;
+  --ar-bg-subtle: #f1f5f9;
+  --ar-bg-muted: #e2e8f0;
+  --ar-bg-terminal: #0b1120;
+
+  /* Typography Colors */
+  --ar-text-primary: #0f172a;
+  --ar-text-regular: #334155;
+  --ar-text-secondary: #64748b;
+  --ar-text-muted: #94a3b8;
+  --ar-text-inverse: #ffffff;
+
+  /* Borders */
+  --ar-border-color: #e2e8f0;
+  --ar-border-subtle: #f1f5f9;
+  --ar-border-dark: #cbd5e1;
+
+  /* Semantic Status Colors */
+  --ar-status-success: #059669;
+  --ar-status-success-bg: #ecfdf5;
+  --ar-status-success-border: #a7f3d0;
+  --ar-status-success-text: #065f46;
+
+  --ar-status-warning: #d97706;
+  --ar-status-warning-bg: #fffbeb;
+  --ar-status-warning-border: #fde68a;
+  --ar-status-warning-text: #92400e;
+
+  --ar-status-danger: #dc2626;
+  --ar-status-danger-bg: #fef2f2;
+  --ar-status-danger-border: #fecaca;
+  --ar-status-danger-text: #991b1b;
+
+  --ar-status-info: #2563eb;
+  --ar-status-info-bg: #eff6ff;
+  --ar-status-info-border: #bfdbfe;
+  --ar-status-info-text: #1e40af;
+
+  --ar-status-running: #4f46e5;
+  --ar-status-running-bg: #eef2ff;
+  --ar-status-running-border: #c7d2fe;
+  --ar-status-running-text: #3730a3;
+
+  /* Typography */
+  --ar-font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', Arial, sans-serif;
+  --ar-font-mono:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
+    monospace;
+
+  /* Shadows */
+  --ar-shadow-xs: 0 1px 2px 0 rgb(15 23 42 / 0.04);
+  --ar-shadow-sm: 0 1px 3px 0 rgb(15 23 42 / 0.08), 0 1px 2px -1px rgb(15 23 42 / 0.06);
+  --ar-shadow-md: 0 4px 6px -1px rgb(15 23 42 / 0.07), 0 2px 4px -2px rgb(15 23 42 / 0.05);
+  --ar-shadow-lg: 0 10px 15px -3px rgb(15 23 42 / 0.08), 0 4px 6px -4px rgb(15 23 42 / 0.04);
+
+  /* Radius */
+  --ar-radius-xs: 3px;
+  --ar-radius-sm: 4px;
+  --ar-radius-md: 6px;
+  --ar-radius-lg: 8px;
+  --ar-radius-xl: 12px;
+  --ar-radius-full: 9999px;
+
+  /* Layout */
+  --ar-sidebar-width: 230px;
+  --ar-header-height: 56px;
+  --ar-content-max-width: 1440px;
+
+  /* Transitions */
+  --ar-transition-base: all 0.15s ease-in-out;
+
+  /* Element Plus Theme Customization */
+  --el-color-primary: #c2410c;
+  --el-color-primary-light-3: #f97316;
+  --el-color-primary-light-5: #fb923c;
+  --el-color-primary-light-7: #fdba74;
+  --el-color-primary-light-8: #fed7aa;
+  --el-color-primary-light-9: #ffedd5;
+  --el-color-primary-dark-2: #9a3412;
+
+  --el-color-success: #059669;
+  --el-color-success-light-9: #ecfdf5;
+  --el-color-warning: #d97706;
+  --el-color-warning-light-9: #fffbeb;
+  --el-color-danger: #dc2626;
+  --el-color-danger-light-9: #fef2f2;
+  --el-color-info: #475569;
+  --el-color-info-light-9: #f1f5f9;
+
+  --el-text-color-primary: #0f172a;
+  --el-text-color-regular: #334155;
+  --el-text-color-secondary: #64748b;
+  --el-text-color-placeholder: #94a3b8;
+
+  --el-border-color: #e2e8f0;
+  --el-border-color-light: #f1f5f9;
+  --el-border-color-lighter: #f8fafc;
+  --el-border-color-dark: #cbd5e1;
+  --el-border-radius-base: 6px;
+  --el-border-radius-small: 4px;
+  --el-border-radius-round: 20px;
+
+  --el-card-bg-color: #ffffff;
+  --el-card-border-color: #e2e8f0;
+
+  --el-table-border-color: #f1f5f9;
+  --el-table-header-bg-color: #f8fafc;
+  --el-table-header-text-color: #475569;
+  --el-table-row-hover-bg-color: #f8fafc;
+}

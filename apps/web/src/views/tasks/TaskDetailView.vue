@@ -3,11 +3,13 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useRoute, useRouter } from 'vue-router';
 
-import { ApiError } from '@/api/client';
 import * as artifactApi from '@/api/artifacts';
+import { ApiError } from '@/api/client';
 import { clientLogWebSocketUrl, parseClientLogEvent } from '@/api/task-log';
 import * as taskApi from '@/api/tasks';
 import type { ArtifactSummary, TaskDetail, TaskLogEntry } from '@/api/types';
+import CopyableText from '@/components/CopyableText.vue';
+import StatusBadge from '@/components/StatusBadge.vue';
 import { useAuthStore } from '@/stores/auth';
 import { errorMessage } from '@/utils/errors';
 import {
@@ -39,6 +41,7 @@ const logContainer = ref<HTMLElement | null>(null);
 const cancelBusy = ref(false);
 const rebuildBusy = ref(false);
 const artifactBusy = ref<string | null>(null);
+const autoScroll = ref(true);
 
 let pollTimer: number | undefined;
 let reconnectTimer: number | undefined;
@@ -112,7 +115,7 @@ function nearLogBottom(): boolean {
 
 function appendLogEntry(entry: TaskLogEntry, generation = contextGeneration): void {
   if (!isCurrentContext(generation, taskId.value)) return;
-  const shouldScroll = nearLogBottom();
+  const shouldScroll = autoScroll.value && nearLogBottom();
   visibleLogEntries.value.push(entry);
   if (shouldScroll) {
     void nextTick(() => {
@@ -490,8 +493,22 @@ onBeforeUnmount(() => {
   <section class="page-section task-detail-page">
     <div class="page-heading">
       <div>
-        <h1>任务详情</h1>
-        <p>查看构建状态、日志和产物。</p>
+        <div class="breadcrumb-nav">
+          <el-button link type="primary" class="back-link" @click="router.back()">
+            ← 返回
+          </el-button>
+        </div>
+        <div class="title-with-badge">
+          <h1>任务详情</h1>
+          <StatusBadge
+            v-if="task"
+            size="large"
+            :type="taskStatusType(task.status)"
+            :text="taskStatusLabel(task.status)"
+            :pulse="!isTerminalTask(task)"
+          />
+        </div>
+        <p>监控构建任务执行状态、实时输出控制台日志并下载构建产物。</p>
       </div>
       <div class="page-heading__actions">
         <el-button @click="router.back()">返回</el-button>
@@ -503,9 +520,9 @@ onBeforeUnmount(() => {
         >
           {{ operationLabel || '任务已结束' }}
         </el-button>
-        <el-button v-if="canRebuild" type="primary" :loading="rebuildBusy" @click="rebuild"
-          >重新构建</el-button
-        >
+        <el-button v-if="canRebuild" type="primary" :loading="rebuildBusy" @click="rebuild">
+          重新构建
+        </el-button>
       </div>
     </div>
 
@@ -520,177 +537,393 @@ onBeforeUnmount(() => {
     <el-skeleton v-if="loading" :rows="10" animated />
 
     <template v-else-if="task">
-      <el-card shadow="never">
-        <div class="task-status-header">
-          <div>
-            <span class="detail-label">当前状态</span>
-            <el-tag :type="taskStatusType(task.status)" size="large">{{
-              taskStatusLabel(task.status)
-            }}</el-tag>
-            <p v-if="task.statusReason" class="muted-text">{{ task.statusReason }}</p>
-          </div>
-          <div class="task-status-header__hint">
-            {{ task.project.name }} · {{ task.buildTemplate.name }}
-          </div>
-        </div>
-        <div class="detail-grid task-metrics">
-          <div>
-            <span class="detail-label">项目</span
-            ><el-button
-              link
-              type="primary"
-              @click="
-                router.push({ name: 'project-detail', params: { projectId: task.projectId } })
-              "
-              >{{ task.project.name }}</el-button
-            >
-          </div>
-          <div><span class="detail-label">构建模板</span>{{ task.buildTemplate.name }}</div>
-          <div>
-            <span class="detail-label">Agent</span>{{ task.agent.name }}
-            <el-tag
-              size="small"
-              :type="
-                task.agent.enabled
-                  ? task.agent.status === 'ONLINE'
-                    ? 'success'
-                    : 'warning'
-                  : 'danger'
-              "
-              >{{
-                task.agent.enabled ? (task.agent.status === 'ONLINE' ? '在线' : '离线') : '已停用'
-              }}</el-tag
-            >
-          </div>
-          <div>
-            <span class="detail-label">分支</span><code>{{ task.branch }}</code>
-          </div>
-          <div>
-            <span class="detail-label">Commit SHA</span><code>{{ task.sourceCommit || '—' }}</code>
-          </div>
-          <div><span class="detail-label">创建人</span>{{ task.creator.username }}</div>
-          <div><span class="detail-label">创建时间</span>{{ formatTaskDate(task.createdAt) }}</div>
-          <div><span class="detail-label">排队时间</span>{{ formatTaskDate(task.queuedAt) }}</div>
-          <div><span class="detail-label">开始时间</span>{{ formatTaskDate(task.startedAt) }}</div>
-          <div><span class="detail-label">完成时间</span>{{ formatTaskDate(task.finishedAt) }}</div>
-          <div><span class="detail-label">命令退出码</span>{{ task.exitCode ?? '—' }}</div>
-          <div><span class="detail-label">日志大小</span>{{ formatBytes(task.logSize) }}</div>
-          <div>
-            <span class="detail-label">产物统计</span>{{ task.artifactCount }} 个 /
-            {{ formatBytes(task.artifactBytes) }}
-          </div>
-        </div>
-      </el-card>
-
-      <el-card shadow="never">
-        <template #header>状态时间线</template>
-        <el-timeline v-if="task.statusHistory.length">
-          <el-timeline-item
-            v-for="item in task.statusHistory"
-            :key="item.id"
-            :timestamp="formatTaskDate(item.occurredAt)"
-          >
-            <strong
-              >{{ item.fromStatus ? taskStatusLabel(item.fromStatus) : '初始状态' }} →
-              {{ taskStatusLabel(item.toStatus) }}</strong
-            >
-            <div class="muted-text">
-              来源：{{ item.source }}{{ item.reason ? ` · ${item.reason}` : '' }}
+      <div class="task-detail-sections">
+        <!-- 任务状态与指标看板 -->
+        <el-card shadow="never" class="task-card">
+          <div class="task-status-header">
+            <div class="status-overview">
+              <span class="detail-label">当前状态</span>
+              <div class="status-badge-row">
+                <el-tag :type="taskStatusType(task.status)" size="large" class="status-tag">
+                  {{ taskStatusLabel(task.status) }}
+                </el-tag>
+              </div>
+              <p v-if="task.statusReason" class="muted-text status-reason">
+                {{ task.statusReason }}
+              </p>
             </div>
-          </el-timeline-item>
-        </el-timeline>
-        <el-empty v-else description="暂无状态历史" />
-      </el-card>
-
-      <el-card shadow="never">
-        <template #header>
-          <div class="card-header-line">
-            <span>构建日志</span><span class="muted-text">{{ logConnection }}</span>
+            <div class="task-status-header__hint">
+              <strong>{{ task.project.name }}</strong> · {{ task.buildTemplate.name }}
+            </div>
           </div>
-        </template>
-        <div class="page-heading__actions log-actions">
-          <el-button size="small" @click="visibleLogEntries = []">清空当前显示</el-button>
-          <span v-if="logsLoading" class="muted-text">历史日志加载中…</span>
-          <span v-if="logError" class="error-text">{{ logError }}</span>
-        </div>
-        <div ref="logContainer" class="task-log-viewer">
-          <div
-            v-for="entry in visibleLogEntries"
-            :key="`${entry.sequence}-${entry.stream}-${entry.emittedAt}`"
-            class="task-log-line"
-            :class="`task-log-line--${entry.stream}`"
-          >
-            <span class="task-log-line__meta"
-              >{{ formatTaskDate(entry.emittedAt) }} [{{ entry.stream }}]</span
-            ><span>{{ entry.chunk }}</span>
-          </div>
-          <el-empty v-if="!logsLoading && visibleLogEntries.length === 0" description="暂无日志" />
-        </div>
-      </el-card>
 
-      <el-card shadow="never">
-        <template #header
-          ><div class="card-header-line">
-            <span>产物</span
-            ><el-button
-              size="small"
-              @click="download(() => artifactApi.downloadTaskArchive(taskId))"
-              >下载 ZIP</el-button
-            >
-          </div></template
-        >
-        <el-alert
-          v-if="artifactError"
-          :title="artifactError"
-          type="error"
-          :closable="false"
-          class="page-alert"
-        />
-        <el-table v-loading="false" :data="artifacts" row-key="id">
-          <el-table-column prop="relativePath" label="路径" min-width="260" />
-          <el-table-column prop="fileName" label="文件名" min-width="150" />
-          <el-table-column label="大小" width="120"
-            ><template #default="{ row }">{{ formatBytes(row.size) }}</template></el-table-column
-          >
-          <el-table-column label="SHA-256" min-width="260"
-            ><template #default="{ row }"
-              ><code>{{ row.sha256 }}</code></template
-            ></el-table-column
-          >
-          <el-table-column label="创建时间" width="175"
-            ><template #default="{ row }">{{
-              formatTaskDate(row.createdAt)
-            }}</template></el-table-column
-          >
-          <el-table-column label="操作" width="160" fixed="right"
-            ><template #default="{ row }"
-              ><el-button
+          <div class="detail-grid task-metrics">
+            <div>
+              <span class="detail-label">所属项目</span>
+              <el-button
                 link
                 type="primary"
-                @click="download(() => artifactApi.downloadArtifact(row.id))"
-                >下载</el-button
-              ><el-button
-                link
-                type="danger"
-                :loading="artifactBusy === row.id"
-                @click="removeArtifactFromRow(row)"
-                >删除</el-button
-              ></template
-            ></el-table-column
-          >
-        </el-table>
-        <el-empty v-if="artifacts.length === 0 && !artifactError" description="暂无产物" />
-        <div class="pagination-row">
-          <el-pagination
-            v-model:current-page="artifactPage"
-            v-model:page-size="artifactPageSize"
-            layout="total, sizes, prev, pager, next"
-            :total="artifactTotal"
-            @current-change="loadCurrentArtifacts"
-            @size-change="loadCurrentArtifacts"
+                class="project-link"
+                @click="
+                  router.push({ name: 'project-detail', params: { projectId: task.projectId } })
+                "
+              >
+                {{ task.project.name }}
+              </el-button>
+            </div>
+            <div>
+              <span class="detail-label">构建模板</span>
+              <span>{{ task.buildTemplate.name }}</span>
+            </div>
+            <div>
+              <span class="detail-label">执行 Agent</span>
+              <div class="agent-badge-line">
+                <span>{{ task.agent.name }}</span>
+                <el-tag
+                  size="small"
+                  :type="
+                    task.agent.enabled
+                      ? task.agent.status === 'ONLINE'
+                        ? 'success'
+                        : 'warning'
+                      : 'danger'
+                  "
+                >
+                  {{
+                    task.agent.enabled
+                      ? task.agent.status === 'ONLINE'
+                        ? '在线'
+                        : '离线'
+                      : '已停用'
+                  }}
+                </el-tag>
+              </div>
+            </div>
+            <div>
+              <span class="detail-label">Git 分支</span>
+              <code>{{ task.branch }}</code>
+            </div>
+            <div>
+              <span class="detail-label">Commit SHA</span>
+              <CopyableText
+                v-if="task.sourceCommit"
+                :text="task.sourceCommit"
+                :display-text="task.sourceCommit.slice(0, 8)"
+              />
+              <code v-else>—</code>
+            </div>
+            <div>
+              <span class="detail-label">创建人</span>
+              <span>{{ task.creator.username }}</span>
+            </div>
+            <div>
+              <span class="detail-label">创建时间</span>
+              <span>{{ formatTaskDate(task.createdAt) }}</span>
+            </div>
+            <div>
+              <span class="detail-label">排队时间</span>
+              <span>{{ formatTaskDate(task.queuedAt) }}</span>
+            </div>
+            <div>
+              <span class="detail-label">开始时间</span>
+              <span>{{ formatTaskDate(task.startedAt) }}</span>
+            </div>
+            <div>
+              <span class="detail-label">完成时间</span>
+              <span>{{ formatTaskDate(task.finishedAt) }}</span>
+            </div>
+            <div>
+              <span class="detail-label">命令退出码</span>
+              <el-tag
+                size="small"
+                :type="task.exitCode === 0 ? 'success' : task.exitCode !== null ? 'danger' : 'info'"
+              >
+                {{ task.exitCode ?? '—' }}
+              </el-tag>
+            </div>
+            <div>
+              <span class="detail-label">日志大小</span>
+              <span>{{ formatBytes(task.logSize) }}</span>
+            </div>
+            <div>
+              <span class="detail-label">产物统计</span>
+              <span>{{ task.artifactCount }} 个 / {{ formatBytes(task.artifactBytes) }}</span>
+            </div>
+          </div>
+        </el-card>
+
+        <!-- 状态时间线 -->
+        <el-card shadow="never" class="task-card">
+          <template #header>
+            <span class="card-title">状态演进时间线</span>
+          </template>
+          <div class="timeline-container">
+            <el-timeline v-if="task.statusHistory.length">
+              <el-timeline-item
+                v-for="item in task.statusHistory"
+                :key="item.id"
+                :timestamp="formatTaskDate(item.occurredAt)"
+                :type="
+                  item.toStatus === 'SUCCEEDED'
+                    ? 'success'
+                    : item.toStatus === 'FAILED'
+                      ? 'danger'
+                      : 'primary'
+                "
+              >
+                <strong>
+                  {{ item.fromStatus ? taskStatusLabel(item.fromStatus) : '初始状态' }} →
+                  {{ taskStatusLabel(item.toStatus) }}
+                </strong>
+                <div class="muted-text timeline-source">
+                  来源：{{ item.source }}{{ item.reason ? ` · ${item.reason}` : '' }}
+                </div>
+              </el-timeline-item>
+            </el-timeline>
+            <el-empty v-else description="暂无状态历史" />
+          </div>
+        </el-card>
+
+        <!-- 构建日志控制台 -->
+        <el-card shadow="never" class="task-card log-card">
+          <template #header>
+            <div class="card-header-line">
+              <div class="log-header-left">
+                <span class="card-title">构建控制台日志</span>
+                <span class="log-count">({{ visibleLogEntries.length }} 行)</span>
+              </div>
+              <div class="log-connection-badge">
+                <StatusBadge
+                  size="small"
+                  :type="
+                    logConnection === '已连接'
+                      ? 'success'
+                      : logConnection.includes('重连')
+                        ? 'warning'
+                        : 'info'
+                  "
+                  :text="logConnection"
+                  :pulse="logConnection === '已连接'"
+                />
+              </div>
+            </div>
+          </template>
+
+          <div class="page-heading__actions log-actions">
+            <el-button size="small" @click="visibleLogEntries = []">清空当前显示</el-button>
+            <span v-if="logsLoading" class="muted-text">历史日志加载中…</span>
+            <span v-if="logError" class="error-text">{{ logError }}</span>
+          </div>
+
+          <div ref="logContainer" class="task-log-viewer">
+            <div
+              v-for="entry in visibleLogEntries"
+              :key="`${entry.sequence}-${entry.stream}-${entry.emittedAt}`"
+              class="task-log-line"
+              :class="`task-log-line--${entry.stream}`"
+            >
+              <span class="task-log-line__meta">
+                {{ formatTaskDate(entry.emittedAt) }} [{{ entry.stream }}]
+              </span>
+              <span class="task-log-line__chunk">{{ entry.chunk }}</span>
+            </div>
+            <el-empty
+              v-if="!logsLoading && visibleLogEntries.length === 0"
+              description="暂无日志输出"
+            />
+          </div>
+        </el-card>
+
+        <!-- 产物列表 -->
+        <el-card shadow="never" class="task-card">
+          <template #header>
+            <div class="card-header-line">
+              <div class="artifact-title-box">
+                <span class="card-title">构建产物</span>
+                <span class="muted-text">（共 {{ artifactTotal }} 个文件）</span>
+              </div>
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                :disabled="artifacts.length === 0"
+                @click="download(() => artifactApi.downloadTaskArchive(taskId))"
+              >
+                下载 ZIP 归档包
+              </el-button>
+            </div>
+          </template>
+
+          <el-alert
+            v-if="artifactError"
+            :title="artifactError"
+            type="error"
+            :closable="false"
+            class="page-alert"
           />
-        </div>
-      </el-card>
+
+          <el-table v-loading="false" :data="artifacts" row-key="id">
+            <el-table-column prop="relativePath" label="路径" min-width="260">
+              <template #default="{ row }">
+                <span class="file-path">📁 {{ row.relativePath }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="fileName" label="文件名" min-width="160" />
+            <el-table-column label="大小" width="120">
+              <template #default="{ row }">{{ formatBytes(row.size) }}</template>
+            </el-table-column>
+            <el-table-column label="SHA-256" min-width="260">
+              <template #default="{ row }">
+                <CopyableText :text="row.sha256" :display-text="`${row.sha256.slice(0, 16)}…`" />
+              </template>
+            </el-table-column>
+            <el-table-column label="创建时间" width="175">
+              <template #default="{ row }">{{ formatTaskDate(row.createdAt) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="160" fixed="right">
+              <template #default="{ row }">
+                <el-button
+                  link
+                  type="primary"
+                  @click="download(() => artifactApi.downloadArtifact(row.id))"
+                >
+                  下载
+                </el-button>
+                <el-button
+                  link
+                  type="danger"
+                  :loading="artifactBusy === row.id"
+                  @click="removeArtifactFromRow(row)"
+                >
+                  删除
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <el-empty v-if="artifacts.length === 0 && !artifactError" description="暂无产物" />
+
+          <div class="pagination-row">
+            <el-pagination
+              v-model:current-page="artifactPage"
+              v-model:page-size="artifactPageSize"
+              layout="total, sizes, prev, pager, next"
+              :total="artifactTotal"
+              @current-change="loadCurrentArtifacts"
+              @size-change="loadCurrentArtifacts"
+            />
+          </div>
+        </el-card>
+      </div>
     </template>
   </section>
 </template>
+
+<style scoped>
+.breadcrumb-nav {
+  margin-bottom: 4px;
+}
+
+.back-link {
+  font-size: 13px;
+  padding: 0;
+}
+
+.title-with-badge {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.title-with-badge h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ar-text-primary);
+}
+
+.task-detail-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.task-card {
+  border-radius: var(--ar-radius-lg);
+}
+
+.card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ar-text-primary);
+}
+
+.status-badge-row {
+  margin-top: 4px;
+}
+
+.status-tag {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.status-reason {
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+.project-link {
+  font-weight: 600;
+  font-size: 14px;
+  padding: 0;
+}
+
+.agent-badge-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.timeline-container {
+  padding: 8px 12px;
+}
+
+.timeline-source {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.log-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.log-count {
+  font-size: 12px;
+  color: var(--ar-text-muted);
+}
+
+.log-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.task-log-line__chunk {
+  font-family: var(--ar-font-mono);
+}
+
+.artifact-title-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-path {
+  font-family: var(--ar-font-mono);
+  font-size: 13px;
+}
+</style>

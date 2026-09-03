@@ -3,6 +3,7 @@ import { reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 
+import BrandLogo from '@/components/BrandLogo.vue';
 import { errorMessage } from '@/utils/errors';
 import { useAuthStore } from '@/stores/auth';
 
@@ -41,44 +42,56 @@ async function submit(): Promise<void> {
 
 <template>
   <main class="login-page">
-    <el-card class="login-card" shadow="always">
-      <template #header>
-        <div class="login-card__title">
-          <span>AnvilRun</span>
-          <small>AnvilRun（铸程）构建任务平台</small>
-        </div>
-      </template>
-      <el-alert
-        v-if="error"
-        :title="error"
-        type="error"
-        show-icon
-        :closable="false"
-        class="page-alert"
-      />
-      <el-form :model="form" label-position="top" @submit.prevent="submit">
-        <el-form-item label="用户名" required>
-          <el-input v-model="form.username" autocomplete="username" placeholder="请输入用户名" />
-        </el-form-item>
-        <el-form-item label="密码" required>
-          <el-input
-            v-model="form.password"
-            type="password"
-            show-password
-            autocomplete="current-password"
-            placeholder="请输入密码"
-            @keyup.enter="submit"
-          />
-        </el-form-item>
-        <el-button
-          type="primary"
-          native-type="submit"
-          :loading="submitting"
-          class="login-card__submit"
-        >
-          登录
-        </el-button>
-      </el-form>
-    </el-card>
+    <div class="login-container">
+      <el-card class="login-card" shadow="always">
+        <template #header>
+          <div class="login-card__brand-header">
+            <BrandLogo size="large" />
+            <div class="login-card__title">
+              <span>AnvilRun</span>
+              <small>把固定打包机变成团队共享的构建服务</small>
+            </div>
+          </div>
+        </template>
+        <el-alert
+          v-if="error"
+          :title="error"
+          type="error"
+          show-icon
+          :closable="false"
+          class="page-alert"
+        />
+        <el-form :model="form" label-position="top" @submit.prevent="submit">
+          <el-form-item label="用户名" required>
+            <el-input
+              v-model="form.username"
+              size="large"
+              autocomplete="username"
+              placeholder="请输入用户名"
+            />
+          </el-form-item>
+          <el-form-item label="密码" required>
+            <el-input
+              v-model="form.password"
+              size="large"
+              type="password"
+              show-password
+              autocomplete="current-password"
+              placeholder="请输入密码"
+              @keyup.enter="submit"
+            />
+          </el-form-item>
+          <el-button
+            type="primary"
+            size="large"
+            native-type="submit"
+            :loading="submitting"
+            class="login-card__submit"
+          >
+            登录平台
+          </el-button>
+        </el-form>
+      </el-card>
+    </div>
   </main>
 </template>

@@ -6,6 +6,8 @@ import { useRouter } from 'vue-router';
 import * as projectApi from '@/api/project';
 import * as templateApi from '@/api/build-templates';
 import type { BuildTemplatePublicView, ProjectView } from '@/api/types';
+import MetricCard from '@/components/MetricCard.vue';
+import StatusBadge from '@/components/StatusBadge.vue';
 import { useAuthStore } from '@/stores/auth';
 import { errorMessage } from '@/utils/errors';
 import {
@@ -30,8 +32,23 @@ const error = ref('');
 const hasLoadedTemplates = ref(false);
 const isAdmin = computed(() => auth.isAdmin);
 
+const buildableCount = computed(
+  () => items.value.filter((p) => p.configCompatibility.buildable).length,
+);
+const incompatibleCount = computed(
+  () => items.value.filter((p) => !p.configCompatibility.valid).length,
+);
+
 function toProject(value: unknown): ProjectView {
   return value as ProjectView;
+}
+
+function agentStatusDisplayText(project: ProjectView): string {
+  return agentStatusLabel(project.buildTemplate.agent);
+}
+
+function compatibilityDisplayText(project: ProjectView): string {
+  return compatibilityLabel(project);
 }
 
 async function loadTemplates(): Promise<void> {
@@ -100,7 +117,7 @@ onMounted(() => {
     <div class="page-heading">
       <div>
         <h1>项目管理</h1>
-        <p>管理项目基本信息、模板配置和当前可构建状态。</p>
+        <p>管理构建项目配置、Git 分支绑定与当前就绪状态。</p>
       </div>
       <div class="page-heading__actions">
         <el-button @click="load">刷新</el-button>
@@ -108,7 +125,18 @@ onMounted(() => {
       </div>
     </div>
 
-    <el-card shadow="never">
+    <div class="project-stats-grid">
+      <MetricCard label="项目总数" :value="total" hint="当前可访问项目" />
+      <MetricCard label="就绪可构建" :value="buildableCount" type="success" hint="配置与节点正常" />
+      <MetricCard
+        label="配置需调整"
+        :value="incompatibleCount"
+        type="danger"
+        hint="模板更新或字段缺失"
+      />
+    </div>
+
+    <el-card shadow="never" class="filter-card">
       <el-form inline @submit.prevent="submitSearch">
         <el-form-item label="名称">
           <el-input
@@ -157,26 +185,48 @@ onMounted(() => {
 
     <el-card shadow="never" class="table-card">
       <el-table v-loading="loading" :data="items" row-key="id">
-        <el-table-column prop="name" label="项目名称" min-width="180" />
+        <el-table-column prop="name" label="项目名称" min-width="180">
+          <template #default="{ row }">
+            <el-button
+              link
+              type="primary"
+              class="project-name-link"
+              @click="router.push({ name: 'project-detail', params: { projectId: row.id } })"
+            >
+              {{ row.name }}
+            </el-button>
+          </template>
+        </el-table-column>
         <el-table-column v-if="isAdmin" label="所有者" width="130">
-          <template #default="{ row }">{{ row.owner.username }}</template>
+          <template #default="{ row }">
+            <span class="user-cell">{{ row.owner.username }}</span>
+          </template>
         </el-table-column>
         <el-table-column label="模板" min-width="160">
           <template #default="{ row }">{{ templateName(toProject(row)) }}</template>
         </el-table-column>
-        <el-table-column prop="branch" label="分支" min-width="150" />
-        <el-table-column label="Agent" width="110">
+        <el-table-column prop="branch" label="分支" min-width="150">
           <template #default="{ row }">
-            <el-tag :type="agentStatusType(row.buildTemplate.agent)">
-              {{ agentStatusLabel(row.buildTemplate.agent) }}
-            </el-tag>
+            <code class="branch-tag">{{ row.branch }}</code>
+          </template>
+        </el-table-column>
+        <el-table-column label="Agent" width="120">
+          <template #default="{ row }">
+            <StatusBadge
+              :type="agentStatusType(row.buildTemplate.agent)"
+              :text="agentStatusDisplayText(toProject(row))"
+              :pulse="
+                row.buildTemplate.agent.enabled && row.buildTemplate.agent.status === 'ONLINE'
+              "
+            />
           </template>
         </el-table-column>
         <el-table-column label="配置" width="130">
           <template #default="{ row }">
-            <el-tag :type="compatibilityType(toProject(row))">
-              {{ compatibilityLabel(toProject(row)) }}
-            </el-tag>
+            <StatusBadge
+              :type="compatibilityType(toProject(row))"
+              :text="compatibilityDisplayText(toProject(row))"
+            />
           </template>
         </el-table-column>
         <el-table-column label="更新时间" width="175">
@@ -188,25 +238,30 @@ onMounted(() => {
               link
               type="primary"
               @click="router.push({ name: 'project-detail', params: { projectId: row.id } })"
-              >详情</el-button
             >
+              详情
+            </el-button>
             <el-button
               link
               type="primary"
               @click="router.push({ name: 'project-edit', params: { projectId: row.id } })"
-              >编辑</el-button
             >
+              编辑
+            </el-button>
             <el-button
               link
               type="primary"
               @click="router.push({ name: 'project-config', params: { projectId: row.id } })"
-              >配置</el-button
             >
+              配置
+            </el-button>
             <el-button link type="danger" @click="confirmDelete(toProject(row))">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
+
       <el-empty v-if="!loading && items.length === 0" description="暂无项目" />
+
       <div class="pagination-row">
         <el-pagination
           v-model:current-page="page"
@@ -220,3 +275,29 @@ onMounted(() => {
     </el-card>
   </section>
 </template>
+
+<style scoped>
+.project-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.filter-card {
+  border-radius: var(--ar-radius-lg);
+}
+
+.project-name-link {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.branch-tag {
+  background: var(--ar-bg-subtle);
+  padding: 2px 6px;
+  border-radius: var(--ar-radius-sm);
+  color: var(--ar-color-slate-700);
+  font-size: 12px;
+}
+</style>

@@ -14,9 +14,9 @@ import {
 import * as projectApi from '@/api/project';
 import * as templateApi from '@/api/build-templates';
 import type { BuildTemplatePublicView, ProjectView } from '@/api/types';
-import { errorMessage, formConfigIssues } from '@/utils/errors';
 import FormConfigEditor from '@/form-schema/FormConfigEditor.vue';
 import { removeIssuesForField } from '@/form-schema/config-issues';
+import { errorMessage, formConfigIssues } from '@/utils/errors';
 
 const route = useRoute();
 const router = useRouter();
@@ -190,10 +190,28 @@ onMounted(() => {
 
     <el-skeleton v-if="loading" :rows="8" animated />
     <el-form v-else :model="form" label-position="top" class="project-form" @submit.prevent="save">
-      <el-card shadow="never">
-        <el-form-item label="项目名称" required>
-          <el-input v-model="form.name" maxlength="128" show-word-limit />
-        </el-form-item>
+      <el-card shadow="never" class="editor-section-card">
+        <template #header>
+          <div class="card-section-title">1. 基本信息</div>
+        </template>
+        <div class="form-grid">
+          <el-form-item label="项目名称" required>
+            <el-input
+              v-model="form.name"
+              maxlength="128"
+              show-word-limit
+              placeholder="例如 my-app-service"
+            />
+          </el-form-item>
+          <el-form-item label="Git 分支" required>
+            <el-input
+              v-model="form.branch"
+              maxlength="512"
+              placeholder="例如 main 或 release/1.0"
+            />
+          </el-form-item>
+        </div>
+
         <el-form-item label="项目说明">
           <el-input
             v-model="form.description"
@@ -201,10 +219,8 @@ onMounted(() => {
             :rows="3"
             maxlength="4096"
             show-word-limit
+            placeholder="填写项目简要介绍与用途"
           />
-        </el-form-item>
-        <el-form-item label="Git 分支" required>
-          <el-input v-model="form.branch" maxlength="512" placeholder="例如 main" />
         </el-form-item>
 
         <el-form-item label="构建模板" required>
@@ -231,16 +247,18 @@ onMounted(() => {
           </el-select>
           <el-input v-else :model-value="currentTemplateName" disabled class="full-width" />
           <div v-if="currentTemplateName !== '未选择模板'" class="form-help">
-            {{ currentTemplateName }}
-            <span v-if="currentAgent && currentAgent.status !== 'ONLINE'"
-              >（Agent 当前离线，仍可创建项目）</span
-            >
+            当前绑定模板：<strong>{{ currentTemplateName }}</strong>
+            <span v-if="currentAgent && currentAgent.status !== 'ONLINE'">
+              （Agent 当前离线，仍可保存项目）
+            </span>
           </div>
         </el-form-item>
       </el-card>
 
-      <el-card v-if="!editing" shadow="never" class="project-config-card">
-        <template #header><span>项目配置</span></template>
+      <el-card v-if="!editing" shadow="never" class="editor-section-card project-config-card">
+        <template #header>
+          <div class="card-section-title">2. 模板动态参数配置</div>
+        </template>
         <el-alert
           v-if="schema.length === 0 && form.buildTemplateId"
           title="当前模板没有配置项，保存后配置为 {}"
@@ -255,7 +273,7 @@ onMounted(() => {
           @validation="onConfigValidation"
           @field-change="onConfigFieldChange"
         />
-        <el-empty v-else description="选择模板后填写项目配置" />
+        <el-empty v-else description="请先选择构建模板以加载动态配置参数" />
       </el-card>
 
       <el-alert
@@ -274,3 +292,21 @@ onMounted(() => {
     </el-form>
   </section>
 </template>
+
+<style scoped>
+.project-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.editor-section-card {
+  border-radius: var(--ar-radius-lg);
+}
+
+.card-section-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ar-text-primary);
+}
+</style>

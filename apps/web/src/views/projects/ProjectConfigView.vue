@@ -12,9 +12,10 @@ import {
 
 import * as projectApi from '@/api/project';
 import type { ProjectView } from '@/api/types';
-import { errorMessage, formConfigIssues } from '@/utils/errors';
+import StatusBadge from '@/components/StatusBadge.vue';
 import FormConfigEditor from '@/form-schema/FormConfigEditor.vue';
 import { removeIssuesForField } from '@/form-schema/config-issues';
+import { errorMessage, formConfigIssues } from '@/utils/errors';
 import { agentStatusLabel, agentStatusType } from './project-status';
 
 const route = useRoute();
@@ -95,17 +96,30 @@ onMounted(() => {
   <section class="page-section project-config-page">
     <div class="page-heading">
       <div>
+        <div class="breadcrumb-nav">
+          <el-button
+            link
+            type="primary"
+            class="back-link"
+            @click="router.push({ name: 'project-detail', params: { projectId: projectId() } })"
+          >
+            ← 返回项目详情
+          </el-button>
+        </div>
         <h1>项目配置</h1>
-        <p v-if="project">使用“{{ project.buildTemplate.name }}”的当前表单 Schema 填写配置。</p>
+        <p v-if="project">
+          为项目“{{ project.name }}”配置基于“{{ project.buildTemplate.name }}”的动态参数。
+        </p>
       </div>
       <div class="page-heading__actions">
         <el-button
           @click="router.push({ name: 'project-detail', params: { projectId: projectId() } })"
-          >返回详情</el-button
         >
-        <el-button type="primary" :loading="saving" :disabled="loading" @click="save"
-          >保存配置</el-button
-        >
+          返回详情
+        </el-button>
+        <el-button type="primary" :loading="saving" :disabled="loading" @click="save">
+          保存配置
+        </el-button>
       </div>
     </div>
 
@@ -121,13 +135,23 @@ onMounted(() => {
 
     <template v-else-if="project">
       <el-card shadow="never" class="project-config-card">
-        <div class="status-line">
-          <span>Agent：{{ project.buildTemplate.agent.name }}</span>
-          <el-tag :type="agentStatusType(project.buildTemplate.agent)">
-            {{ agentStatusLabel(project.buildTemplate.agent) }}
-          </el-tag>
-          <el-tag v-if="!project.buildTemplate.enabled" type="danger">模板已停用</el-tag>
-        </div>
+        <template #header>
+          <div class="card-header-line">
+            <span class="card-title">当前模板参数表单</span>
+            <div class="status-line">
+              <span class="muted-text">执行 Agent：{{ project.buildTemplate.agent.name }}</span>
+              <StatusBadge
+                size="small"
+                :type="agentStatusType(project.buildTemplate.agent)"
+                :text="agentStatusLabel(project.buildTemplate.agent)"
+              />
+              <el-tag v-if="!project.buildTemplate.enabled" size="small" type="danger">
+                模板已停用
+              </el-tag>
+            </div>
+          </div>
+        </template>
+
         <el-alert
           v-if="!project.configCompatibility.valid"
           title="当前已保存配置与模板不兼容，请根据字段提示修正。"
@@ -142,14 +166,51 @@ onMounted(() => {
           :closable="false"
           class="page-alert"
         />
-        <FormConfigEditor
-          v-model="config"
-          :schema="schema"
-          :external-issues="serverIssues"
-          @validation="onValidation"
-          @field-change="onFieldChange"
-        />
+
+        <div class="form-wrapper">
+          <FormConfigEditor
+            v-model="config"
+            :schema="schema"
+            :external-issues="serverIssues"
+            @validation="onValidation"
+            @field-change="onFieldChange"
+          />
+        </div>
+
+        <div class="form-actions">
+          <el-button
+            @click="router.push({ name: 'project-detail', params: { projectId: projectId() } })"
+          >
+            取消
+          </el-button>
+          <el-button type="primary" :loading="saving" @click="save">保存配置</el-button>
+        </div>
       </el-card>
     </template>
   </section>
 </template>
+
+<style scoped>
+.breadcrumb-nav {
+  margin-bottom: 4px;
+}
+
+.back-link {
+  font-size: 13px;
+  padding: 0;
+}
+
+.project-config-card {
+  border-radius: var(--ar-radius-lg);
+}
+
+.card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ar-text-primary);
+}
+
+.form-wrapper {
+  padding: 8px 0;
+}
+</style>

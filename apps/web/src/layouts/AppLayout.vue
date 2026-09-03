@@ -3,6 +3,7 @@ import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 
+import BrandLogo from '@/components/BrandLogo.vue';
 import { useAuthStore } from '@/stores/auth';
 import { errorMessage } from '@/utils/errors';
 
@@ -33,18 +34,27 @@ async function logout(): Promise<void> {
 <template>
   <el-container class="app-shell">
     <el-aside width="220px" class="app-shell__aside">
-      <div class="app-shell__brand">AnvilRun</div>
-      <el-menu :default-active="route.path" router>
-        <el-menu-item v-for="item in menu" :key="item.name" :index="item.path">{{
-          item.label
-        }}</el-menu-item>
-      </el-menu>
+      <div class="app-shell__brand" style="cursor: pointer" @click="router.push('/')">
+        <div class="app-shell__brand-inner">
+          <BrandLogo size="default" dark />
+        </div>
+      </div>
+      <div class="app-shell__nav">
+        <el-menu :default-active="route.path" router>
+          <el-menu-item v-for="item in menu" :key="item.name" :index="item.path">
+            <span>{{ item.label }}</span>
+          </el-menu-item>
+        </el-menu>
+      </div>
     </el-aside>
     <el-container>
       <el-header class="app-shell__header">
-        <span>{{ route.meta.title }}</span>
+        <div class="app-shell__header-left">
+          <span class="app-shell__scope-badge">项目工作区</span>
+          <span class="app-shell__header-title">{{ route.meta.title }}</span>
+        </div>
         <div class="app-shell__account">
-          <span>{{ userLabel }}</span>
+          <span class="user-badge">{{ userLabel }}</span>
           <el-button link type="primary" @click="logout">退出登录</el-button>
         </div>
       </el-header>

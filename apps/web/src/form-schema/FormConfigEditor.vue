@@ -172,6 +172,7 @@ watch(localIssues, emitValidation);
         :key="field.name"
         :label="field.label"
         :required="field.required"
+        class="config-editor__item"
       >
         <div v-if="field.description" class="config-editor__description">
           {{ field.description }}
@@ -260,6 +261,7 @@ watch(localIssues, emitValidation);
           type="date"
           :placeholder="field.placeholder"
           :disabled="field.disabled"
+          class="full-width"
           @update:model-value="updateDate(field, $event)"
         />
         <ul v-if="fieldIssues(field.name).length" class="config-editor__field-issues">
@@ -273,11 +275,23 @@ watch(localIssues, emitValidation);
 </template>
 
 <style scoped>
+.config-editor__form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.config-editor__item {
+  margin-bottom: 20px;
+}
+
 .config-editor__description {
   width: 100%;
   margin-bottom: 6px;
-  color: #909399;
+  color: var(--ar-text-secondary);
+  font-size: 13px;
   white-space: pre-wrap;
+  line-height: 1.4;
 }
 
 .config-editor__issues {
@@ -286,13 +300,19 @@ watch(localIssues, emitValidation);
 }
 
 .config-editor__issues li {
-  margin: 6px 0;
+  margin: 4px 0;
+  font-size: 13px;
 }
+
 .config-editor__field-issues {
   width: 100%;
   margin: 6px 0 0;
   padding-left: 20px;
-  color: #f56c6c;
+  color: var(--ar-status-danger);
   font-size: 13px;
+}
+
+.config-editor__field-issues li {
+  margin-top: 2px;
 }
 </style>
