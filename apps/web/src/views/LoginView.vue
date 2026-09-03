@@ -16,13 +16,13 @@ const error = ref('');
 
 function safeRedirect(): string {
   const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '';
-  const isAdminRedirect = auth.isAdmin && (redirect === '/admin' || redirect.startsWith('/admin/'));
-  const isProjectRedirect = redirect === '/projects' || redirect.startsWith('/projects/');
-  return isAdminRedirect || isProjectRedirect
+  const isAdminRedirect = auth.isAdmin && /^\/admin(?:\/|\?|$)/.test(redirect);
+  const isOverviewRedirect = /^\/overview(?:\?|$)/.test(redirect);
+  const isProjectRedirect = /^\/projects(?:\/|\?|$)/.test(redirect);
+  const isTaskRedirect = /^\/tasks\/[0-9a-f-]+(?:\?|$)/i.test(redirect);
+  return isAdminRedirect || isOverviewRedirect || isProjectRedirect || isTaskRedirect
     ? redirect
-    : auth.isAdmin
-      ? '/admin/agents'
-      : '/projects';
+    : '/overview';
 }
 
 async function submit(): Promise<void> {

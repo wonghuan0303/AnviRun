@@ -16,6 +16,19 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '登录' },
   },
   {
+    path: '/overview',
+    component: () => import('@/layouts/AppLayout.vue'),
+    meta: { requiresAuth: true },
+    children: [
+      {
+        path: '',
+        name: 'overview',
+        component: () => import('@/views/OverviewView.vue'),
+        meta: { title: '任务概览' },
+      },
+    ],
+  },
+  {
     path: '/projects',
     component: () => import('@/layouts/AppLayout.vue'),
     meta: { requiresAuth: true },
@@ -121,13 +134,13 @@ router.beforeEach(async (to) => {
   await auth.restoreSession();
 
   if (to.name === 'login' && auth.isAuthenticated) {
-    return auth.isAdmin ? { name: 'admin-agents' } : { name: 'projects' };
+    return { name: 'overview' };
   }
   if (to.matched.some((record) => record.meta.requiresAuth) && !auth.isAuthenticated) {
     return { name: 'login', query: { redirect: to.fullPath } };
   }
   if (to.matched.some((record) => record.meta.requiresAdmin) && !auth.isAdmin) {
-    return { name: 'projects' };
+    return { name: 'overview' };
   }
   return true;
 });

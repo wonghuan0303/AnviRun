@@ -68,3 +68,7 @@ WebSocket 实时刷新；构建任务由 T4.1 负责。
 生产构建输出 `dist/` 可复制到 Server 的 `WEB_STATIC_ROOT`。Server 会为 `/` 和无扩展名
 Vue history 路由返回 `index.html`，而 `/api/*`、`/health/*`、`/ws/*` 继续交给 Server，
 不存在的带扩展名资源返回 404。部署流程见 `docs/windows-deployment.md`。
+
+## 登录后任务概览
+
+登录成功后默认进入 `/overview` 任务概览页。页面按 Agent 展示在线/离线/停用状态以及执行中、排队中的任务，并每 30 秒刷新；页面不可见时暂停轮询，回到前台后立即刷新。任务卡片复用现有任务详情路由，USER 的任务数据由 Server 按项目所有权过滤。

@@ -10,6 +10,7 @@ module.exports = {
     '<rootDir>/test/tasks',
     '<rootDir>/test/task-logs',
     '<rootDir>/test/artifacts',
+    '<rootDir>/test/overview',
     '<rootDir>/test/security',
   ],
   moduleFileExtensions: ['js', 'json', 'ts'],

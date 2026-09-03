@@ -12,6 +12,7 @@ const route = useRoute();
 const router = useRouter();
 const userLabel = computed(() => (auth.user ? `${auth.user.username}（${auth.user.role}）` : ''));
 const menu = computed(() => [
+  { name: 'overview', label: '任务概览', path: '/overview' },
   { name: 'projects', label: '项目管理', path: '/projects' },
   ...(auth.isAdmin
     ? [

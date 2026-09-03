@@ -34,18 +34,18 @@ describe('LoginView', () => {
     mocks.route.query = {};
   });
 
-  it('lets ADMIN use the default administrator destination', async () => {
+  it('sends ADMIN to overview by default', async () => {
     await submitLogin();
 
     expect(mocks.auth.login).toHaveBeenCalledWith('user', 'secret');
-    expect(mocks.replace).toHaveBeenCalledWith('/admin/agents');
+    expect(mocks.replace).toHaveBeenCalledWith('/overview');
   });
 
-  it('sends a normal USER to projects by default', async () => {
+  it('sends a normal USER to overview by default', async () => {
     mocks.auth.isAdmin = false;
     await submitLogin();
 
-    expect(mocks.replace).toHaveBeenCalledWith('/projects');
+    expect(mocks.replace).toHaveBeenCalledWith('/overview');
   });
 
   it('does not let USER reuse an administrator redirect', async () => {
@@ -53,7 +53,7 @@ describe('LoginView', () => {
     mocks.route.query = { redirect: '/admin/agents' };
     await submitLogin();
 
-    expect(mocks.replace).toHaveBeenCalledWith('/projects');
+    expect(mocks.replace).toHaveBeenCalledWith('/overview');
   });
 
   it('lets ADMIN use an administrator redirect', async () => {
@@ -61,5 +61,16 @@ describe('LoginView', () => {
     await submitLogin();
 
     expect(mocks.replace).toHaveBeenCalledWith('/admin/agents');
+  });
+  it('allows USER project redirects and task redirects', async () => {
+    mocks.auth.isAdmin = false;
+    mocks.route.query = { redirect: '/projects/project-id' };
+    await submitLogin();
+    expect(mocks.replace).toHaveBeenCalledWith('/projects/project-id');
+
+    mocks.replace.mockReset();
+    mocks.route.query = { redirect: '/tasks/123e4567-e89b-12d3-a456-426614174000' };
+    await submitLogin();
+    expect(mocks.replace).toHaveBeenCalledWith('/tasks/123e4567-e89b-12d3-a456-426614174000');
   });
 });

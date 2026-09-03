@@ -24,6 +24,7 @@ coverage/
 # 运行时数据（服务端日志与产物存储）
 storage/
 *.log
+apps/server/data/
 
 # 本地工具的个人配置（团队共享配置仍可提交 .claude/settings.json）
 .claude/settings.local.json

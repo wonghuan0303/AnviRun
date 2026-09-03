@@ -146,6 +146,12 @@ Agent 在任务进入 `UPLOADING` 后先通过 WebSocket 发送 `task.artifact-m
 
 这些接口复用 `AccessTokenGuard -> OwnershipGuard` 和既有 `AuthorizationService`；跨用户、未完成任务、已删除产物、非法 UUID 和不存在资源统一返回 `404 RESOURCE_NOT_FOUND`。响应只包含相对路径、文件名、大小、SHA-256 等安全字段，不返回 `storagePath`、lease、Agent token、passwordHash 或 tokenVersion。
 
+## 任务概览
+
+登录用户可通过 `GET /api/overview` 获取登录后的任务概览。接口使用 `AccessTokenGuard`，任务查询在数据库层复用 `AuthorizationService.taskScope`：ADMIN 查看全部未删除项目任务，USER 只能看到自己项目下的非终态任务；Agent 仅返回名称、启停/在线状态和主机摘要。
+
+响应按 Agent 分组提供执行中（DISPATCHED/PREPARING/RUNNING/UPLOADING/CANCELING/AGENT_LOST）和排队中（CREATED/WAITING_AGENT/QUEUED）任务，队列顺序为 `createdAt ASC, id ASC`，不包含命令、配置、租约或认证字段。
+
 ## T5.4 任务查询与重新构建
 
 登录用户可使用：

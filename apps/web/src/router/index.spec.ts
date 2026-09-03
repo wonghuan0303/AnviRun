@@ -35,7 +35,7 @@ describe('router authorization guard', () => {
 
     await router.push('/admin/agents');
 
-    expect(router.currentRoute.value.name).toBe('projects');
+    expect(router.currentRoute.value.name).toBe('overview');
   });
 
   it('allows ADMIN into administrator routes', async () => {
@@ -44,6 +44,14 @@ describe('router authorization guard', () => {
     await router.push('/admin/agents');
 
     expect(router.currentRoute.value.name).toBe('admin-agents');
+  });
+
+  it('redirects an authenticated user from login to overview', async () => {
+    vi.mocked(authApi.refresh).mockResolvedValue(session(user));
+
+    await router.push('/login');
+
+    expect(router.currentRoute.value.name).toBe('overview');
   });
 
   it('allows both authenticated roles into project task routes', async () => {

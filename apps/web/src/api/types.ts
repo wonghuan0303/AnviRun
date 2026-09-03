@@ -264,3 +264,38 @@ export interface ArtifactPage {
   pageSize: number;
   total: number;
 }
+
+export interface OverviewTask {
+  id: string;
+  projectId: string;
+  agentId: string;
+  status: BuildTaskStatus;
+  projectName: string;
+  templateName: string;
+  createdAt: string;
+  queuedAt: string | null;
+  startedAt: string | null;
+  updatedAt: string;
+}
+
+export interface OverviewAgent {
+  id: string;
+  name: string;
+  enabled: boolean;
+  status: AgentStatus;
+  hostname: string | null;
+  lastSeenAt: string | null;
+  runningTasks: OverviewTask[];
+  queuedTasks: OverviewTask[];
+}
+
+export interface OverviewResponse {
+  generatedAt: string;
+  metrics: {
+    agentTotal: number;
+    onlineAgentCount: number;
+    runningTaskCount: number;
+    queuedTaskCount: number;
+  };
+  agents: OverviewAgent[];
+}
