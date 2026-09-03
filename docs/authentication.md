@@ -39,7 +39,7 @@ ID 和 username。PostgreSQL advisory lock 保证并发执行最多创建一个�
 ## 密码、限流与审计
 
 密码使用 Argon2id（memoryCost=19456 KiB、timeCost=2、parallelism=1），每次自动生成随机
-salt；允许 Unicode，按字符限制 15-128，拒绝空白密码。登录限流按来源 IP 和规范化用户名
+salt；允许 Unicode，按字符限制 8-128，拒绝空白密码。登录限流按来源 IP 和规范化用户名
 分别计数，默认 5 分钟最多 5 次，限流为进程内实现，仅适用于单实例且重启会清空计数。
 
 生产环境必须显式配置 `ACCESS_TOKEN_SECRET` 和 `REFRESH_TOKEN_HASH_SECRET` 两个相互独立的高复杂度密钥；重复字符、示例值、占位值和开发/测试固定值都会被拒绝。默认生产模式要求 Secure 的 `__Host-` Cookie 和 HTTPS。仅可信内网 HTTP 可显式开启 `ALLOW_INSECURE_HTTP=true` 并同时使用 `AUTH_COOKIE_SECURE=false`、非 `__Host-` Cookie、`SameSite=Strict`、无 Domain；接入 HTTPS 后应关闭该开关并恢复 Secure/`__Host-` Cookie。Access Token 仍只保存在 Web 内存，refresh/logout 仍校验 CSRF。

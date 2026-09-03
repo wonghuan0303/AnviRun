@@ -1,6 +1,6 @@
 import { resolveAuthConfig } from '../config/auth.config';
 import { CookieService } from './cookie.service';
-import { PasswordService } from './password.service';
+import { PASSWORD_MIN_LENGTH, PasswordService, validatePasswordInput } from './password.service';
 import { TokenService } from './token.service';
 
 describe('T1.2 auth primitives', () => {
@@ -176,12 +176,20 @@ describe('T1.2 auth primitives', () => {
     ).toThrow();
   });
 
+  it('accepts ordinary 8-character passwords without complexity requirements', () => {
+    expect(PASSWORD_MIN_LENGTH).toBe(8);
+    expect(() => validatePasswordInput('12345678')).not.toThrow();
+    expect(() => validatePasswordInput('1234567')).toThrow(
+      'password must contain 8-128 characters',
+    );
+  });
+
   it('hashes passwords with Argon2id and verifies Unicode passwords', async () => {
     const passwords = new PasswordService();
-    const hash = await passwords.hash('这是一个满足十五字符要求的长密码 🔐');
+    const hash = await passwords.hash('这是一个满足密码要求的长密码 🔐');
     expect(hash.startsWith('$argon2id$')).toBe(true);
     expect(hash).not.toContain('这是一个足够长的密码');
-    await expect(passwords.verify(hash, '这是一个满足十五字符要求的长密码 🔐')).resolves.toBe(true);
+    await expect(passwords.verify(hash, '这是一个满足密码要求的长密码 🔐')).resolves.toBe(true);
     await expect(passwords.verify(hash, 'wrong password')).resolves.toBe(false);
   });
 

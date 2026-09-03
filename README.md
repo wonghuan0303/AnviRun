@@ -103,7 +103,7 @@ CLI 会在终端中隐藏密码输入：
 pnpm --filter @anvilrun/server run admin:init -- --username admin
 ```
 
-按照提示输入密码。密码需要 15～128 个 Unicode 字符。
+按照提示输入密码。密码需要 8～128 个 Unicode 字符。
 
 ### 3. 启动 Server 和 Web
 

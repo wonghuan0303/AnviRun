@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import argon2 from 'argon2';
 
-export const PASSWORD_MIN_LENGTH = 15;
+export const PASSWORD_MIN_LENGTH = 8;
 export const PASSWORD_MAX_LENGTH = 128;
 
 export const ARGON2ID_OPTIONS = Object.freeze({
