@@ -2866,8 +2866,8 @@ mod tests {
         git(&["config", "user.email", "build-agent@example.test"]);
         fs::write(source.path().join("README.md"), "fixture").expect("fixture file");
         fs::create_dir(source.path().join("dist")).expect("artifact directory");
-        fs::write(source.path().join("dist/output.txt"), "artifact").expect("artifact file");
-        git(&["add", "README.md", "dist/output.txt"]);
+        fs::write(source.path().join("dist/output.zip"), "artifact").expect("artifact file");
+        git(&["add", "README.md", "dist/output.zip"]);
         git(&["commit", "-m", "fixture"]);
         git(&["branch", "-M", "main"]);
 

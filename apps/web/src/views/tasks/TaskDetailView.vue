@@ -48,6 +48,7 @@ let reconnectTimer: number | undefined;
 let socket: WebSocket | null = null;
 let reconnectAttempt = 0;
 let refreshAttempted = false;
+let succeededArtifactsRefreshAttempted = false;
 let destroyed = false;
 let logWork = Promise.resolve();
 let contextGeneration = 0;
@@ -98,7 +99,18 @@ async function loadTask(
   try {
     const result = await taskApi.getTask(expectedTaskId);
     if (!isCurrentContext(generation, expectedTaskId)) return;
+    const previousTask = task.value;
+    const transitionedToSucceeded =
+      previousTask !== null &&
+      !isTerminalTask(previousTask) &&
+      result.task.status === 'SUCCEEDED' &&
+      !succeededArtifactsRefreshAttempted;
     task.value = result.task;
+    if (transitionedToSucceeded) {
+      succeededArtifactsRefreshAttempted = true;
+      await loadArtifacts(generation, expectedTaskId);
+      if (!isCurrentContext(generation, expectedTaskId)) return;
+    }
     syncPolling(generation, expectedTaskId);
   } catch (caught) {
     if (isCurrentContext(generation, expectedTaskId) && !silent)
@@ -452,6 +464,7 @@ function resetTaskContext(): number {
   artifactBusy.value = null;
   reconnectAttempt = 0;
   refreshAttempted = false;
+  succeededArtifactsRefreshAttempted = false;
   logWork = Promise.resolve();
   return generation;
 }

@@ -172,18 +172,10 @@ onMounted(() => {
             v-model="config"
             :schema="schema"
             :external-issues="serverIssues"
+            compact
             @validation="onValidation"
             @field-change="onFieldChange"
           />
-        </div>
-
-        <div class="form-actions">
-          <el-button
-            @click="router.push({ name: 'project-detail', params: { projectId: projectId() } })"
-          >
-            取消
-          </el-button>
-          <el-button type="primary" :loading="saving" @click="save">保存配置</el-button>
         </div>
       </el-card>
     </template>
@@ -211,6 +203,10 @@ onMounted(() => {
 }
 
 .form-wrapper {
+  width: 100%;
+  max-width: 1040px;
+  margin: 0 auto;
   padding: 8px 0;
+  box-sizing: border-box;
 }
 </style>

@@ -15,8 +15,9 @@ const props = withDefaults(
     schema: FormSchema;
     modelValue: FormConfigValues;
     externalIssues?: readonly FormConfigIssue[];
+    compact?: boolean;
   }>(),
-  { externalIssues: () => [] },
+  { externalIssues: () => [], compact: false },
 );
 
 const emit = defineEmits<{
@@ -166,13 +167,19 @@ watch(localIssues, emitValidation);
     </el-alert>
 
     <el-empty v-if="schema.length === 0" description="当前模板没有配置项" />
-    <el-form v-else label-position="top" class="config-editor__form">
+    <el-form
+      v-else
+      :label-position="compact ? 'left' : 'top'"
+      :label-width="compact ? '260px' : undefined"
+      class="config-editor__form"
+      :class="{ 'config-editor__form--compact': compact }"
+    >
       <el-form-item
         v-for="field in schema"
         :key="field.name"
         :label="field.label"
         :required="field.required"
-        class="config-editor__item"
+        :class="['config-editor__item', `config-editor__item--${field.type}`]"
       >
         <div v-if="field.description" class="config-editor__description">
           {{ field.description }}
@@ -314,5 +321,44 @@ watch(localIssues, emitValidation);
 
 .config-editor__field-issues li {
   margin-top: 2px;
+}
+
+.config-editor__form--compact {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.config-editor__form--compact .config-editor__item {
+  width: 100%;
+  min-width: 0;
+  margin-bottom: 8px;
+}
+
+.config-editor__form--compact .config-editor__item :deep(.el-form-item__content) {
+  min-width: 0;
+}
+
+.config-editor__form--compact .config-editor__item :deep(.el-input),
+.config-editor__form--compact .config-editor__item :deep(.el-input-number),
+.config-editor__form--compact .config-editor__item :deep(.el-select),
+.config-editor__form--compact .config-editor__item :deep(.el-date-editor) {
+  width: 100%;
+  max-width: 100%;
+}
+
+.config-editor__form--compact .config-editor__item :deep(.el-radio-group),
+.config-editor__form--compact .config-editor__item :deep(.el-checkbox-group) {
+  max-width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+@media (max-width: 768px) {
+  .config-editor__form--compact .config-editor__item :deep(.el-form-item__label) {
+    width: min(45%, 180px) !important;
+    flex: 0 0 min(45%, 180px);
+  }
 }
 </style>

@@ -100,4 +100,58 @@ describe('FormConfigEditor', () => {
     expect(updates?.at(-1)?.[0]).toEqual({ name: '新名称' });
     expect(wrapper.emitted('field-change')?.at(-1)?.[0]).toBe('name');
   });
+
+  it('uses a compact layout with left labels and one field per row', () => {
+    const wrapper = mount(FormConfigEditor, {
+      props: { schema, modelValue: {}, compact: true },
+      global,
+    });
+
+    expect(wrapper.find('form.config-editor__form--compact').exists()).toBe(true);
+    expect(wrapper.find('form.el-form--label-left').exists()).toBe(true);
+    expect(wrapper.findAll('.config-editor__item')).toHaveLength(schema.length);
+  });
+
+  it('keeps every compact field in the same one-field-per-row layout', () => {
+    const issue: FormConfigIssue = {
+      code: 'FIELD_REQUIRED',
+      message: '必填字段 name 未提供值',
+      path: ['name'],
+      pointer: '/name',
+      fieldName: 'name',
+      expected: 'string',
+      actual: 'undefined',
+    };
+    const wrapper = mount(FormConfigEditor, {
+      props: {
+        schema: [
+          { type: 'input', name: 'name', label: '名称', required: true },
+          { type: 'input', name: 'description', label: '描述', description: '帮助文本' },
+          ...schema.filter((field) => ['textarea', 'radio', 'checkbox'].includes(field.type)),
+        ],
+        modelValue: {},
+        compact: true,
+        externalIssues: [issue],
+      },
+      global,
+    });
+
+    expect(wrapper.findAll('.config-editor__item')).toHaveLength(5);
+    for (const fieldType of ['input', 'textarea', 'radio', 'checkbox']) {
+      expect(wrapper.find(`.config-editor__item--${fieldType}`).exists()).toBe(true);
+    }
+    expect(wrapper.text()).toContain('帮助文本');
+    expect(wrapper.text()).toContain('必填字段 name 未提供值');
+  });
+
+  it('keeps the original form layout when compact is not provided', () => {
+    const wrapper = mount(FormConfigEditor, {
+      props: { schema, modelValue: {} },
+      global,
+    });
+
+    expect(wrapper.find('form.config-editor__form').exists()).toBe(true);
+    expect(wrapper.find('form.config-editor__form--compact').exists()).toBe(false);
+    expect(wrapper.find('form.el-form--label-top').exists()).toBe(true);
+  });
 });

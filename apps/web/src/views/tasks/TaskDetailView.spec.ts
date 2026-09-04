@@ -4,7 +4,7 @@ import ElementPlus from 'element-plus';
 
 import * as artifactApi from '@/api/artifacts';
 import * as taskApi from '@/api/tasks';
-import type { TaskDetail } from '@/api/types';
+import type { ArtifactPage, TaskDetail } from '@/api/types';
 import TaskDetailView from './TaskDetailView.vue';
 
 class TestWebSocket {
@@ -416,6 +416,143 @@ describe('TaskDetailView', () => {
 
     expect(vi.mocked(taskApi.getTask).mock.calls.length).toBeGreaterThan(callsBeforePolling);
     expect(vi.mocked(taskApi.getTask)).toHaveBeenLastCalledWith('new-task-id');
+  });
+
+  it('refreshes and renders artifacts once when polling observes success', async () => {
+    vi.useFakeTimers();
+    const runningTask: TaskDetail = {
+      ...task,
+      status: 'RUNNING',
+      statusReason: '执行中',
+      exitCode: null,
+      finishedAt: null,
+    };
+    const succeededTask: TaskDetail = {
+      ...runningTask,
+      status: 'SUCCEEDED',
+      statusReason: null,
+      exitCode: 0,
+      finishedAt: '2026-01-01T00:00:02.000Z',
+    };
+    vi.mocked(taskApi.getTask)
+      .mockResolvedValueOnce({ task: runningTask })
+      .mockResolvedValue({ task: succeededTask });
+    vi.mocked(taskApi.readTaskLogs).mockResolvedValue({
+      taskId: 'task-id',
+      offset: 0,
+      nextOffset: 0,
+      size: 0,
+      eof: true,
+      entries: [],
+    });
+    vi.mocked(artifactApi.listTaskArtifacts)
+      .mockResolvedValueOnce({ taskId: 'task-id', items: [], page: 1, pageSize: 20, total: 0 })
+      .mockResolvedValueOnce({
+        taskId: 'task-id',
+        items: [
+          {
+            id: 'artifact-1',
+            taskId: 'task-id',
+            relativePath: 'build.zip',
+            fileName: 'build.zip',
+            size: '3',
+            sha256: 'abc123',
+            createdAt: '2026-01-01T00:00:02.000Z',
+          },
+        ],
+        page: 1,
+        pageSize: 20,
+        total: 1,
+      });
+
+    const wrapper = mount(TaskDetailView, { global: { plugins: [ElementPlus] } });
+    mountedWrappers.push(wrapper);
+    await flushPromises();
+    expect(vi.mocked(artifactApi.listTaskArtifacts)).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(2_500);
+    await flushPromises();
+
+    expect(vi.mocked(taskApi.getTask)).toHaveBeenLastCalledWith('task-id');
+    expect(vi.mocked(artifactApi.listTaskArtifacts)).toHaveBeenCalledTimes(2);
+    expect(wrapper.text()).toContain('build.zip');
+    expect(wrapper.text()).toContain('成功');
+
+    vi.advanceTimersByTime(7_500);
+    await flushPromises();
+    expect(vi.mocked(artifactApi.listTaskArtifacts)).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not let delayed artifacts from an old route context replace the new task', async () => {
+    let resolveOldArtifacts!: (value: ArtifactPage) => void;
+    const oldArtifacts = new Promise<ArtifactPage>((resolve) => {
+      resolveOldArtifacts = resolve;
+    });
+    const nextTask: TaskDetail = {
+      ...task,
+      id: 'new-task-id',
+      project: { ...task.project, name: '新项目' },
+    };
+    vi.mocked(taskApi.getTask)
+      .mockResolvedValueOnce({ task })
+      .mockResolvedValueOnce({ task: nextTask });
+    vi.mocked(taskApi.readTaskLogs).mockResolvedValue({
+      taskId: 'task-id',
+      offset: 0,
+      nextOffset: 0,
+      size: 0,
+      eof: true,
+      entries: [],
+    });
+    vi.mocked(artifactApi.listTaskArtifacts)
+      .mockReturnValueOnce(oldArtifacts)
+      .mockResolvedValueOnce({
+        taskId: 'new-task-id',
+        items: [
+          {
+            id: 'new-artifact',
+            taskId: 'new-task-id',
+            relativePath: 'new-build.zip',
+            fileName: 'new-build.zip',
+            size: '5',
+            sha256: 'def456',
+            createdAt: '2026-01-01T00:00:03.000Z',
+          },
+        ],
+        page: 1,
+        pageSize: 20,
+        total: 1,
+      });
+
+    const wrapper = mount(TaskDetailView, { global: { plugins: [ElementPlus] } });
+    mountedWrappers.push(wrapper);
+    await flushPromises();
+    mocks.route.params.taskId = 'new-task-id';
+    mocks.route.fullPath = '/tasks/new-task-id';
+    await flushPromises();
+    expect(wrapper.text()).toContain('new-build.zip');
+
+    resolveOldArtifacts({
+      taskId: 'task-id',
+      items: [
+        {
+          id: 'old-artifact',
+          taskId: 'task-id',
+          relativePath: 'old-build.zip',
+          fileName: 'old-build.zip',
+          size: '4',
+          sha256: 'old123',
+          createdAt: '2026-01-01T00:00:02.000Z',
+        },
+      ],
+      page: 1,
+      pageSize: 20,
+      total: 1,
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('new-build.zip');
+    expect(wrapper.text()).not.toContain('old-build.zip');
   });
 
   it('does not poll after switching to a terminal task', async () => {

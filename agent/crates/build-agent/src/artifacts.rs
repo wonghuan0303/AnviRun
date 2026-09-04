@@ -128,13 +128,12 @@ async fn scan_directory(
         .map_err(|_| ArtifactError::ScanInvalid)?
     {
         let path = entry.path();
+        if !is_zip_file(&path) {
+            continue;
+        }
         let metadata = fs::symlink_metadata(&path).map_err(|_| ArtifactError::ScanInvalid)?;
         if has_reparse_metadata(&metadata) {
             return Err(ArtifactError::ScanUnsafe);
-        }
-        if metadata.is_dir() {
-            Box::pin(scan_directory(root, &path, files, total_bytes)).await?;
-            continue;
         }
         if !metadata.is_file() {
             return Err(ArtifactError::ScanUnsafe);
@@ -158,6 +157,13 @@ async fn scan_directory(
         });
     }
     Ok(())
+}
+
+fn is_zip_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.eq_ignore_ascii_case("zip"))
+        .unwrap_or(false)
 }
 
 async fn hash_file(path: PathBuf, expected_size: u64) -> Result<(u64, String), ArtifactError> {
@@ -319,29 +325,71 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn scans_nested_files_and_hashes_without_loading_the_file_as_a_whole() {
+    async fn scans_sorted_root_level_zip_files_only() {
         let directory = tempfile::tempdir().expect("directory");
         fs::create_dir_all(directory.path().join("dist/nested")).expect("nested directory");
-        fs::write(directory.path().join("dist/a.txt"), b"a").expect("file");
-        fs::write(directory.path().join("dist/nested/a.txt"), b"nested").expect("file");
+        fs::write(directory.path().join("dist/zeta.ZIP"), b"zipped").expect("zip file");
+        fs::write(directory.path().join("dist/alpha.zip"), b"zip").expect("zip file");
+        fs::write(directory.path().join("dist/readme.txt"), b"ignored").expect("text file");
+        fs::write(directory.path().join("dist/nested/nested.zip"), b"ignored").expect("nested zip");
+        fs::write(directory.path().join("dist/nested/other.txt"), b"ignored").expect("nested file");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let outside = tempfile::NamedTempFile::new().expect("outside");
+            symlink(
+                outside.path(),
+                directory.path().join("dist/nested/ignored-link.zip"),
+            )
+            .expect("ignored nested symlink");
+        }
         let manifest = scan_artifacts(directory.path(), "dist")
             .await
             .expect("manifest");
-        assert_eq!(manifest.total_bytes, 7);
+        assert_eq!(manifest.total_bytes, 9);
         assert_eq!(
             manifest
                 .files
                 .iter()
                 .map(|file| file.relative_path.as_str())
                 .collect::<Vec<_>>(),
-            vec!["a.txt", "nested/a.txt"]
+            vec!["alpha.zip", "zeta.ZIP"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ignores_root_directory_symlink_without_scanning_target_zip() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().expect("directory");
+        fs::create_dir(directory.path().join("dist")).expect("artifact directory");
+        fs::write(directory.path().join("dist/keep.zip"), b"keep").expect("root zip");
+        let outside = tempfile::tempdir().expect("outside directory");
+        fs::write(outside.path().join("nested.zip"), b"must not scan").expect("outside zip");
+        symlink(outside.path(), directory.path().join("dist/external-dir"))
+            .expect("directory symlink");
+
+        let manifest = scan_artifacts(directory.path(), "dist")
+            .await
+            .expect("manifest");
+        assert_eq!(
+            manifest
+                .files
+                .iter()
+                .map(|file| file.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["keep.zip"]
         );
     }
 
     #[tokio::test]
-    async fn rejects_empty_directories_and_unsafe_paths() {
+    async fn rejects_directories_without_root_level_zip_files_and_unsafe_paths() {
         let directory = tempfile::tempdir().expect("directory");
         fs::create_dir(directory.path().join("dist")).expect("directory");
+        fs::write(directory.path().join("dist/readme.txt"), b"ignored").expect("text file");
+        fs::create_dir(directory.path().join("dist/nested")).expect("nested directory");
+        fs::write(directory.path().join("dist/nested/nested.zip"), b"ignored").expect("nested zip");
         assert!(matches!(
             scan_artifacts(directory.path(), "dist").await,
             Err(ArtifactError::ScanInvalid)
@@ -359,7 +407,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("directory");
         fs::create_dir(directory.path().join("dist")).expect("directory");
         let outside = tempfile::NamedTempFile::new().expect("outside");
-        symlink(outside.path(), directory.path().join("dist/link")).expect("symlink");
+        symlink(outside.path(), directory.path().join("dist/link.zip")).expect("symlink");
         assert!(matches!(
             scan_artifacts(directory.path(), "dist").await,
             Err(ArtifactError::ScanUnsafe)
