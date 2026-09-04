@@ -11,6 +11,9 @@ const auth = useAuthStore();
 const route = useRoute();
 const router = useRouter();
 const userLabel = computed(() => (auth.user ? `${auth.user.username}（${auth.user.role}）` : ''));
+const scopeLabel = computed(() =>
+  route.path === '/admin' || route.path.startsWith('/admin/') ? '系统管理' : '项目工作区',
+);
 const menu = computed(() => [
   { name: 'overview', label: '任务概览', path: '/overview' },
   { name: 'projects', label: '项目管理', path: '/projects' },
@@ -51,7 +54,7 @@ async function logout(): Promise<void> {
     <el-container>
       <el-header class="app-shell__header">
         <div class="app-shell__header-left">
-          <span class="app-shell__scope-badge">项目工作区</span>
+          <span class="app-shell__scope-badge">{{ scopeLabel }}</span>
           <span class="app-shell__header-title">{{ route.meta.title }}</span>
         </div>
         <div class="app-shell__account">
