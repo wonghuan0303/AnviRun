@@ -30,6 +30,7 @@ describe('任务概览 PostgreSQL/API integration', () => {
   let agentBId: string;
   let projectAId: string;
   let projectBId: string;
+  let agentAHistory: Array<{ id: string; status: BuildTaskStatus; finishedAt: Date }> = [];
 
   async function login(username: string, password: string): Promise<string> {
     const response = await request(app.getHttpServer())
@@ -57,6 +58,7 @@ describe('任务概览 PostgreSQL/API integration', () => {
     agentId: string,
     status: BuildTaskStatus,
     createdAt: Date,
+    finishedAt: Date | null = null,
   ): Promise<string> {
     const queuedStatuses: BuildTaskStatus[] = [
       BuildTaskStatus.CREATED,
@@ -83,6 +85,7 @@ describe('任务概览 PostgreSQL/API integration', () => {
         createdAt,
         queuedAt: queuedStatuses.includes(status) ? createdAt : null,
         startedAt: runningStatuses.includes(status) ? createdAt : null,
+        finishedAt,
       },
     });
     return task.id;
@@ -176,6 +179,7 @@ describe('任务概览 PostgreSQL/API integration', () => {
     agentBId = agentB.id;
     projectAId = projectA.id;
     projectBId = projectB.id;
+    agentAHistory = [];
 
     const now = Date.now();
     await createTask(projectA.id, agentA.id, BuildTaskStatus.RUNNING, new Date(now - 5_000));
@@ -184,17 +188,54 @@ describe('任务概览 PostgreSQL/API integration', () => {
     await createTask(projectB.id, agentB.id, BuildTaskStatus.PREPARING, new Date(now - 2_000));
     await createTask(projectB.id, agentB.id, BuildTaskStatus.QUEUED, new Date(now - 1_000));
     await createTask(deletedProject.id, disabledAgent.id, BuildTaskStatus.QUEUED, new Date(now));
-    await prisma.buildTask.create({
-      data: {
-        projectId: projectA.id,
-        buildTemplateId: template.id,
-        agentId: agentA.id,
-        createdBy: userA.id,
-        status: BuildTaskStatus.SUCCEEDED,
-        branch: 'main',
-        config: {},
-      },
-    });
+    const historyStatuses: BuildTaskStatus[] = [
+      BuildTaskStatus.SUCCEEDED,
+      BuildTaskStatus.FAILED,
+      BuildTaskStatus.CANCELED,
+      BuildTaskStatus.SUCCEEDED,
+      BuildTaskStatus.FAILED,
+      BuildTaskStatus.CANCELED,
+      BuildTaskStatus.SUCCEEDED,
+    ];
+    const historyFinishedAt = [
+      new Date(now - 7_000),
+      new Date(now - 6_000),
+      new Date(now - 5_000),
+      new Date(now - 4_000),
+      new Date(now - 3_000),
+      new Date(now - 1_000),
+      new Date(now - 1_000),
+    ];
+    const historyIds = await Promise.all(
+      historyStatuses.map((status, index) =>
+        createTask(
+          projectA.id,
+          agentA.id,
+          status,
+          new Date(now - 20_000 + index * 100),
+          historyFinishedAt[index],
+        ),
+      ),
+    );
+    agentAHistory = historyIds.map((id, index) => ({
+      id,
+      status: historyStatuses[index],
+      finishedAt: historyFinishedAt[index],
+    }));
+    await createTask(
+      projectB.id,
+      agentB.id,
+      BuildTaskStatus.FAILED,
+      new Date(now - 2_000),
+      new Date(now - 1_500),
+    );
+    await createTask(
+      deletedProject.id,
+      disabledAgent.id,
+      BuildTaskStatus.CANCELED,
+      new Date(now),
+      new Date(now + 500),
+    );
     app.get(LoginRateLimiterService).reset();
   });
 
@@ -231,8 +272,39 @@ describe('任务概览 PostgreSQL/API integration', () => {
     expect(
       response.body.agents.find((agent: { id: string }) => agent.id === agentBId).queuedTasks,
     ).toHaveLength(1);
+    const agentA = response.body.agents.find((agent: { id: string }) => agent.id === agentAId);
+    expect(agentA.recentTasks).toHaveLength(5);
+    expect(agentA.recentTasks[0].finishedAt).toEqual(expect.any(String));
+    expect(agentA.recentTasks.map((task: { status: BuildTaskStatus }) => task.status)).toEqual(
+      expect.arrayContaining([
+        BuildTaskStatus.SUCCEEDED,
+        BuildTaskStatus.FAILED,
+        BuildTaskStatus.CANCELED,
+      ]),
+    );
+    expect(
+      agentA.recentTasks.every((task: { status: BuildTaskStatus }) =>
+        (
+          [
+            BuildTaskStatus.SUCCEEDED,
+            BuildTaskStatus.FAILED,
+            BuildTaskStatus.CANCELED,
+          ] as BuildTaskStatus[]
+        ).includes(task.status),
+      ),
+    ).toBe(true);
+    const expectedRecentIds = [...agentAHistory]
+      .sort((left, right) => {
+        const byFinishedAt = right.finishedAt.getTime() - left.finishedAt.getTime();
+        return byFinishedAt !== 0 ? byFinishedAt : right.id.localeCompare(left.id);
+      })
+      .slice(0, 5)
+      .map((task) => task.id);
+    expect(agentA.recentTasks.map((task: { id: string }) => task.id)).toEqual(expectedRecentIds);
     expect(JSON.stringify(response.body)).not.toContain('已删除项目');
-    expect(JSON.stringify(response.body)).not.toContain('SUCCEEDED');
+    expect(JSON.stringify(response.body)).toContain('SUCCEEDED');
+    expect(JSON.stringify(response.body)).toContain('FAILED');
+    expect(JSON.stringify(response.body)).toContain('CANCELED');
     expect(JSON.stringify(response.body)).not.toContain('command');
     expect(JSON.stringify(response.body)).not.toContain('config');
     expect(JSON.stringify(response.body)).not.toContain('tokenHash');
@@ -248,32 +320,46 @@ describe('任务概览 PostgreSQL/API integration', () => {
     expect(userAResponse.body.metrics).toMatchObject({ runningTaskCount: 1, queuedTaskCount: 2 });
     expect(userAResponse.body.agents).toHaveLength(3);
     const userATasks = userAResponse.body.agents.flatMap(
-      (agent: { runningTasks: unknown[]; queuedTasks: unknown[] }) => [
+      (agent: { runningTasks: unknown[]; queuedTasks: unknown[]; recentTasks: unknown[] }) => [
         ...agent.runningTasks,
         ...agent.queuedTasks,
+        ...agent.recentTasks,
       ],
     );
-    expect(userATasks).toHaveLength(3);
+    expect(userATasks).toHaveLength(8);
     expect(userATasks.every((task: { projectId: string }) => task.projectId === projectAId)).toBe(
       true,
     );
     expect(JSON.stringify(userAResponse.body)).not.toContain('B 项目');
+    const userARecentTasks = userAResponse.body.agents.flatMap(
+      (agent: { recentTasks: Array<{ projectId: string }> }) => agent.recentTasks,
+    );
+    expect(userARecentTasks).toHaveLength(5);
+    expect(
+      userARecentTasks.every((task: { projectId: string }) => task.projectId === projectAId),
+    ).toBe(true);
 
     const userBResponse = await request(app.getHttpServer())
       .get('/api/overview')
       .set('Authorization', `Bearer ${userBToken}`);
     expect(userBResponse.body.metrics).toMatchObject({ runningTaskCount: 1, queuedTaskCount: 1 });
     const userBTasks = userBResponse.body.agents.flatMap(
-      (agent: { runningTasks: unknown[]; queuedTasks: unknown[] }) => [
+      (agent: { runningTasks: unknown[]; queuedTasks: unknown[]; recentTasks: unknown[] }) => [
         ...agent.runningTasks,
         ...agent.queuedTasks,
+        ...agent.recentTasks,
       ],
     );
-    expect(userBTasks).toHaveLength(2);
+    expect(userBTasks).toHaveLength(3);
     expect(userBTasks.every((task: { projectId: string }) => task.projectId === projectBId)).toBe(
       true,
     );
     expect(JSON.stringify(userBResponse.body)).not.toContain('A 项目');
+    const userBRecentTasks = userBResponse.body.agents.flatMap(
+      (agent: { recentTasks: Array<{ projectId: string }> }) => agent.recentTasks,
+    );
+    expect(userBRecentTasks).toHaveLength(1);
+    expect(userBRecentTasks[0].projectId).toBe(projectBId);
   });
 
   it('returns empty task groups without manufacturing task data', async () => {

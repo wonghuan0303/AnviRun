@@ -257,6 +257,43 @@ onUnmounted(() => {
                 </button>
               </div>
             </section>
+
+            <section class="task-column task-column--recent">
+              <div class="task-column__heading">
+                <h3>最近完成</h3>
+                <span>{{ agent.recentTasks.length }}</span>
+              </div>
+              <el-empty
+                v-if="agent.recentTasks.length === 0"
+                :image-size="48"
+                description="暂无历史任务"
+              />
+              <div v-else class="task-list">
+                <button
+                  v-for="task in agent.recentTasks"
+                  :key="task.id"
+                  type="button"
+                  class="overview-task overview-task--recent"
+                  :aria-label="taskAriaLabel(task)"
+                  @click="openTask(task)"
+                  @keydown.enter="openTask(task)"
+                  @keydown.space.prevent="openTask(task)"
+                >
+                  <div class="overview-task__main">
+                    <strong>{{ task.projectName }}</strong>
+                    <span>{{ task.templateName }}</span>
+                  </div>
+                  <div class="overview-task__details">
+                    <StatusBadge
+                      :type="taskStatusType(task.status)"
+                      :text="taskStatusLabel(task.status)"
+                      size="small"
+                    />
+                    <span>{{ formatTaskDate(task.finishedAt) }}</span>
+                  </div>
+                </button>
+              </div>
+            </section>
           </div>
         </section>
       </div>
@@ -340,8 +377,9 @@ onUnmounted(() => {
 
 .agent-lane__columns {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 20px;
+  min-width: 0;
   padding: 18px 20px 20px;
 }
 
@@ -380,6 +418,7 @@ onUnmounted(() => {
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 12px;
   width: 100%;
+  min-width: 0;
   padding: 12px;
   border: 1px solid var(--ar-border-color);
   border-radius: var(--ar-radius-md);
@@ -388,6 +427,10 @@ onUnmounted(() => {
   cursor: pointer;
   text-align: left;
   transition: var(--ar-transition-base);
+}
+
+.overview-task--recent {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .overview-task:hover,
@@ -438,6 +481,20 @@ onUnmounted(() => {
 
 .overview-task__waiting {
   color: var(--ar-status-warning-text) !important;
+}
+
+@media (max-width: 1200px) and (min-width: 901px) {
+  .agent-lane__columns {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .task-column--recent {
+    grid-column: 1 / -1;
+  }
+
+  .task-column--recent .task-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 900px) {

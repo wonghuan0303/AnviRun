@@ -22,6 +22,12 @@ const RUNNING_STATUSES: readonly BuildTaskStatus[] = [
 
 const ACTIVE_STATUSES = [...QUEUED_STATUSES, ...RUNNING_STATUSES];
 
+const TERMINAL_STATUSES: BuildTaskStatus[] = [
+  BuildTaskStatus.SUCCEEDED,
+  BuildTaskStatus.FAILED,
+  BuildTaskStatus.CANCELED,
+];
+
 const AGENT_SELECT = {
   id: true,
   name: true,
@@ -39,6 +45,7 @@ const TASK_SELECT = {
   createdAt: true,
   queuedAt: true,
   startedAt: true,
+  finishedAt: true,
   updatedAt: true,
   project: { select: { id: true, name: true } },
   buildTemplate: { select: { id: true, name: true } },
@@ -57,6 +64,7 @@ export interface OverviewTask {
   readonly createdAt: string;
   readonly queuedAt: string | null;
   readonly startedAt: string | null;
+  readonly finishedAt: string | null;
   readonly updatedAt: string;
 }
 
@@ -69,6 +77,7 @@ export interface OverviewAgent {
   readonly lastSeenAt: string | null;
   readonly runningTasks: readonly OverviewTask[];
   readonly queuedTasks: readonly OverviewTask[];
+  readonly recentTasks: readonly OverviewTask[];
 }
 
 export interface OverviewResponse {
@@ -97,6 +106,7 @@ function taskView(task: TaskRow): OverviewTask {
     createdAt: task.createdAt.toISOString(),
     queuedAt: iso(task.queuedAt),
     startedAt: iso(task.startedAt),
+    finishedAt: iso(task.finishedAt),
     updatedAt: task.updatedAt.toISOString(),
   };
 }
@@ -120,6 +130,26 @@ export class OverviewService {
         select: TASK_SELECT,
       }),
     ]);
+
+    const recentTaskRowsByAgent = await Promise.all(
+      agents.map((agent) =>
+        this.prisma.buildTask.findMany({
+          where: this.authorization.taskScope(actor, {
+            agentId: agent.id,
+            status: { in: TERMINAL_STATUSES },
+          }),
+          orderBy: [{ finishedAt: { sort: 'desc', nulls: 'last' } }, { id: 'desc' }],
+          take: 5,
+          select: TASK_SELECT,
+        }),
+      ),
+    );
+    const recentTasksByAgent = new Map(
+      agents.map((agent, index) => [
+        agent.id,
+        recentTaskRowsByAgent[index].map((task) => taskView(task)),
+      ]),
+    );
 
     const groups = new Map<
       string,
@@ -154,6 +184,7 @@ export class OverviewService {
         lastSeenAt: iso(agent.lastSeenAt),
         runningTasks,
         queuedTasks,
+        recentTasks: recentTasksByAgent.get(agent.id) ?? [],
       }),
     );
 

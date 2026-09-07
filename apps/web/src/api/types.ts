@@ -275,6 +275,7 @@ export interface OverviewTask {
   createdAt: string;
   queuedAt: string | null;
   startedAt: string | null;
+  finishedAt: string | null;
   updatedAt: string;
 }
 
@@ -287,6 +288,7 @@ export interface OverviewAgent {
   lastSeenAt: string | null;
   runningTasks: OverviewTask[];
   queuedTasks: OverviewTask[];
+  recentTasks: OverviewTask[];
 }
 
 export interface OverviewResponse {
