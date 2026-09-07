@@ -4,6 +4,7 @@ description = "Agent 侧的跨语言协议契约（与 packages/contracts 共享
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [lints]

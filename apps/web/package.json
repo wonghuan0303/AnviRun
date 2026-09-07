@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "AnvilRun（铸程）构建任务平台 Web 前端",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "engines": {
     "node": ">=20.19.0"
   },

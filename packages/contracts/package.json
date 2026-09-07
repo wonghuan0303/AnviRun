@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "AnvilRun Web、Server 与 Rust Agent 共享的公共业务契约",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
   "types": "./dist/cjs/index.d.ts",

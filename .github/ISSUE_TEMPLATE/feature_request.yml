@@ -1,0 +1,29 @@
+name: 功能建议
+description: 提议新的能力或改进
+title: '[Feature]: '
+labels: ['enhancement', 'triage']
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 使用场景
+      description: 你遇到了什么问题？谁会从这项改进中受益？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+      description: 描述期望行为、交互或接口。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 可选方案
+      description: 你考虑过哪些替代方案或临时解决办法？
+  - type: textarea
+    id: context
+    attributes:
+      label: 补充信息
+      description: 可附上示例、草图或相关链接，请勿包含敏感信息。

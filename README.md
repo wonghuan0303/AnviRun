@@ -1,10 +1,16 @@
 # AnvilRun（铸程）
 
+[![CI](https://github.com/wonghuan0303/AnviRun/actions/workflows/ci.yml/badge.svg)](https://github.com/wonghuan0303/AnviRun/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![GitHub issues](https://img.shields.io/github/issues/wonghuan0303/AnviRun)](https://github.com/wonghuan0303/AnviRun/issues)
+
 一个面向企业内网固定打包机的轻量构建任务平台。
 
 管理员将 Git 仓库、构建命令、动态参数表单和指定打包机组合成构建模板；普通用户只需选择模板、填写分支和参数，即可发起构建、查看实时日志并下载产物。Rust Agent 使用打包机已有的 Git 凭据执行任务，平台本身不托管源码凭据。
 
 当前版本已经完成第一版功能及端到端验收，主要面向 **Windows x64、可信内网、单实例、低并发** 场景。
+
+> 项目处于早期阶段，接口、配置和数据库结构仍可能变化。欢迎试用、提交 Issue 和参与贡献。
 
 ## 为什么做这个项目
 
@@ -212,6 +218,12 @@ anvilrun/
 - [Agent 配置与协议](docs/agents.md)
 - [安全边界](docs/security.md)
 
+## 参与贡献
+
+欢迎提交缺陷报告、功能建议和 Pull Request。开始贡献前请阅读 [贡献指南](CONTRIBUTING.md) 与 [社区行为准则](CODE_OF_CONDUCT.md)。较大的功能或架构调整建议先创建 Issue 讨论。
+
+如果发现安全漏洞，请不要创建公开 Issue，按照 [安全策略](SECURITY.md) 通过 GitHub Security Advisory 私下报告。
+
 ## 开源许可
 
-仓库目前尚未选择开源许可证。正式公开到 GitHub 前，请根据期望的使用和再分发方式添加 `LICENSE`，并同步更新各 `package.json` 和 Cargo manifest 中的许可证字段。
+AnvilRun 基于 [MIT License](LICENSE) 开源。你可以自由使用、复制、修改和分发本项目，但须保留许可证及版权声明；软件按“原样”提供，不附带任何担保。

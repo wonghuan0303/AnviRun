@@ -4,6 +4,7 @@ description = "AnvilRun（铸程）构建任务平台的打包机 Agent 连接�
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [lints]
