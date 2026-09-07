@@ -31,7 +31,7 @@ jobs:
     env:
       DATABASE_URL: postgresql://buildplatform:buildplatform_ci_only@127.0.0.1:54329/buildplatform_test?schema=public
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -78,7 +78,7 @@ jobs:
       run:
         working-directory: agent
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
