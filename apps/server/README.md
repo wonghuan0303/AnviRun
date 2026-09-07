@@ -8,8 +8,10 @@ AnvilRun（铸程）构建任务平台 NestJS 服务端，负责认证授权、�
 - `POST /api/auth/refresh`：校验 `X-CSRF-Token`，在数据库事务中轮换 Refresh Token；开发环境 CSRF Cookie 使用 Path=/ 供管理页面读取。
 - `POST /api/auth/logout`：校验 CSRF、撤销当前 Refresh Token、清除 Cookie，重复调用幂等。
 - `GET /api/auth/me`：Bearer Access Token Guard，返回 `id/username/role/status`。
+- `GET /api/admin/users`：ADMIN 分页查询用户，支持用户名、角色和状态筛选，并返回全量用户统计；响应只包含安全字段。
 - `POST /api/admin/users`：ADMIN 创建 USER/ADMIN。
 - `PATCH /api/admin/users/:id/disable`：ADMIN 禁用用户、递增 tokenVersion、撤销全部刷新会话。
+- `POST /api/admin/users/:id/enable`：ADMIN 幂等启用用户，不恢复旧会话。
 - `POST /api/admin/users/:id/reset-password`：ADMIN 使用 Argon2id 重置密码并撤销全部会话。
 
 错误响应统一为 contracts 的 `code/message/details/requestId`。不存在用户和错误密码均为
@@ -46,6 +48,8 @@ pnpm --filter @anvilrun/server run dev
 `buildplatform_dev`。
 
 ## T1.3 RBAC 与资源所有权
+
+管理员用户管理页面使用 `/admin/users`，仅 ADMIN 可见和访问。管理员可以创建用户、分页筛选用户、启用或禁用账号以及重置密码；第一版不提供自助注册、用户删除或角色修改。禁用当前管理员账号会被服务端拒绝，禁用和重置密码都会递增 `tokenVersion` 并撤销该用户全部 RefreshToken；启用不会回退版本或恢复旧会话。用户列表、创建和状态变更响应不包含 `passwordHash`、`tokenVersion`、Cookie 或会话数据，审计 metadata 仅保留安全字段。
 
 服务端权限以 `Project.ownerId` 作为唯一业务所有权来源：
 

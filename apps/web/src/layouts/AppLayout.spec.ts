@@ -50,7 +50,13 @@ describe('AppLayout', () => {
     setRoute('/admin/agents', 'Agent 管理');
     const wrapper = mountLayout();
 
-    expect(menuLabels(wrapper)).toEqual(['任务概览', '项目管理', 'Agent 管理', '构建模板']);
+    expect(menuLabels(wrapper)).toEqual([
+      '任务概览',
+      '项目管理',
+      'Agent 管理',
+      '用户管理',
+      '构建模板',
+    ]);
     expect(wrapper.text()).toContain('系统管理');
     wrapper.unmount();
   });
@@ -86,6 +92,7 @@ describe('AppLayout', () => {
 
     expect(menuLabels(wrapper)).toEqual(['任务概览', '项目管理']);
     expect(wrapper.text()).not.toContain('Agent 管理');
+    expect(wrapper.text()).not.toContain('用户管理');
     expect(wrapper.text()).not.toContain('构建模板');
     wrapper.unmount();
   });

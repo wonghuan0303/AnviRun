@@ -97,6 +97,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: 'Agent 管理' },
       },
       {
+        path: 'users',
+        name: 'admin-users',
+        component: () => import('@/views/admin/UsersView.vue'),
+        meta: { title: '用户管理' },
+      },
+      {
         path: 'build-templates',
         name: 'admin-build-templates',
         component: () => import('@/views/admin/BuildTemplatesView.vue'),

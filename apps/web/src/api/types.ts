@@ -10,6 +10,36 @@ export interface AuthUser {
   status: UserStatus;
 }
 
+export interface AdminUser {
+  id: string;
+  username: string;
+  role: UserRole;
+  status: UserStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminUserPage {
+  items: AdminUser[];
+  page: number;
+  pageSize: number;
+  total: number;
+  metrics: {
+    total: number;
+    active: number;
+    disabled: number;
+    admins: number;
+  };
+}
+
+export interface AdminUserListParams {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  role?: UserRole;
+  status?: UserStatus;
+}
+
 export interface AuthResponse {
   accessToken: string;
   user: AuthUser;

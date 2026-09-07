@@ -402,6 +402,12 @@ describe('T1.2 authentication PostgreSQL/API integration', () => {
       expect.objectContaining({ username: 'new-user', role: 'USER', status: 'ACTIVE' }),
     );
     expect(JSON.stringify(created.body)).not.toContain('passwordHash');
+    const duplicate = await request(app.getHttpServer())
+      .post('/api/admin/users')
+      .set('Authorization', `Bearer ${admin.body.accessToken}`)
+      .send({ username: ' NEW-USER ', password: 'Another password 🔑' });
+    expect(duplicate.status).toBe(400);
+    expect(duplicate.body).toMatchObject({ code: 'VALIDATION_FAILED', message: '用户名已存在' });
 
     const ordinary = await prisma.user.create({
       data: {
@@ -417,6 +423,186 @@ describe('T1.2 authentication PostgreSQL/API integration', () => {
     expect(forbidden.status).toBe(403);
     expect(forbidden.body.code).toBe('FORBIDDEN');
     expect(ordinary.id).toBeDefined();
+  });
+
+  it('lists users with stable pagination, filters, all-user metrics and safe fields', async () => {
+    const admin = await login();
+    const createdUser = await request(app.getHttpServer())
+      .post('/api/admin/users')
+      .set('Authorization', `Bearer ${admin.body.accessToken}`)
+      .send({ username: 'searchable-user', password: 'Searchable user password 🔑' });
+    const createdAdmin = await request(app.getHttpServer())
+      .post('/api/admin/users')
+      .set('Authorization', `Bearer ${admin.body.accessToken}`)
+      .send({
+        username: 'searchable-admin',
+        password: 'Searchable admin password 🔑',
+        role: 'ADMIN',
+      });
+    await prisma.user.update({
+      where: { id: createdUser.body.id },
+      data: { status: 'DISABLED' },
+    });
+
+    const all = await request(app.getHttpServer())
+      .get('/api/admin/users')
+      .set('Authorization', `Bearer ${admin.body.accessToken}`)
+      .query({ page: 1, pageSize: 2 });
+    expect(all.status).toBe(200);
+    expect(all.body.total).toBe(3);
+    expect(all.body.items).toHaveLength(2);
+    expect(all.body.metrics).toEqual({ total: 3, active: 2, disabled: 1, admins: 2 });
+    expect(all.body.items[0].createdAt).toBeDefined();
+    expect(all.body.items[0]).not.toHaveProperty('passwordHash');
+    expect(all.body.items[0]).not.toHaveProperty('tokenVersion');
+    expect(JSON.stringify(all.body)).not.toMatch(
+      /passwordHash|tokenVersion|password|token|Cookie/i,
+    );
+
+    const filtered = await request(app.getHttpServer())
+      .get('/api/admin/users')
+      .set('Authorization', `Bearer ${admin.body.accessToken}`)
+      .query({ search: 'SEARCHABLE', role: 'USER', status: 'DISABLED' });
+    expect(filtered.status).toBe(200);
+    expect(filtered.body.total).toBe(1);
+    expect(filtered.body.items.map((item: { username: string }) => item.username)).toEqual([
+      'searchable-user',
+    ]);
+    expect(createdAdmin.body.id).toBeDefined();
+  });
+
+  it('blocks every administrator user operation for ordinary users', async () => {
+    const admin = await login();
+    const target = await request(app.getHttpServer())
+      .post('/api/admin/users')
+      .set('Authorization', `Bearer ${admin.body.accessToken}`)
+      .send({ username: 'ordinary-target', password: 'Ordinary target password 🔑' });
+    const ordinary = await prisma.user.create({
+      data: {
+        username: 'ordinary-operator',
+        passwordHash: await new PasswordService().hash('Ordinary operator password 🔑'),
+      },
+    });
+    const ordinaryLogin = await login('ordinary-operator', 'Ordinary operator password 🔑');
+    const authorization = `Bearer ${ordinaryLogin.body.accessToken}`;
+
+    const responses = await Promise.all([
+      request(app.getHttpServer()).get('/api/admin/users').set('Authorization', authorization),
+      request(app.getHttpServer())
+        .post('/api/admin/users/' + target.body.id + '/enable')
+        .set('Authorization', authorization),
+      request(app.getHttpServer())
+        .patch('/api/admin/users/' + target.body.id + '/disable')
+        .set('Authorization', authorization),
+      request(app.getHttpServer())
+        .post('/api/admin/users/' + target.body.id + '/reset-password')
+        .set('Authorization', authorization)
+        .send({ password: 'Blocked reset password 🔑' }),
+    ]);
+    expect(responses.every((response) => response.status === 403)).toBe(true);
+    expect(responses.every((response) => response.body.code === 'FORBIDDEN')).toBe(true);
+    expect(ordinary.id).toBeDefined();
+  });
+
+  it('enables users idempotently without restoring revoked sessions and protects IDs', async () => {
+    const admin = await login();
+    const password = 'Enable target password 🔑';
+    const created = await request(app.getHttpServer())
+      .post('/api/admin/users')
+      .set('Authorization', `Bearer ${admin.body.accessToken}`)
+      .send({ username: 'enable-target', password });
+    const userId = created.body.id as string;
+    const userLogin = await login('enable-target', password);
+    const before = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+
+    const disabled = await request(app.getHttpServer())
+      .patch(`/api/admin/users/${userId}/disable`)
+      .set('Authorization', `Bearer ${admin.body.accessToken}`);
+    expect(disabled.status).toBe(200);
+    const disabledUser = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    expect(disabledUser.tokenVersion).toBe(before.tokenVersion + 1);
+    expect(await prisma.refreshToken.count({ where: { userId, revokedAt: null } })).toBe(0);
+
+    const enabled = await request(app.getHttpServer())
+      .post(`/api/admin/users/${userId}/enable`)
+      .set('Authorization', `Bearer ${admin.body.accessToken}`);
+    expect(enabled.status).toBe(200);
+    expect(enabled.body.status).toBe('ACTIVE');
+    const enabledUser = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    expect(enabledUser.tokenVersion).toBe(disabledUser.tokenVersion);
+    expect(await prisma.refreshToken.count({ where: { userId, revokedAt: null } })).toBe(0);
+
+    const repeated = await request(app.getHttpServer())
+      .post(`/api/admin/users/${userId}/enable`)
+      .set('Authorization', `Bearer ${admin.body.accessToken}`);
+    expect(repeated.status).toBe(200);
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: userId } })).tokenVersion).toBe(
+      enabledUser.tokenVersion,
+    );
+    const stale = await request(app.getHttpServer())
+      .get('/api/auth/me')
+      .set('Authorization', `Bearer ${userLogin.body.accessToken}`);
+    expect(stale.status).toBe(401);
+
+    const selfDisable = await request(app.getHttpServer())
+      .patch(`/api/admin/users/${adminId}/disable`)
+      .set('Authorization', `Bearer ${admin.body.accessToken}`);
+    expect(selfDisable.status).toBe(400);
+    expect(selfDisable.body.code).toBe('VALIDATION_FAILED');
+
+    const missingId = '00000000-0000-4000-8000-000000000000';
+    const notFoundResponses = await Promise.all([
+      request(app.getHttpServer())
+        .post(`/api/admin/users/${missingId}/enable`)
+        .set('Authorization', `Bearer ${admin.body.accessToken}`),
+      request(app.getHttpServer())
+        .patch(`/api/admin/users/${missingId}/disable`)
+        .set('Authorization', `Bearer ${admin.body.accessToken}`),
+      request(app.getHttpServer())
+        .post(`/api/admin/users/${missingId}/reset-password`)
+        .set('Authorization', `Bearer ${admin.body.accessToken}`)
+        .send({ password: 'Missing user password 🔑' }),
+      request(app.getHttpServer())
+        .post('/api/admin/users/not-a-uuid/reset-password')
+        .set('Authorization', `Bearer ${admin.body.accessToken}`)
+        .send({ password: 'Missing user password 🔑' }),
+    ]);
+    expect(notFoundResponses.every((response) => response.status === 404)).toBe(true);
+    expect(notFoundResponses.every((response) => response.body.code === 'RESOURCE_NOT_FOUND')).toBe(
+      true,
+    );
+  });
+
+  it('keeps disabled users disabled after a password reset and records safe audit actions', async () => {
+    const admin = await login();
+    const created = await request(app.getHttpServer())
+      .post('/api/admin/users')
+      .set('Authorization', `Bearer ${admin.body.accessToken}`)
+      .send({ username: 'disabled-reset-target', password: 'Old disabled password 🔑' });
+    const userId = created.body.id as string;
+    await request(app.getHttpServer())
+      .patch(`/api/admin/users/${userId}/disable`)
+      .set('Authorization', `Bearer ${admin.body.accessToken}`);
+    const reset = await request(app.getHttpServer())
+      .post(`/api/admin/users/${userId}/reset-password`)
+      .set('Authorization', `Bearer ${admin.body.accessToken}`)
+      .send({ password: 'New disabled password 🔑' });
+    expect(reset.status).toBe(200);
+    expect(reset.body.status).toBe('DISABLED');
+    expect(JSON.stringify(reset.body)).not.toMatch(/passwordHash|tokenVersion|password|token/i);
+
+    const logs = await prisma.auditLog.findMany({
+      where: {
+        resourceId: userId,
+        action: { in: ['USER_CREATED', 'USER_DISABLED', 'USER_PASSWORD_RESET'] },
+      },
+    });
+    expect(logs.map((log) => log.action)).toEqual(
+      expect.arrayContaining(['USER_CREATED', 'USER_DISABLED', 'USER_PASSWORD_RESET']),
+    );
+    expect(JSON.stringify(logs)).not.toMatch(
+      /Old disabled password|New disabled password|passwordHash|tokenVersion/i,
+    );
   });
 
   it('disables users and resets passwords atomically with session revocation', async () => {

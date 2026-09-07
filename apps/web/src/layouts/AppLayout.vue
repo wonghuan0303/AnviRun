@@ -20,6 +20,7 @@ const menu = computed(() => [
   ...(auth.isAdmin
     ? [
         { name: 'admin-agents', label: 'Agent 管理', path: '/admin/agents' },
+        { name: 'admin-users', label: '用户管理', path: '/admin/users' },
         { name: 'admin-build-templates', label: '构建模板', path: '/admin/build-templates' },
       ]
     : []),

@@ -60,11 +60,10 @@ AnvilRun 是一个面向企业内网固定打包机的轻量构建任务平台�
 ### 管理员页面
 
 - `/admin/agents`：Agent 分页、搜索、创建、编辑、启停、删除和令牌轮换
+- `/admin/users`：用户分页列表、用户名/角色/状态筛选、创建、启用/禁用和密码重置
 - `/admin/build-templates`：构建模板列表和筛选
 - `/admin/build-templates/new`：新建构建模板
 - `/admin/build-templates/:id/edit`：编辑构建模板和 formSchema
-
-当前没有独立的用户管理页面，不要在本任务中新增后端接口或业务页面。
 
 ## 5. 主要文件
 

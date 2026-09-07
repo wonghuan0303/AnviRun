@@ -46,6 +46,18 @@ describe('router authorization guard', () => {
     expect(router.currentRoute.value.name).toBe('admin-agents');
   });
 
+  it('protects the user management route with the administrator guard', async () => {
+    vi.mocked(authApi.refresh).mockResolvedValue(session(user));
+
+    await router.push('/admin/users');
+    expect(router.currentRoute.value.name).toBe('overview');
+
+    setActivePinia(createPinia());
+    vi.mocked(authApi.refresh).mockResolvedValue(session(admin));
+    await router.push('/admin/users');
+    expect(router.currentRoute.value.name).toBe('admin-users');
+  });
+
   it('redirects an authenticated user from login to overview', async () => {
     vi.mocked(authApi.refresh).mockResolvedValue(session(user));
 

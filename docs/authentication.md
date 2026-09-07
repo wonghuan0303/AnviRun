@@ -21,8 +21,10 @@ ID 和 username。PostgreSQL advisory lock 保证并发执行最多创建一个�
 | POST  | `/api/auth/refresh`                   | 需要 CSRF Header，轮换 Refresh Token                             |
 | POST  | `/api/auth/logout`                    | 需要 CSRF Header，撤销 Refresh Token 并清除 Cookie               |
 | GET   | `/api/auth/me`                        | `Authorization: Bearer` 后返回当前用户摘要                       |
+| GET   | `/api/admin/users`                    | ADMIN 分页查询用户、筛选并返回全量统计                           |
 | POST  | `/api/admin/users`                    | ADMIN 创建 USER/ADMIN                                            |
 | PATCH | `/api/admin/users/:id/disable`        | ADMIN 禁用用户并撤销会话                                         |
+| POST  | `/api/admin/users/:id/enable`         | ADMIN 幂等启用用户，不恢复旧会话                                 |
 | POST  | `/api/admin/users/:id/reset-password` | ADMIN 重置密码并撤销会话                                         |
 
 所有错误响应遵循 contracts 的 `code/message/details/requestId` 结构。不存在用户和错误密码
@@ -48,3 +50,5 @@ salt；允许 Unicode，按字符限制 8-128，拒绝空白密码。登录限�
 审计 metadata 由现有 AuditService 过滤，只保留受控的安全上下文，并包含 `result: SUCCESS|FAILURE`；不包含密码、Hash、Token、Cookie、CSRF Token、Authorization Header、完整请求体或完整配置。
 
 请求体安全边界：JSON 和 URL encoded API 请求体上限为 1 MiB，超限以结构化 `VALIDATION_FAILED` 拒绝；WebSocket 消息大小限制和产物流式上传边界见 `docs/security.md`。系统面向可信内网部署，配置静态加密和更完整的 HTTPS/部署加固留到后续阶段。
+
+管理员用户管理页面位于 `/admin/users`，入口只对 ADMIN 显示。用户列表仅返回 `id`、`username`、`role`、`status`、`createdAt` 和 `updatedAt`，支持分页、用户名不区分大小写包含搜索、角色和状态筛选；不提供自助注册、用户删除或角色修改。禁用自己、禁用最后一个 ACTIVE ADMIN、非法或不存在用户 ID 都由服务端安全拒绝；启用是幂等的且不会恢复旧会话，禁用和重置密码会递增 `tokenVersion` 并撤销全部 RefreshToken。
