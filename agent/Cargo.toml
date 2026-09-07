@@ -24,7 +24,7 @@ safe-write = "0.2.0"
 tempfile = "3.20.0"
 thiserror = "2.0.12"
 tokio = { version = "1.45.1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-tungstenite = { version = "0.26.2", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7.16", features = ["io"] }
 toml = "0.8.23"
 tracing = "0.1.41"
