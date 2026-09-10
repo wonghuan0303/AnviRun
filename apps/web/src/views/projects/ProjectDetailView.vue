@@ -29,6 +29,20 @@ function projectId(): string {
   return typeof value === 'string' ? value : '';
 }
 
+function goToConfig(): void {
+  if (!project.value) return;
+  void router.push({ name: 'project-config', params: { projectId: project.value.id } });
+}
+
+function handleMoreCommand(command: string): void {
+  if (!project.value) return;
+  if (command === 'edit') {
+    void router.push({ name: 'project-edit', params: { projectId: project.value.id } });
+  } else if (command === 'delete') {
+    void confirmDelete();
+  }
+}
+
 async function load(): Promise<void> {
   loading.value = true;
   error.value = '';
@@ -103,24 +117,10 @@ onMounted(() => {
             :text="compatibilityLabel(project)"
           />
         </div>
-        <p>查看项目配置、绑定的构建模板与执行节点兼容性诊断。</p>
+        <p>查看项目参数配置、绑定的构建模板与执行节点兼容性诊断。</p>
       </div>
       <div class="page-heading__actions">
         <el-button @click="router.push({ name: 'projects' })">返回列表</el-button>
-        <el-button
-          v-if="project"
-          @click="router.push({ name: 'project-edit', params: { projectId: project.id } })"
-        >
-          编辑基本信息
-        </el-button>
-        <el-button
-          v-if="project"
-          type="primary"
-          plain
-          @click="router.push({ name: 'project-config', params: { projectId: project.id } })"
-        >
-          编辑配置
-        </el-button>
         <el-button
           v-if="project"
           type="primary"
@@ -136,12 +136,28 @@ onMounted(() => {
           开始构建
         </el-button>
         <el-button
+          v-if="project && !project.configCompatibility.valid"
+          type="warning"
+          @click="goToConfig"
+        >
+          修正参数配置
+        </el-button>
+        <el-button v-else-if="project" plain @click="goToConfig">参数配置</el-button>
+        <el-button
           v-if="project"
           @click="router.push({ name: 'project-tasks', params: { projectId: project.id } })"
         >
           构建记录
         </el-button>
-        <el-button v-if="project" type="danger" plain @click="confirmDelete">删除</el-button>
+        <el-dropdown v-if="project" trigger="click" @command="handleMoreCommand">
+          <el-button>更多</el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="edit">编辑基本信息</el-dropdown-item>
+              <el-dropdown-item command="delete" divided>删除项目</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </div>
 
@@ -225,17 +241,13 @@ onMounted(() => {
           </div>
         </el-card>
 
-        <!-- 配置兼容性诊断 -->
+        <!-- 参数配置兼容性诊断 -->
         <el-card shadow="never" class="section-card">
           <template #header>
             <div class="card-header-line">
-              <span class="card-title">配置兼容性诊断</span>
-              <el-button
-                link
-                type="primary"
-                @click="router.push({ name: 'project-config', params: { projectId: project.id } })"
-              >
-                前往编辑配置 →
+              <span class="card-title">参数配置兼容性诊断</span>
+              <el-button link type="primary" @click="goToConfig">
+                {{ project.configCompatibility.valid ? '前往参数配置' : '修正参数配置' }} →
               </el-button>
             </div>
           </template>
@@ -244,13 +256,14 @@ onMounted(() => {
               {{ compatibilityLabel(project) }}
             </el-tag>
             <span class="muted-text">
-              当前配置字段 {{ Object.keys(project.configCompatibility.effectiveConfig).length }} 个
+              当前参数配置字段
+              {{ Object.keys(project.configCompatibility.effectiveConfig).length }} 个
             </span>
           </div>
 
           <el-alert
             v-if="!project.configCompatibility.valid"
-            title="模板变化后配置需要调整"
+            title="模板变化后参数配置需要调整"
             type="warning"
             :closable="false"
             class="page-alert"

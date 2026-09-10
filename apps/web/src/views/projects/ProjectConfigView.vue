@@ -47,7 +47,7 @@ async function load(): Promise<void> {
   try {
     applyProject((await projectApi.getProject(projectId())).project);
   } catch (caught) {
-    error.value = errorMessage(caught, '项目配置加载失败');
+    error.value = errorMessage(caught, '参数配置加载失败');
   } finally {
     loading.value = false;
   }
@@ -67,7 +67,7 @@ async function save(): Promise<void> {
   const validation = validateFormConfigValues(schema.value, config.value);
   localIssues.value = validation.ok ? [] : validation.issues;
   if (!validation.ok) {
-    error.value = '请修正配置后再保存';
+    error.value = '请修正参数配置后再保存';
     return;
   }
 
@@ -77,11 +77,11 @@ async function save(): Promise<void> {
     const result = await projectApi.saveProjectConfig(projectId(), normalized);
     applyProject(result.project);
     localIssues.value = [];
-    ElMessage.success('项目配置已保存');
+    ElMessage.success('参数配置已保存');
   } catch (caught) {
     const issues = formConfigIssues(caught);
     if (issues.length > 0) serverIssues.value = issues;
-    error.value = errorMessage(caught, '项目配置保存失败');
+    error.value = errorMessage(caught, '参数配置保存失败');
   } finally {
     saving.value = false;
   }
@@ -106,7 +106,7 @@ onMounted(() => {
             ← 返回项目详情
           </el-button>
         </div>
-        <h1>项目配置</h1>
+        <h1>参数配置</h1>
         <p v-if="project">
           为项目“{{ project.name }}”配置基于“{{ project.buildTemplate.name }}”的动态参数。
         </p>
@@ -118,7 +118,7 @@ onMounted(() => {
           返回详情
         </el-button>
         <el-button type="primary" :loading="saving" :disabled="loading" @click="save">
-          保存配置
+          保存参数配置
         </el-button>
       </div>
     </div>
@@ -154,14 +154,14 @@ onMounted(() => {
 
         <el-alert
           v-if="!project.configCompatibility.valid"
-          title="当前已保存配置与模板不兼容，请根据字段提示修正。"
+          title="当前已保存参数配置与模板不兼容，请根据字段提示修正。"
           type="warning"
           :closable="false"
           class="page-alert"
         />
         <el-alert
           v-else-if="!project.configCompatibility.buildable"
-          title="配置有效，但模板或 Agent 当前不可用；保存不受影响。"
+          title="参数配置有效，但模板或 Agent 当前不可用；保存不受影响。"
           type="info"
           :closable="false"
           class="page-alert"

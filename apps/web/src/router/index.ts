@@ -55,13 +55,13 @@ const routes: RouteRecordRaw[] = [
         path: ':projectId/edit',
         name: 'project-edit',
         component: () => import('@/views/projects/ProjectEditorView.vue'),
-        meta: { title: '编辑项目' },
+        meta: { title: '编辑基本信息' },
       },
       {
         path: ':projectId/config',
         name: 'project-config',
         component: () => import('@/views/projects/ProjectConfigView.vue'),
-        meta: { title: '项目配置' },
+        meta: { title: '参数配置' },
       },
       {
         path: ':projectId/tasks',

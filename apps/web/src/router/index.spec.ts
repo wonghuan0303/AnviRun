@@ -76,4 +76,13 @@ describe('router authorization guard', () => {
     await router.push('/tasks/task-id');
     expect(router.currentRoute.value.name).toBe('task-detail');
   });
+
+  it('uses the revised project route titles', () => {
+    expect(router.getRoutes().find((route) => route.name === 'project-edit')?.meta.title).toBe(
+      '编辑基本信息',
+    );
+    expect(router.getRoutes().find((route) => route.name === 'project-config')?.meta.title).toBe(
+      '参数配置',
+    );
+  });
 });

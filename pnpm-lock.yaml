@@ -117,6 +117,9 @@ importers:
       '@anvilrun/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@element-plus/icons-vue':
+        specifier: 2.3.2
+        version: 2.3.2(vue@3.5.41(typescript@5.9.3))
       element-plus:
         specifier: ^2.9.0
         version: 2.14.4(vue@3.5.41(typescript@5.9.3))

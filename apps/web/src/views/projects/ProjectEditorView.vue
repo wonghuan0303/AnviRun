@@ -167,11 +167,11 @@ onMounted(() => {
   <section class="page-section project-editor-page">
     <div class="page-heading">
       <div>
-        <h1>{{ editing ? '编辑项目' : '新建项目' }}</h1>
+        <h1>{{ editing ? '编辑基本信息' : '新建项目' }}</h1>
         <p>
           {{
             editing
-              ? '修改项目基本信息，配置请使用独立页面保存。'
+              ? '修改项目基本信息，构建参数请前往“参数配置”页面修改。'
               : '创建项目并使用模板当前的动态配置。'
           }}
         </p>
@@ -278,10 +278,16 @@ onMounted(() => {
 
       <el-alert
         v-if="editing"
-        title="项目配置不会通过基本信息保存，请进入“项目配置”页面修改。"
+        title="构建参数请前往“参数配置”页面修改。"
         type="info"
         :closable="false"
-      />
+      >
+        <ul class="basic-info-tips">
+          <li>项目基本信息通常不需要频繁修改。</li>
+          <li>Git 分支修改仅影响后续构建，历史任务不受影响。</li>
+          <li>构建参数请前往“参数配置”页面修改。</li>
+        </ul>
+      </el-alert>
 
       <div class="form-actions">
         <el-button @click="router.back()">取消</el-button>
@@ -308,5 +314,10 @@ onMounted(() => {
   font-size: 15px;
   font-weight: 600;
   color: var(--ar-text-primary);
+}
+.basic-info-tips {
+  margin: 4px 0 0;
+  padding-left: 20px;
+  line-height: 1.8;
 }
 </style>
