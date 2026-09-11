@@ -52,7 +52,7 @@ async function logout(): Promise<void> {
         </el-menu>
       </div>
     </el-aside>
-    <el-container>
+    <el-container class="app-shell__content">
       <el-header class="app-shell__header">
         <div class="app-shell__header-left">
           <span class="app-shell__scope-badge">{{ scopeLabel }}</span>
