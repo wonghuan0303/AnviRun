@@ -37,7 +37,7 @@ AnvilRun 将这类流程收敛为几个明确角色：
 - stdout/stderr 实时日志、历史日志、断线续传和敏感值遮蔽。
 - 产物递归收集、SHA-256 校验、流式上传、单文件下载和 ZIP 下载。
 - Agent/Server 短暂断线恢复、租约校验和幂等任务结果。
-- Windows 内网部署、健康检查、PostgreSQL/日志/产物备份恢复及发布门禁。
+- Windows/Linux 内网部署与健康检查；Windows 提供 PostgreSQL/日志/产物备份恢复及完整发布门禁。
 
 ## 与已有平台的区别
 
@@ -147,17 +147,23 @@ Agent 上线后即可在管理页面创建构建模板。
 
 Agent 使用运行机器现有的 Git 凭据。平台不会保存 Git 用户名、密码或 SSH 私钥。
 
-## Windows 内网部署
+## 内网部署
 
-当前提供的正式部署形态是：PostgreSQL 运行在 Docker 中，Server 和 Rust Agent 在 Windows 主机以前台进程运行，Web 构建结果由 Server 同源托管。
+当前支持 Windows x64 和 Linux x86_64 本机部署：PostgreSQL 运行在 Docker 或现有数据库中，Server 与 Rust Agent 以前台进程运行，Web 构建结果由 Server 同源托管。
 
 ```powershell
 pwsh -File .\deploy\windows\build.ps1
-pwsh -File .\deploy\windows\start-server.ps1 -EnvironmentFile C:\AnvilRun\config\server.env
-pwsh -File .\deploy\windows\start-agent.ps1 -ConfigPath C:\AnvilRun\config\build-agent.toml
+pwsh -File .\deploy\windows\start-all.ps1 -EnvironmentFile C:\AnvilRun\config\server.env -ConfigPath C:\AnvilRun\config\build-agent.toml
 ```
 
-完整目录规划、生产配置、管理员初始化、健康检查和升级方法见 [Windows 部署文档](docs/windows-deployment.md)。备份恢复与故障排查见 [运维文档](docs/operations.md)。
+Linux：
+
+```bash
+bash deploy/linux/build.sh
+bash deploy/linux/start-all.sh /etc/anvilrun/server.env /etc/anvilrun/build-agent.toml
+```
+
+完整目录规划、生产配置、管理员初始化、健康检查和升级方法见 [Windows 部署文档](docs/windows-deployment.md) 与 [Linux 部署文档](docs/linux-deployment.md)。Windows 备份恢复与故障排查见 [运维文档](docs/operations.md)。
 
 ## 开发与验证
 
@@ -190,7 +196,9 @@ anvilrun/
 │  └─ server/              # NestJS API、WebSocket 与静态托管
 ├─ agent/                  # Rust Agent 与 Rust 协议包
 ├─ packages/contracts/     # TypeScript 公共契约、校验器与 fixtures
-├─ deploy/windows/         # Windows 构建、运行、备份和发布门禁脚本
+├─ deploy/
+│  ├─ windows/             # Windows 构建、运行、备份和发布门禁脚本
+│  └─ linux/               # Linux 构建、运行和健康检查脚本
 └─ docs/                   # 产品设计、部署、运维和实现文档
 ```
 
@@ -200,7 +208,7 @@ anvilrun/
 
 - Server/Web Docker 镜像和 Kubernetes 部署。
 - Windows Service、自动更新和自动日志轮转。
-- Linux/macOS 安装包（Agent 代码保留跨平台实现）。
+- Linux/macOS Agent 安装包（Linux 当前支持从源码构建与运行）。
 - 多 Agent 自动调度、单 Agent 并发任务和分布式部署。
 - 多步骤流水线、定时任务、Webhook、审批、任务优先级和自动重试。
 - 平台托管 Git 凭据、对象存储和产物自动过期。
@@ -212,6 +220,7 @@ anvilrun/
 - [产品与系统设计](docs/product-design.md)
 - [本地开发说明](docs/local-development.md)
 - [Windows 部署说明](docs/windows-deployment.md)
+- [Linux 部署说明](docs/linux-deployment.md)
 - [运维与备份恢复](docs/operations.md)
 - [发布验收与门禁](docs/release-check.md)
 - [认证设计](docs/authentication.md)

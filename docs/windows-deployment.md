@@ -52,6 +52,17 @@ pwsh -File .\deploy\windows\start-server.ps1 -EnvironmentFile C:\AnvilRun\config
 
 启动脚本会先执行 `prisma migrate deploy`，迁移失败时不会启动 Server；Server 以前台进程运行，使用 Ctrl+C 停止。它不会 seed、创建默认管理员或打印环境变量。
 
+如果 Server 与 Agent 部署在同一台主机，也可以一条命令启动并监管二者。脚本等待 readiness 成功后才启动 Agent；任一进程退出或按 Ctrl+C 时会停止另一进程：
+
+```powershell
+pwsh -File .\deploy\windows\start-all.ps1 `
+  -EnvironmentFile C:\AnvilRun\config\server.env `
+  -ConfigPath C:\AnvilRun\config\build-agent.toml `
+  -AgentExecutable C:\AnvilRun\agent\build-agent.exe
+```
+
+若修改了 `SERVER_PORT`，同时通过 `-ServerUrl` 传入对应的本机健康检查地址。PostgreSQL 必须已启动；一键脚本不会创建数据库容器或初始化管理员。
+
 生产默认仍要求 `AUTH_COOKIE_SECURE=true`、`__Host-` Cookie、Path=/、无 Domain 和 HTTPS。当前精简版示例明确使用可信内网 HTTP 模式：`NODE_ENV=production`、`ALLOW_INSECURE_HTTP=true`、`AUTH_COOKIE_SECURE=false`、非 `__Host-` Cookie 名、`SameSite=Strict` 且无 Domain。启动时会输出不含秘密的 warning，说明 Cookie 未使用 Secure、该模式不适合公网部署。
 
 不要用 `NODE_ENV=development` 替代正式内网部署；生产 HTTP 模式仍执行两个独立强密钥校验，Access Token 仍只保存在 Web 内存，refresh/logout 仍校验 CSRF。后续接入 HTTPS 后，关闭 `ALLOW_INSECURE_HTTP`，恢复 `AUTH_COOKIE_SECURE=true` 和 `__Host-` Cookie。

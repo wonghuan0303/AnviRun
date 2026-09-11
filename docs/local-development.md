@@ -202,11 +202,15 @@ pnpm run db:test
 `db:test` 会从 migration deploy 开始，运行真实 PostgreSQL 测试，包括外键/唯一约束、软删除、
 稳定分页、BIGINT、Agent 执行槽 partial unique index 和两个并发领取事务。
 
-## T6.3 Windows 部署补充
+## Windows/Linux 部署补充
 
 Windows 内网本机部署不需要 Server/Web Docker 镜像：PostgreSQL 使用现有 Docker 容器，Server
 和 Agent 以前台进程运行，Web 由 Server 通过 `WEB_STATIC_ROOT` 同源托管。部署、备份恢复、
 升级回滚和故障排查见 [`docs/windows-deployment.md`](windows-deployment.md)。
+
+Linux x86_64 同样支持从源码构建以及 Server/Agent 分开或一键前台启动，具体见
+[`docs/linux-deployment.md`](linux-deployment.md)。Linux 当前不提供自动备份恢复、发布包和完整
+E2E 发布门禁脚本。
 
 部署健康检查使用 `/health/live` 和 `/health/ready`；ready 会执行数据库 `SELECT 1`、检查
 任务日志/产物目录可写性，并在启用静态托管时检查 `index.html`。

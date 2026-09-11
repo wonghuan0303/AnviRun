@@ -1,0 +1,9 @@
+# Copy to /etc/anvilrun/build-agent.toml and restrict it to the Agent account.
+server_url = "http://127.0.0.1:3000"
+token = "bpa_replace_me"
+workspace_root = "/opt/anvilrun/agent-workspace"
+log_level = "info"
+minimum_free_space_bytes = 1073741824
+
+# Optional. Relative paths are resolved beside this file.
+# state_file = "agent-state.json"
