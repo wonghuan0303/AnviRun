@@ -105,7 +105,8 @@
         "name": "client",
         "version": "1.0.0"
       },
-      "sensitiveConfigKeys": []
+      "sensitiveConfigKeys": [],
+      "interactiveInputEnabled": false
     }
   },
   {
@@ -151,7 +152,8 @@
       "artifactDir": "dist",
       "timeoutSeconds": 3600,
       "config": {},
-      "sensitiveConfigKeys": []
+      "sensitiveConfigKeys": [],
+      "interactiveInputEnabled": false
     }
   },
   {
@@ -174,7 +176,23 @@
       "artifactDir": "dist",
       "timeoutSeconds": 3600,
       "config": {},
-      "sensitiveConfigKeys": []
+      "sensitiveConfigKeys": [],
+      "interactiveInputEnabled": false
+    }
+  },
+  {
+    "id": "msg-server-08",
+    "type": "task.input",
+    "timestamp": "2026-08-24T03:00:07Z",
+    "protocolVersion": 1,
+    "payload": {
+      "taskId": "task-01",
+      "leaseToken": "lease-token-000001",
+      "inputId": "11111111-1111-4111-8111-111111111111",
+      "text": "yes",
+      "sensitive": false,
+      "appendNewline": true,
+      "sentAt": "2026-08-24T03:00:07Z"
     }
   }
 ]

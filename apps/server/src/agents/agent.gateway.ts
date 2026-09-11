@@ -25,6 +25,7 @@ import type {
   TaskStatusMessage,
   TaskRecoveryMessage,
   TaskResultAckMessage,
+  TaskInputAckMessage,
 } from '@anvilrun/contracts';
 import { AgentStatus, BuildTaskStatus } from '@prisma/client';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
@@ -483,6 +484,12 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
           }
           throw error;
         }
+      } else if (result.value.type === 'task.input.ack') {
+        if (!state.helloReceived) {
+          safeClose(socket, 1008, 'hello required');
+          return;
+        }
+        this.taskQueue()?.handleTaskInputAck(state.agentId, result.value as TaskInputAckMessage);
       } else {
         safeClose(socket, 1008, 'unsupported protocol message');
       }
@@ -527,7 +534,12 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
       safeClose(socket, 1011, 'task recovery service unavailable');
       return;
     }
-    const recovery = await queue.reconcileAgentHello(state.agentId, payload.currentTask);
+    const capabilities = payload.capabilities ?? [];
+    const recovery = await queue.reconcileAgentHello(
+      state.agentId,
+      payload.currentTask,
+      capabilities,
+    );
     const updated = await this.prisma.agent.updateMany({
       where: { id: state.agentId, enabled: true },
       data: {
@@ -547,7 +559,7 @@ export class AgentGateway implements OnApplicationBootstrap, OnModuleDestroy {
     }
     state.helloReceived = true;
     state.lastHeartbeatAt = Date.now();
-    this.registry.markReady(state.agentId, socket);
+    this.registry.markReady(state.agentId, socket, capabilities);
     this.send(socket, registeredMessage(state.agentId, agent.name));
     if (recovery) this.send(socket, recoveryMessage(recovery));
     await queue.onAgentReady(state.agentId);

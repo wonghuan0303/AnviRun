@@ -66,11 +66,57 @@ describe('T0.2 shared contract baseline', () => {
 
   it('validates every server and agent message fixture', () => {
     expect(PROTOCOL_VERSION).toBe(1);
-    expect(serverMessages).toHaveLength(12);
-    expect(agentMessages).toHaveLength(10);
+    expect(serverMessages).toHaveLength(13);
+    expect(agentMessages).toHaveLength(11);
     for (const message of [...serverMessages, ...agentMessages])
       expect(validateProtocolMessage(message).ok).toBe(true);
     for (const message of invalidMessages) expect(validateProtocolMessage(message).ok).toBe(false);
+  });
+
+  it('validates interactive task input and rejects unsafe lines', () => {
+    const input = {
+      id: 'input-message',
+      type: 'task.input',
+      timestamp: '2026-09-11T00:00:00Z',
+      protocolVersion: 1,
+      payload: {
+        taskId: '12345678-1234-4234-8234-123456789012',
+        leaseToken: 'lease-token-000001',
+        inputId: '12345678-1234-4234-8234-123456789013',
+        text: '',
+        sensitive: true,
+        appendNewline: true,
+        sentAt: '2026-09-11T00:00:00Z',
+      },
+    };
+    expect(validateProtocolMessage(input).ok).toBe(true);
+    expect(
+      validateProtocolMessage({
+        ...input,
+        payload: { ...input.payload, text: 'line\nbreak' },
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateProtocolMessage({
+        ...input,
+        payload: { ...input.payload, text: 'x'.repeat(4097) },
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateProtocolMessage({
+        id: 'input-ack',
+        type: 'task.input.ack',
+        timestamp: '2026-09-11T00:00:01Z',
+        protocolVersion: 1,
+        payload: {
+          taskId: input.payload.taskId,
+          leaseToken: input.payload.leaseToken,
+          inputId: input.payload.inputId,
+          accepted: true,
+          acknowledgedAt: '2026-09-11T00:00:01Z',
+        },
+      }).ok,
+    ).toBe(true);
   });
 
   it('validates the stable API error shape and blocks sensitive details', () => {

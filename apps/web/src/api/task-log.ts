@@ -8,6 +8,26 @@ export interface ClientLogEvent {
   entry: TaskLogEntry;
 }
 
+export interface TaskInputStateEvent {
+  type: 'task.input.state';
+  taskId: string;
+  enabled: boolean;
+  writable: boolean;
+  controlledByCurrentSocket: boolean;
+  busy: boolean;
+  reason?: string;
+  requestId?: string;
+}
+
+export interface TaskInputResultEvent {
+  type: 'task.input.result';
+  taskId: string;
+  inputId: string;
+  status: 'DELIVERED' | 'REJECTED';
+  code?: string;
+  message?: string;
+}
+
 export function clientLogWebSocketUrl(): string {
   const configured = (import.meta.env.VITE_API_BASE_URL ?? '').trim();
   if (configured) {
@@ -53,5 +73,49 @@ export function parseClientLogEvent(value: unknown): ClientLogEvent | undefined 
       chunk: entry.chunk,
       emittedAt: entry.emittedAt,
     },
+  };
+}
+
+export function parseTaskInputState(value: unknown): TaskInputStateEvent | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (
+    record.type !== 'task.input.state' ||
+    typeof record.taskId !== 'string' ||
+    typeof record.enabled !== 'boolean' ||
+    typeof record.writable !== 'boolean' ||
+    typeof record.controlledByCurrentSocket !== 'boolean' ||
+    typeof record.busy !== 'boolean'
+  )
+    return undefined;
+  return {
+    type: 'task.input.state',
+    taskId: record.taskId,
+    enabled: record.enabled,
+    writable: record.writable,
+    controlledByCurrentSocket: record.controlledByCurrentSocket,
+    busy: record.busy,
+    ...(typeof record.reason === 'string' ? { reason: record.reason } : {}),
+    ...(typeof record.requestId === 'string' ? { requestId: record.requestId } : {}),
+  };
+}
+
+export function parseTaskInputResult(value: unknown): TaskInputResultEvent | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (
+    record.type !== 'task.input.result' ||
+    typeof record.taskId !== 'string' ||
+    typeof record.inputId !== 'string' ||
+    (record.status !== 'DELIVERED' && record.status !== 'REJECTED')
+  )
+    return undefined;
+  return {
+    type: 'task.input.result',
+    taskId: record.taskId,
+    inputId: record.inputId,
+    status: record.status,
+    ...(typeof record.code === 'string' ? { code: record.code } : {}),
+    ...(typeof record.message === 'string' ? { message: record.message } : {}),
   };
 }

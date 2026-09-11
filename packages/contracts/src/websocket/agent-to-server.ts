@@ -51,6 +51,8 @@ export interface AgentHelloPayload {
   readonly workspaceRoot: string;
   /** 断线前仍在执行的任务；无则缺省或为 `null`。 */
   readonly currentTask?: AgentCurrentTask | null;
+  /** Agent 支持的可选能力；交互输入 Agent 必须声明 task-input-v1。 */
+  readonly capabilities?: readonly string[];
 }
 
 /** 周期心跳（默认 15 秒一次，见 `AGENT_HEARTBEAT_INTERVAL_SECONDS`）。 */
@@ -198,6 +200,16 @@ export interface TaskCanceledPayload {
   readonly reason?: string;
 }
 
+/** Agent 对 stdin 写入结果的确认；不包含输入文本。 */
+export interface TaskInputAckPayload {
+  readonly taskId: string;
+  readonly leaseToken: string;
+  readonly inputId: string;
+  readonly accepted: boolean;
+  readonly acknowledgedAt: IsoDateTimeString;
+  readonly errorCode?: string;
+}
+
 /**
  * 消息类型到负载类型的静态映射。
  *
@@ -215,6 +227,7 @@ export interface AgentToServerPayloadMap extends Record<AgentToServerMessageType
   'task.completed': TaskCompletedPayload;
   'task.failed': TaskFailedPayload;
   'task.canceled': TaskCanceledPayload;
+  'task.input.ack': TaskInputAckPayload;
 }
 
 /** 按消息类型取出对应的完整消息类型。 */
@@ -243,6 +256,8 @@ export type TaskCompletedMessage = AgentToServerMessageOf<'task.completed'>;
 export type TaskFailedMessage = AgentToServerMessageOf<'task.failed'>;
 /** 任务取消完成消息。 */
 export type TaskCanceledMessage = AgentToServerMessageOf<'task.canceled'>;
+/** stdin 写入确认消息。 */
+export type TaskInputAckMessage = AgentToServerMessageOf<'task.input.ack'>;
 
 /** Agent → Server 消息判别联合，判别属性为 `type`。 */
 export type AgentToServerMessage =
@@ -255,4 +270,5 @@ export type AgentToServerMessage =
   | TaskArtifactManifestMessage
   | TaskCompletedMessage
   | TaskFailedMessage
-  | TaskCanceledMessage;
+  | TaskCanceledMessage
+  | TaskInputAckMessage;

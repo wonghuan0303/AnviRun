@@ -180,6 +180,7 @@ describe('T4.1 task REST PostgreSQL integration', () => {
         status: 'WAITING_AGENT',
         branch: 'main',
         config: { channel: 'dev' },
+        interactiveInputEnabled: false,
         statusHistory: expect.arrayContaining([
           expect.objectContaining({ fromStatus: null, toStatus: 'CREATED' }),
           expect.objectContaining({ fromStatus: 'CREATED', toStatus: 'WAITING_AGENT' }),
@@ -199,6 +200,23 @@ describe('T4.1 task REST PostgreSQL integration', () => {
     expect(stored.createdBy).toBe(userAId);
     expect(stored.config).toEqual({ channel: 'dev' });
     expect(await prisma.buildTaskStatusHistory.count({ where: { taskId: stored.id } })).toBe(2);
+  });
+
+  it('snapshots the template interactive input flag on task creation', async () => {
+    await prisma.buildTemplate.update({
+      where: { id: templateId },
+      data: { interactiveInputEnabled: true },
+    });
+
+    const response = await createTask(userAToken);
+    expect(response.status).toBe(201);
+    expect(response.body.task.interactiveInputEnabled).toBe(true);
+
+    const stored = await prisma.buildTask.findUniqueOrThrow({
+      where: { id: response.body.task.id },
+      select: { interactiveInputEnabled: true },
+    });
+    expect(stored.interactiveInputEnabled).toBe(true);
   });
 
   it('rejects internal fields in the request body and never accepts a client owner', async () => {

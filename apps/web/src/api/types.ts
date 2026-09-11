@@ -95,6 +95,7 @@ export interface BuildTemplateAdminView {
   command: string;
   artifactDir: string;
   formSchema: unknown;
+  interactiveInputEnabled: boolean;
   timeoutSeconds: number;
   enabled: boolean;
   createdBy: string;
@@ -232,6 +233,7 @@ export interface TaskSummary {
   statusReason: string | null;
   branch: string;
   config: Record<string, unknown>;
+  interactiveInputEnabled: boolean;
   sourceCommit: string | null;
   exitCode: number | null;
   queuedAt: string | null;

@@ -32,6 +32,7 @@ const ADMIN_TEMPLATE_SELECT = {
   command: true,
   artifactDir: true,
   formSchema: true,
+  interactiveInputEnabled: true,
   timeoutSeconds: true,
   enabled: true,
   createdBy: true,
@@ -98,6 +99,7 @@ export class BuildTemplatesService {
             command: input.command,
             artifactDir: input.artifactDir,
             formSchema: jsonInput(input.formSchema),
+            interactiveInputEnabled: input.interactiveInputEnabled,
             timeoutSeconds: input.timeoutSeconds,
             enabled: true,
             createdBy: actor.id,
@@ -183,6 +185,9 @@ export class BuildTemplatesService {
           ...(input.artifactDir === undefined ? {} : { artifactDir: input.artifactDir }),
           ...(input.formSchema === undefined ? {} : { formSchema: jsonInput(input.formSchema) }),
           ...(input.timeoutSeconds === undefined ? {} : { timeoutSeconds: input.timeoutSeconds }),
+          ...(input.interactiveInputEnabled === undefined
+            ? {}
+            : { interactiveInputEnabled: input.interactiveInputEnabled }),
         };
         const updated = await transaction.buildTemplate.update({
           where: { id: templateId },

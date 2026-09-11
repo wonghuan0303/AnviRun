@@ -135,6 +135,22 @@ T3.3 不包含 Web 项目页面、构建任务创建、Git 访问、Agent 派发
 
 T4.1 只实现创建、查询、状态历史、Agent 可用通知、领取确认、租约和派发超时回收；任务执行、完成/失败上报、日志、产物和取消留给后续阶段。
 
+## 任务执行期间交互输入
+
+构建模板的 `interactiveInputEnabled` 默认为 `false`，管理员可在模板编辑页开启。创建任务时将该值
+快照到 BuildTask，后续模板修改不会影响已创建任务；数据库迁移为
+`20260911120000_add_interactive_input_flags`。普通任务不改变既有 stdin null 行为。
+
+任务详情通过现有 `/ws/client` 日志连接提供“接管输入”和“发送并回车”。Server 复用
+`AuthorizationService.taskScope` 校验项目所有权及已删除项目过滤，在单实例内存中保证一个任务只有
+一个控制 socket，并在 5 分钟无输入后释放。输入正文不写入数据库、日志、URL、审计或错误；审计只
+保留 taskId、inputId、敏感标记、字节数和安全错误码。单条输入最多 4096 个 UTF-8 字节，拒绝换行
+和控制字符，Server 5 秒未收到 Agent ACK 时不自动重发。
+
+TaskQueueService 只在任务 RUNNING、Agent 活动租约匹配且 Agent hello 声明 `task-input-v1` 时构造
+`task.input`；租约明文不离开 Server 内部。旧 Agent 可继续执行非交互任务，交互任务会停留在
+`WAITING_AGENT` 或返回明确的能力不兼容原因，不会被错误执行。
+
 ## T5.3 产物上传与下载
 
 Agent 在任务进入 `UPLOADING` 后先通过 WebSocket 发送 `task.artifact-manifest`。Server 按 Agent、活动任务和租约校验清单，写入尚未上传的 Artifact 元数据并返回 `task.artifact-manifest-ack`；文件本体通过 `PUT /api/agent/tasks/:taskId/artifacts/content?relativePath=...` 以 `application/octet-stream` 流式上传。上传过程在 Server 侧按清单大小和 SHA-256 校验，使用任务目录内的独占临时文件、刷盘后移动到 `data/artifacts/<taskId>/<relativePath>`，不把租约明文写入 URL、数据库、日志或响应。短写会被完整处理并在移动前复核临时文件大小；若正式文件已移动但 `uploadedAt` 尚未落库，内容一致的重试会流式复核并补写元数据。单任务总量上限为 2 GiB，路径穿越、符号链接/reparse point、尺寸或 Hash 不匹配都会拒绝；同一文件在内容一致时可安全重试。

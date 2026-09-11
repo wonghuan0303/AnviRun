@@ -76,6 +76,7 @@ const task = {
   statusReason: '正在执行',
   branch: 'main',
   config: {},
+  interactiveInputEnabled: false,
   sourceCommit: null,
   exitCode: null,
   queuedAt: null,

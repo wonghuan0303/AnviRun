@@ -41,6 +41,7 @@ const templates: BuildTemplatePage = {
       command: 'pnpm build',
       artifactDir: 'dist',
       formSchema: [],
+      interactiveInputEnabled: false,
       timeoutSeconds: 60,
       enabled: true,
       createdBy: 'admin',
@@ -76,5 +77,7 @@ describe('BuildTemplatesView', () => {
     expect(templatesApi.listBuildTemplates).toHaveBeenLastCalledWith(
       expect.objectContaining({ enabled: true, agentId: 'agent-a' }),
     );
+    expect(wrapper.text()).toContain('交互输入');
+    expect(wrapper.text()).toContain('已关闭');
   });
 });

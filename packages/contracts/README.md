@@ -56,6 +56,18 @@ T6.1 增加 Server 到 Agent 的 `task.recovery` 和 `task.result.ack`：重连 
 
 浏览器日志订阅不是 Agent 协议：客户端先在 `/ws/client` 发送 access token 认证，再发送任务和 offset 订阅。Server 通过现有任务所有权服务授权，历史和实时 payload 均不携带租约哈希、令牌或配置秘密。
 
+## 任务交互输入协议
+
+交互输入使用 `task-input-v1` 能力协商。新版 Agent 在 `agent.hello.capabilities` 中声明该能力；Server
+仅为 `interactiveInputEnabled=true` 且处于 `RUNNING` 的任务发送 `task.input`。消息携带任务租约、
+UUID `inputId`、最多 4096 个 UTF-8 字节的单行文本、`sensitive` 和固定为 `true` 的 `appendNewline`。
+Agent 写入 stdin 并 flush 后以 `task.input.ack` 确认，ACK 不携带正文。
+
+文本允许空字符串，但拒绝 CR/LF、NUL 及其他控制字符。输入不持久化、不进入 URL、任务日志或数据库；
+浏览器通过 `/ws/client` 先获取单任务控制权，Server 单实例内存中维护 5 分钟空闲超时。Server 不为
+断线输入排队或自动重发，多 Server 部署暂不共享控制权。普通模板和旧任务的字段默认为 `false`，
+因此仍保持 stdin null 行为。
+
 ## 项目配置值校验
 
 `src/form-schema/values.ts` 提供 Project.config 与后续 Web 共用的确定性运行时能力：

@@ -339,6 +339,7 @@ mod tests {
             timeout_seconds: 10,
             config: serde_json::Map::new(),
             sensitive_config_keys: Vec::new(),
+            interactive_input_enabled: false,
         };
         let result = prepare_task(manager, GitClient::new(), assignment)
             .await
@@ -397,6 +398,7 @@ mod tests {
                 .expect("object config")
                 .clone(),
             sensitive_config_keys: Vec::new(),
+            interactive_input_enabled: false,
         };
 
         let first = prepare_task(

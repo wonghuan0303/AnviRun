@@ -5,6 +5,7 @@ import type { ServerToAgentMessage } from '@anvilrun/contracts';
 interface RegisteredConnection {
   readonly socket: WebSocket;
   ready: boolean;
+  capabilities: readonly string[];
 }
 
 /** 单 Server 实例内的 Agent 连接注册表，同时记录 hello 是否完成。 */
@@ -14,14 +15,15 @@ export class AgentConnectionRegistry {
 
   register(agentId: string, socket: WebSocket): WebSocket | undefined {
     const previous = this.connections.get(agentId)?.socket;
-    this.connections.set(agentId, { socket, ready: false });
+    this.connections.set(agentId, { socket, ready: false, capabilities: [] });
     return previous;
   }
 
-  markReady(agentId: string, socket: WebSocket): boolean {
+  markReady(agentId: string, socket: WebSocket, capabilities: readonly string[] = []): boolean {
     const current = this.connections.get(agentId);
     if (!current || current.socket !== socket) return false;
     current.ready = true;
+    current.capabilities = [...new Set(capabilities)];
     return true;
   }
 
@@ -60,6 +62,11 @@ export class AgentConnectionRegistry {
   isReady(agentId: string): boolean {
     const current = this.connections.get(agentId);
     return current !== undefined && current.ready && current.socket.readyState === WebSocket.OPEN;
+  }
+
+  hasCapability(agentId: string, capability: string): boolean {
+    const current = this.connections.get(agentId);
+    return current !== undefined && current.ready && current.capabilities.includes(capability);
   }
 
   send(agentId: string, message: ServerToAgentMessage): boolean {

@@ -15,6 +15,8 @@ import {
   type TaskCompletedMessage,
   type TaskFailedMessage,
   type TaskStatusMessage,
+  type TaskInputAckMessage,
+  type TaskInputMessage,
   type AgentCurrentTask,
   type AgentReportableTaskStatus,
 } from '@anvilrun/contracts';
@@ -37,12 +39,55 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 const SOURCE_COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const MAX_AGENT_REASON_LENGTH = 1_024;
 const LOG_LEASE_WINDOW_MS = 10 * 60_000;
+export const TASK_INPUT_CAPABILITY = 'task-input-v1';
+export const TASK_INPUT_DELIVERY_TIMEOUT_MS = 5_000;
+
+export type TaskInputDeliveryCode =
+  | 'TASK_INPUT_NOT_ENABLED'
+  | 'TASK_INPUT_NOT_RUNNING'
+  | 'TASK_INPUT_AGENT_OFFLINE'
+  | 'TASK_INPUT_AGENT_UNSUPPORTED'
+  | 'TASK_INPUT_DELIVERY_TIMEOUT'
+  | 'TASK_INPUT_DELIVERY_FAILED'
+  | 'TASK_INPUT_STDIN_CLOSED';
+
+const TASK_INPUT_DELIVERY_CODES = new Set<TaskInputDeliveryCode>([
+  'TASK_INPUT_NOT_ENABLED',
+  'TASK_INPUT_NOT_RUNNING',
+  'TASK_INPUT_AGENT_OFFLINE',
+  'TASK_INPUT_AGENT_UNSUPPORTED',
+  'TASK_INPUT_DELIVERY_TIMEOUT',
+  'TASK_INPUT_DELIVERY_FAILED',
+  'TASK_INPUT_STDIN_CLOSED',
+]);
+
+function safeTaskInputDeliveryCode(value: unknown): TaskInputDeliveryCode {
+  return typeof value === 'string' && TASK_INPUT_DELIVERY_CODES.has(value as TaskInputDeliveryCode)
+    ? (value as TaskInputDeliveryCode)
+    : 'TASK_INPUT_DELIVERY_FAILED';
+}
+
+export interface TaskInputDeliveryResult {
+  readonly status: 'DELIVERED' | 'REJECTED';
+  readonly code?: TaskInputDeliveryCode;
+}
+
+export type TaskTerminalListener = (taskId: string) => void;
+
+interface PendingTaskInput {
+  readonly taskId: string;
+  readonly agentId: string;
+  readonly leaseToken: string;
+  readonly resolve: (result: TaskInputDeliveryResult) => void;
+  readonly timer: NodeJS.Timeout;
+}
 
 const CLAIM_SELECT = {
   id: true,
   projectId: true,
   buildTemplateId: true,
   agentId: true,
+  interactiveInputEnabled: true,
   config: true,
   branch: true,
   assignedArtifactDir: true,
@@ -127,6 +172,8 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
   private readonly completedClaims = new Map<string, StoredClaimResult>();
   /** 明文租约仅在单 Server 进程内保留，用于向持有该租约的 Agent 发送取消请求。 */
   private readonly activeLeaseTokens = new Map<string, string>();
+  private readonly pendingTaskInputs = new Map<string, PendingTaskInput>();
+  private readonly taskTerminalListeners = new Set<TaskTerminalListener>();
   private scanTimer?: NodeJS.Timeout;
 
   constructor(
@@ -156,6 +203,18 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
     this.inFlightClaims.clear();
     this.completedClaims.clear();
     this.activeLeaseTokens.clear();
+    for (const pending of this.pendingTaskInputs.values()) {
+      clearTimeout(pending.timer);
+      pending.resolve({ status: 'REJECTED', code: 'TASK_INPUT_DELIVERY_FAILED' });
+    }
+    this.pendingTaskInputs.clear();
+    this.taskTerminalListeners.clear();
+  }
+
+  /** Subscribe to committed terminal task transitions without introducing a service cycle. */
+  onTaskTerminal(listener: TaskTerminalListener): () => void {
+    this.taskTerminalListeners.add(listener);
+    return () => this.taskTerminalListeners.delete(listener);
   }
 
   async notifyAvailable(agentId: string): Promise<void> {
@@ -170,8 +229,25 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
 
   /** 清理完成任务在单进程内的明文租约，并唤醒同一 Agent 的后续队列。 */
   async onTaskCompleted(agentId: string, taskId: string): Promise<void> {
-    this.activeLeaseTokens.delete(taskId);
+    this.finishTaskRuntime(taskId);
     await this.onAgentReady(agentId);
+  }
+
+  private finishTaskRuntime(taskId: string): void {
+    this.activeLeaseTokens.delete(taskId);
+    for (const [inputId, pending] of this.pendingTaskInputs) {
+      if (pending.taskId !== taskId) continue;
+      clearTimeout(pending.timer);
+      this.pendingTaskInputs.delete(inputId);
+      pending.resolve({ status: 'REJECTED', code: 'TASK_INPUT_NOT_RUNNING' });
+    }
+    for (const listener of this.taskTerminalListeners) {
+      try {
+        listener(taskId);
+      } catch {
+        // Runtime cleanup observers must never change the committed task result.
+      }
+    }
   }
 
   async onAgentReady(agentId: string): Promise<void> {
@@ -185,9 +261,14 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
       const waiting = await tx.buildTask.findMany({
         where: { agentId, status: BuildTaskStatus.WAITING_AGENT },
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-        select: { id: true, queuedAt: true },
+        select: { id: true, queuedAt: true, interactiveInputEnabled: true },
       });
       for (const task of waiting) {
+        if (
+          task.interactiveInputEnabled &&
+          !this.registry.hasCapability(agentId, TASK_INPUT_CAPABILITY)
+        )
+          continue;
         await this.state.transition(
           tx,
           task.id,
@@ -204,6 +285,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onAgentDisconnected(agentId: string): Promise<void> {
+    this.rejectPendingTaskInputs(agentId, 'TASK_INPUT_AGENT_OFFLINE');
     const pending = await this.prisma.buildTask.findMany({
       where: {
         agentId,
@@ -307,6 +389,111 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * 向当前租约持有的 Agent 写入一行输入。leaseToken 只在本服务内部使用，
+   * 不会暴露给浏览器或控制台协议。
+   */
+  async sendTaskInput(
+    taskId: string,
+    inputId: string,
+    text: string,
+    sensitive: boolean,
+  ): Promise<TaskInputDeliveryResult> {
+    const task = await this.prisma.buildTask.findUnique({
+      where: { id: taskId },
+      select: {
+        id: true,
+        agentId: true,
+        status: true,
+        interactiveInputEnabled: true,
+        project: { select: { deletedAt: true } },
+        agent: { select: { activeTaskId: true, enabled: true, status: true } },
+      },
+    });
+    if (!task || task.project.deletedAt !== null || !task.interactiveInputEnabled)
+      return { status: 'REJECTED', code: 'TASK_INPUT_NOT_ENABLED' };
+    if (task.status !== BuildTaskStatus.RUNNING || task.agent.activeTaskId !== task.id)
+      return { status: 'REJECTED', code: 'TASK_INPUT_NOT_RUNNING' };
+    if (
+      !task.agent.enabled ||
+      task.agent.status !== AgentStatus.ONLINE ||
+      !this.registry.isReady(task.agentId)
+    )
+      return { status: 'REJECTED', code: 'TASK_INPUT_AGENT_OFFLINE' };
+    if (!this.registry.hasCapability(task.agentId, TASK_INPUT_CAPABILITY))
+      return { status: 'REJECTED', code: 'TASK_INPUT_AGENT_UNSUPPORTED' };
+    const leaseToken = this.activeLeaseTokens.get(task.id);
+    if (!leaseToken) return { status: 'REJECTED', code: 'TASK_INPUT_STDIN_CLOSED' };
+    if (this.pendingTaskInputs.has(inputId)) {
+      return { status: 'REJECTED', code: 'TASK_INPUT_DELIVERY_FAILED' };
+    }
+
+    return new Promise<TaskInputDeliveryResult>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingTaskInputs.delete(inputId);
+        resolve({ status: 'REJECTED', code: 'TASK_INPUT_DELIVERY_TIMEOUT' });
+      }, TASK_INPUT_DELIVERY_TIMEOUT_MS);
+      this.pendingTaskInputs.set(inputId, {
+        taskId: task.id,
+        agentId: task.agentId,
+        leaseToken,
+        resolve,
+        timer,
+      });
+      const message: TaskInputMessage = {
+        id: randomUUID(),
+        type: 'task.input',
+        timestamp: new Date().toISOString(),
+        protocolVersion: PROTOCOL_VERSION,
+        payload: {
+          taskId: task.id,
+          leaseToken,
+          inputId,
+          text,
+          sensitive,
+          appendNewline: true,
+          sentAt: new Date().toISOString(),
+        },
+      };
+      if (!validateProtocolMessage(message).ok || !this.registry.send(task.agentId, message)) {
+        clearTimeout(timer);
+        this.pendingTaskInputs.delete(inputId);
+        resolve({ status: 'REJECTED', code: 'TASK_INPUT_DELIVERY_FAILED' });
+      }
+    });
+  }
+
+  handleTaskInputAck(agentId: string, message: TaskInputAckMessage): boolean {
+    const pending = this.pendingTaskInputs.get(message.payload.inputId);
+    if (!pending || pending.agentId !== agentId || pending.taskId !== message.payload.taskId)
+      return false;
+    const expected = this.activeLeaseTokens.get(pending.taskId);
+    if (!expected || expected !== pending.leaseToken || expected !== message.payload.leaseToken)
+      return false;
+    clearTimeout(pending.timer);
+    this.pendingTaskInputs.delete(message.payload.inputId);
+    pending.resolve(
+      message.payload.accepted
+        ? { status: 'DELIVERED' }
+        : {
+            status: 'REJECTED',
+            code: message.payload.errorCode
+              ? safeTaskInputDeliveryCode(message.payload.errorCode)
+              : 'TASK_INPUT_DELIVERY_FAILED',
+          },
+    );
+    return true;
+  }
+
+  private rejectPendingTaskInputs(agentId: string, code: TaskInputDeliveryCode): void {
+    for (const [inputId, pending] of this.pendingTaskInputs) {
+      if (pending.agentId !== agentId) continue;
+      clearTimeout(pending.timer);
+      this.pendingTaskInputs.delete(inputId);
+      pending.resolve({ status: 'REJECTED', code });
+    }
+  }
+
+  /**
    * Reconcile the Agent's durable local task during hello. The Agent is never
    * allowed to start a second execution: the locked Agent row and its active
    * task decide whether this is a resume, an abandon, or an orphan to fail.
@@ -314,8 +501,10 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
   async reconcileAgentHello(
     agentId: string,
     currentTask: AgentCurrentTask | null | undefined,
+    capabilities: readonly string[] = [],
   ): Promise<AgentRecoveryDecision | null> {
     let leaseToRestore: { taskId: string; leaseToken: string } | undefined;
+    const terminalTaskIds = new Set<string>();
     const decision = await this.prisma.$transaction(async (tx) => {
       const agent = await this.lockAgent(tx, agentId);
       if (!agent) throw new ApiException('RESOURCE_NOT_FOUND');
@@ -324,7 +513,9 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
 
       const taskId = currentTask?.taskId ?? activeTaskId;
       if (!taskId || !UUID_PATTERN.test(taskId)) {
-        if (activeTaskId) await this.failOrphanedTask(tx, activeTaskId, agentId);
+        if (activeTaskId && (await this.failOrphanedTask(tx, activeTaskId, agentId))) {
+          terminalTaskIds.add(activeTaskId);
+        }
         return null;
       }
       const task = await tx.buildTask.findUnique({
@@ -333,6 +524,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
           id: true,
           agentId: true,
           status: true,
+          interactiveInputEnabled: true,
           recoveryStatus: true,
           recoveryDeadlineAt: true,
           leaseHash: true,
@@ -355,13 +547,27 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
         (task.leaseExpiresAt.getTime() > Date.now() || cancellationLeaseUsable);
 
       if (!validTask) {
-        if (activeTaskId) await this.failOrphanedTask(tx, activeTaskId, agentId);
+        if (activeTaskId && (await this.failOrphanedTask(tx, activeTaskId, agentId))) {
+          terminalTaskIds.add(activeTaskId);
+        }
         return currentTask
           ? {
               taskId: currentTask.taskId,
               action: 'ABANDON' as const,
               acknowledgedLogSequence: 0,
               reason: 'Server could not match the Agent current task',
+            }
+          : null;
+      }
+
+      if (task.interactiveInputEnabled && !capabilities.includes(TASK_INPUT_CAPABILITY)) {
+        if (await this.failOrphanedTask(tx, task.id, agentId)) terminalTaskIds.add(task.id);
+        return currentTask
+          ? {
+              taskId: currentTask.taskId,
+              action: 'ABANDON' as const,
+              acknowledgedLogSequence: 0,
+              reason: 'Agent does not support interactive task input (task-input-v1)',
             }
           : null;
       }
@@ -378,7 +584,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
         actualHash.length === expectedHash.length &&
         timingSafeEqual(actualHash, expectedHash);
       if (!leaseMatches) {
-        await this.failOrphanedTask(tx, task.id, agentId);
+        if (await this.failOrphanedTask(tx, task.id, agentId)) terminalTaskIds.add(task.id);
         return currentTask
           ? {
               taskId: currentTask.taskId,
@@ -415,7 +621,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
           deadline.getTime() <= Date.now() ||
           currentTask.status !== recoveryStatus
         ) {
-          await this.failOrphanedTask(tx, task.id, agentId);
+          if (await this.failOrphanedTask(tx, task.id, agentId)) terminalTaskIds.add(task.id);
           return {
             taskId: task.id,
             action: 'ABANDON' as const,
@@ -443,7 +649,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
 
       if (task.status === BuildTaskStatus.CANCELING) {
         if (!currentTask || !isAgentExecutionPhase(currentTask.status)) {
-          await this.failOrphanedTask(tx, task.id, agentId);
+          if (await this.failOrphanedTask(tx, task.id, agentId)) terminalTaskIds.add(task.id);
           return {
             taskId: task.id,
             action: 'ABANDON' as const,
@@ -462,7 +668,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (!isAgentExecutionPhase(task.status) || currentTask.status !== task.status) {
-        await this.failOrphanedTask(tx, task.id, agentId);
+        if (await this.failOrphanedTask(tx, task.id, agentId)) terminalTaskIds.add(task.id);
         return {
           taskId: task.id,
           action: 'ABANDON' as const,
@@ -480,6 +686,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
     });
     if (leaseToRestore)
       this.activeLeaseTokens.set(leaseToRestore.taskId, leaseToRestore.leaseToken);
+    for (const terminalTaskId of terminalTaskIds) this.finishTaskRuntime(terminalTaskId);
     return decision;
   }
 
@@ -487,7 +694,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
     tx: Prisma.TransactionClient,
     taskId: string,
     agentId: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const task = await tx.buildTask.findUnique({
       where: { id: taskId },
       select: { id: true, agentId: true, status: true },
@@ -499,7 +706,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
       task.status === BuildTaskStatus.FAILED ||
       task.status === BuildTaskStatus.CANCELED
     )
-      return;
+      return false;
     await this.state.transition(
       tx,
       task.id,
@@ -516,7 +723,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
       },
     );
     await tx.agent.update({ where: { id: agentId }, data: { activeTaskId: null } });
-    this.activeLeaseTokens.delete(task.id);
+    return true;
   }
 
   private async reconcileInterruptedTasks(): Promise<void> {
@@ -616,7 +823,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
         continue;
       }
       if (recovered) {
-        this.activeLeaseTokens.delete(candidate.id);
+        this.finishTaskRuntime(candidate.id);
         await this.notifyAvailable(candidate.agentId);
       }
     }
@@ -627,6 +834,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
     const safeReason = safeCancelReason(reason);
     let cancelMessage: TaskCancelMessage | undefined;
     let agentId: string | undefined;
+    let terminal = false;
 
     await this.prisma.$transaction(async (tx) => {
       const initial = await tx.buildTask.findUnique({
@@ -655,6 +863,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
         if (agent.activeTaskId === task.id) {
           await tx.agent.update({ where: { id: agent.id }, data: { activeTaskId: null } });
         }
+        terminal = true;
         return;
       }
 
@@ -679,6 +888,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
           await tx.agent.update({ where: { id: agent.id }, data: { activeTaskId: null } });
         }
         agentId = agent.id;
+        terminal = true;
         return;
       }
 
@@ -723,6 +933,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
       agentId = agent.id;
     });
 
+    if (terminal) this.finishTaskRuntime(taskId);
     if (cancelMessage && agentId) this.registry.send(agentId, cancelMessage);
   }
 
@@ -782,7 +993,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
       await tx.agent.update({ where: { id: agentId }, data: { activeTaskId: null } });
       shouldNotify = true;
     });
-    this.activeLeaseTokens.delete(payload.taskId);
+    this.finishTaskRuntime(payload.taskId);
     if (shouldNotify) await this.onAgentReady(agentId);
     return BuildTaskStatus.CANCELED;
   }
@@ -808,6 +1019,9 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
     if (!this.registry.isReady(agentId)) throw new ApiException('AGENT_OFFLINE');
     const promise = this.claimInTransaction(agentId, requestedTaskId)
       .then((outcome) => {
+        for (const terminalTaskId of outcome.terminalTaskIds) {
+          this.finishTaskRuntime(terminalTaskId);
+        }
         if (outcome.result) {
           this.activeLeaseTokens.set(
             outcome.result.payload.taskId,
@@ -1023,7 +1237,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
       shouldNotify = true;
     });
 
-    this.activeLeaseTokens.delete(payload.taskId);
+    this.finishTaskRuntime(payload.taskId);
     if (shouldNotify) await this.onAgentReady(agentId);
     return BuildTaskStatus.FAILED;
   }
@@ -1061,7 +1275,8 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
       await tx.agent.update({ where: { id: agentId }, data: { activeTaskId: null } });
       shouldNotify = true;
     });
-    this.activeLeaseTokens.delete(payload.taskId);
+    if (shouldNotify) this.finishTaskRuntime(payload.taskId);
+    else this.activeLeaseTokens.delete(payload.taskId);
     if (shouldNotify) await this.onAgentReady(agentId);
   }
 
@@ -1175,7 +1390,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
         continue;
       }
       if (!recovered) continue;
-      this.activeLeaseTokens.delete(candidate.id);
+      this.finishTaskRuntime(candidate.id);
       this.registry.disconnect(candidate.agentId, 'task cancellation timeout');
       await this.onAgentDisconnected(candidate.agentId);
     }
@@ -1184,15 +1399,16 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
   private async claimInTransaction(
     agentId: string,
     requestedTaskId?: string | null,
-  ): Promise<{ result: ClaimResult; shouldNotify: boolean }> {
+  ): Promise<{ result: ClaimResult; shouldNotify: boolean; terminalTaskIds: string[] }> {
     if (
       requestedTaskId !== undefined &&
       requestedTaskId !== null &&
       !UUID_PATTERN.test(requestedTaskId)
     ) {
-      return { result: null, shouldNotify: false };
+      return { result: null, shouldNotify: false, terminalTaskIds: [] };
     }
-    return this.prisma.$transaction(async (tx) => {
+    const terminalTaskIds: string[] = [];
+    const outcome = await this.prisma.$transaction(async (tx) => {
       const agent = await this.lockAgent(tx, agentId);
       if (!agent) throw new ApiException('RESOURCE_NOT_FOUND');
       if (!agent.enabled) throw new ApiException('AGENT_DISABLED');
@@ -1235,12 +1451,28 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
         }
         if (failureReason !== undefined) {
           await this.failUndispatchable(tx, task.id, failureReason);
+          terminalTaskIds.push(task.id);
           continue;
+        }
+
+        if (
+          task.interactiveInputEnabled &&
+          !this.registry.hasCapability(agentId, TASK_INPUT_CAPABILITY)
+        ) {
+          await this.state.transition(
+            tx,
+            task.id,
+            BuildTaskStatus.WAITING_AGENT,
+            'SYSTEM',
+            'Agent does not support interactive task input (task-input-v1)',
+          );
+          return { result: null, shouldNotify: false };
         }
 
         const schema = validateFormSchema(task.buildTemplate.formSchema);
         if (!schema.ok) {
           await this.failUndispatchable(tx, task.id, 'Build template schema is invalid');
+          terminalTaskIds.push(task.id);
           continue;
         }
         const assignedArtifactDir = task.buildTemplate.artifactDir;
@@ -1263,10 +1495,12 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
             timeoutSeconds: task.buildTemplate.timeoutSeconds,
             config: task.config as FormConfigValues,
             sensitiveConfigKeys: listSensitiveFormFieldNames(schema.value),
+            interactiveInputEnabled: task.interactiveInputEnabled,
           },
         } satisfies TaskAssignmentMessage;
         if (!validateProtocolMessage(assignment).ok) {
           await this.failUndispatchable(tx, task.id, 'Task assignment failed protocol validation');
+          terminalTaskIds.push(task.id);
           continue;
         }
         await this.state.transition(
@@ -1294,6 +1528,7 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
 
       return { result: null, shouldNotify: true };
     });
+    return { ...outcome, terminalTaskIds };
   }
   private async failUndispatchable(tx: Prisma.TransactionClient, taskId: string, reason: string) {
     const failureReason = `Dispatch validation failed: ${reason}`;
@@ -1307,7 +1542,6 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
       leaseExpiresAt: null,
       statusReason: failureReason,
     });
-    this.activeLeaseTokens.delete(taskId);
   }
 
   private async moveDispatchedToWaiting(

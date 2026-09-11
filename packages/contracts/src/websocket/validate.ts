@@ -35,6 +35,10 @@ import {
 import type { AgentToServerMessage } from './agent-to-server';
 import type { ServerToAgentMessage } from './server-to-agent';
 
+const TASK_INPUT_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TASK_INPUT_MAX_BYTES = 4_096;
+
 export const PROTOCOL_MESSAGE_ISSUE_CODES = [
   'MESSAGE_NOT_OBJECT',
   'UNKNOWN_PROPERTY',
@@ -48,6 +52,8 @@ export const PROTOCOL_MESSAGE_ISSUE_CODES = [
   'TASK_ID_INVALID',
   'LEASE_TOKEN_INVALID',
   'GIT_CREDENTIALS_FORBIDDEN',
+  'TASK_INPUT_INVALID',
+  'TASK_INPUT_TOO_LARGE',
 ] as const;
 
 export type ProtocolMessageIssueCode = (typeof PROTOCOL_MESSAGE_ISSUE_CODES)[number];
@@ -247,6 +253,68 @@ function stringArray(
     );
 }
 
+function optionalStringArray(
+  value: MessageObject,
+  key: string,
+  path: readonly ValidationPathSegment[],
+  issues: ProtocolMessageIssue[],
+): void {
+  const raw = value[key];
+  if (
+    raw !== undefined &&
+    (!Array.isArray(raw) ||
+      raw.some((item) => !(isString(item) && item.length > 0 && isPlainText(item))))
+  )
+    issue(issues, 'PROPERTY_INVALID', [...path, key], `${key} 必须是纯文本字符串数组`);
+}
+
+function booleanProperty(
+  value: MessageObject,
+  key: string,
+  path: readonly ValidationPathSegment[],
+  issues: ProtocolMessageIssue[],
+): void {
+  if (typeof value[key] !== 'boolean')
+    issue(
+      issues,
+      value[key] === undefined ? 'PROPERTY_MISSING' : 'PROPERTY_INVALID',
+      [...path, key],
+      `${key} 必须是布尔值`,
+    );
+}
+
+function taskInputText(value: unknown): boolean {
+  if (!isString(value) || utf8ByteLength(value) > TASK_INPUT_MAX_BYTES) return false;
+  return !Array.from(value).some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code < 0x20 || (code >= 0x7f && code <= 0x9f);
+  });
+}
+
+function taskInputProperties(
+  value: MessageObject,
+  path: readonly ValidationPathSegment[],
+  issues: ProtocolMessageIssue[],
+): void {
+  const inputId = value.inputId;
+  if (!(isString(inputId) && TASK_INPUT_ID_PATTERN.test(inputId)))
+    issue(issues, 'TASK_INPUT_INVALID', [...path, 'inputId'], 'inputId 必须是 UUID');
+  if (!taskInputText(value.text))
+    issue(
+      issues,
+      isString(value.text) && utf8ByteLength(value.text) > TASK_INPUT_MAX_BYTES
+        ? 'TASK_INPUT_TOO_LARGE'
+        : 'TASK_INPUT_INVALID',
+      [...path, 'text'],
+      'text 必须是 4096 字节以内且不含控制字符的单行文本',
+    );
+  if (value.sensitive !== true && value.sensitive !== false)
+    issue(issues, 'TASK_INPUT_INVALID', [...path, 'sensitive'], 'sensitive 必须是布尔值');
+  if (value.appendNewline !== true)
+    issue(issues, 'TASK_INPUT_INVALID', [...path, 'appendNewline'], 'appendNewline 必须为 true');
+  timeProperty(value, 'sentAt', path, issues);
+}
+
 function configValue(value: unknown): boolean {
   return (
     value === null ||
@@ -415,6 +483,7 @@ function serverPayload(
           'timeoutSeconds',
           'config',
           'sensitiveConfigKeys',
+          'interactiveInputEnabled',
         ],
         path,
         issues,
@@ -430,12 +499,23 @@ function serverPayload(
       positiveInteger(value, 'timeoutSeconds', path, issues);
       configObject(value.config, [...path, 'config'], issues);
       stringArray(value, 'sensitiveConfigKeys', path, issues);
+      booleanProperty(value, 'interactiveInputEnabled', path, issues);
       return;
     case 'task.cancel':
       unknownProperties(value, ['taskId', 'leaseToken', 'requestedAt', 'reason'], path, issues);
       taskLease(value, path, issues);
       timeProperty(value, 'requestedAt', path, issues);
       optionalText(value, 'reason', path, issues);
+      return;
+    case 'task.input':
+      unknownProperties(
+        value,
+        ['taskId', 'leaseToken', 'inputId', 'text', 'sensitive', 'appendNewline', 'sentAt'],
+        path,
+        issues,
+      );
+      taskLease(value, path, issues);
+      taskInputProperties(value, path, issues);
       return;
     case 'agent.token.revoked':
       unknownProperties(value, ['agentId', 'revokedAt', 'reason'], path, issues);
@@ -472,7 +552,16 @@ function agentPayload(
     case 'agent.hello':
       unknownProperties(
         value,
-        ['agentId', 'agentVersion', 'hostname', 'os', 'arch', 'workspaceRoot', 'currentTask'],
+        [
+          'agentId',
+          'agentVersion',
+          'hostname',
+          'os',
+          'arch',
+          'workspaceRoot',
+          'currentTask',
+          'capabilities',
+        ],
         path,
         issues,
       );
@@ -484,6 +573,7 @@ function agentPayload(
       stringProperty(value, 'workspaceRoot', path, issues, true, true);
       if (value.currentTask !== undefined && value.currentTask !== null)
         currentTask(value.currentTask, [...path, 'currentTask'], issues);
+      optionalStringArray(value, 'capabilities', path, issues);
       return;
     case 'agent.heartbeat':
       unknownProperties(value, ['agentId', 'currentTaskId'], path, issues);
@@ -592,6 +682,20 @@ function agentPayload(
       taskLease(value, path, issues);
       timeProperty(value, 'canceledAt', path, issues);
       optionalText(value, 'reason', path, issues);
+      return;
+    case 'task.input.ack':
+      unknownProperties(
+        value,
+        ['taskId', 'leaseToken', 'inputId', 'accepted', 'acknowledgedAt', 'errorCode'],
+        path,
+        issues,
+      );
+      taskLease(value, path, issues);
+      if (!(isString(value.inputId) && TASK_INPUT_ID_PATTERN.test(value.inputId)))
+        issue(issues, 'TASK_INPUT_INVALID', [...path, 'inputId'], 'inputId 必须是 UUID');
+      booleanProperty(value, 'accepted', path, issues);
+      timeProperty(value, 'acknowledgedAt', path, issues);
+      optionalText(value, 'errorCode', path, issues);
       return;
   }
 }

@@ -49,6 +49,7 @@ const TASK_SELECT = {
   statusReason: true,
   branch: true,
   config: true,
+  interactiveInputEnabled: true,
   sourceCommit: true,
   exitCode: true,
   queuedAt: true,
@@ -114,6 +115,7 @@ const PROJECT_TASK_SELECT = {
     select: {
       id: true,
       enabled: true,
+      interactiveInputEnabled: true,
       formSchema: true,
       agent: { select: { id: true, enabled: true } },
     },
@@ -292,6 +294,7 @@ export class TasksService {
             statusReason: null,
             branch: project.branch,
             config: jsonInput(config.value),
+            interactiveInputEnabled: project.buildTemplate.interactiveInputEnabled,
             creationIdempotencyKey: creationIdempotencyKey ?? null,
             queuedAt: queued ? new Date() : null,
           },

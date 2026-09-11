@@ -37,6 +37,21 @@ Agent 使用 contracts 中的 `agent.heartbeat` 每 15 秒上报。Server 校验
 
 停用或轮换令牌会先发送 contracts 的 `agent.token.revoked`，再关闭旧连接。发送失败也会清理连接。轮换后旧令牌不能重新连接，新令牌可以连接；停用期间令牌不能连接，重新启用后保留原令牌。
 
+## T6.4 任务交互输入
+
+支持交互输入的 Agent 在 `agent.hello.capabilities` 声明 `task-input-v1`。Server 只向具备该能力的
+Agent 发送带 `interactiveInputEnabled=true` 的 assignment 和 `task.input`；旧 Agent 仍可执行普通
+任务，交互任务在不兼容时保持等待或以安全原因拒绝，不依据版本字符串猜测能力。
+
+`task.input` 只允许 RUNNING 任务接收最多 4096 UTF-8 字节的单行文本，Agent 自动补一次换行并 flush
+stdin，再回传不含正文的 `task.input.ack`。PREPARING、UPLOADING、CANCELING、AGENT_LOST、终态、
+进程退出、取消、超时和断线清理都会关闭输入通道；输入不缓存、不自动重发，也不会传递给后续任务。
+普通 assignment 继续使用 null stdin。
+
+敏感输入在写入前加入当前任务的 stdout/stderr 脱敏器，并且不进入 Server 日志、任务日志、审计或数据库。
+该能力只提供按行 stdin，不支持 GUI 弹窗、完整终端、PTY/ConPTY、控制序列或终端尺寸同步；生产环境
+必须使用 WSS/HTTPS。
+
 ## T2.2 接入提示
 
 Rust Agent 只需使用公共 contracts 规定的 envelope、protocolVersion、`agent.hello`、`agent.heartbeat`、`agent.registered` 和 `agent.token.revoked`。工作区根目录仅作为诊断元数据上报，不应通过 URL 或消息传递令牌。T2.2 再实现 WSS、重连、退避和 Agent 本地配置；T2.1 不引入 Redis、消息队列、mTLS 或任务执行逻辑。

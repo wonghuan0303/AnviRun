@@ -9,8 +9,9 @@ use build_agent_contracts::{
     ProtocolEnvelope, ProtocolVersion, RequiredNullable, TaskAcceptedPayload,
     TaskArtifactManifestAckPayload, TaskArtifactManifestPayload, TaskAssignmentPayload,
     TaskCancelPayload, TaskCanceledPayload, TaskClaimPayload, TaskCompletedPayload,
-    TaskFailedPayload, TaskLogAckPayload, TaskLogPayload, TaskRecoveryAction, TaskRecoveryPayload,
-    TaskResultAckPayload, TaskStatusPayload, MAX_AGENT_WS_MESSAGE_BYTES,
+    TaskFailedPayload, TaskInputAckPayload, TaskInputPayload, TaskLogAckPayload, TaskLogPayload,
+    TaskRecoveryAction, TaskRecoveryPayload, TaskResultAckPayload, TaskStatusPayload,
+    MAX_AGENT_WS_MESSAGE_BYTES,
 };
 use chrono::{DateTime, SecondsFormat, Utc};
 use futures_util::{SinkExt, StreamExt};
@@ -38,7 +39,7 @@ use crate::artifacts::{
     scan_artifacts, upload_manifest, validate_artifact_directory, ArtifactError, ArtifactManifest,
 };
 use crate::config::ConfigError;
-use crate::execution::{start_command, ExecutionEvent, ExecutionResult};
+use crate::execution::{start_command_with_input, ExecutionEvent, ExecutionInput, ExecutionResult};
 use crate::git::GitClient;
 use crate::log_buffer::{BufferedLogEntry, LogBuffer, LogBufferError};
 use crate::preparation::{prepare_task_with_cancel, PreparationFailure, PreparationResult};
@@ -160,6 +161,9 @@ struct ActiveTask {
     preparation: Option<PreparationHandle>,
     execution: Option<JoinHandle<()>>,
     execution_cancel: Option<oneshot::Sender<()>>,
+    execution_input: Option<mpsc::Sender<ExecutionInput>>,
+    interactive_input_enabled: bool,
+    recent_input_ids: std::collections::VecDeque<String>,
     artifact_dir: String,
     artifact_manifest: Option<ArtifactManifest>,
     artifact_upload: Option<JoinHandle<Result<(), ArtifactError>>>,
@@ -487,6 +491,7 @@ impl Agent {
             arch: self.build_info.arch.to_string(),
             workspace_root: self.config.workspace_root.to_string_lossy().into_owned(),
             current_task: active.map(active_current_task),
+            capabilities: Some(vec!["task-input-v1".to_string()]),
         };
         send_envelope(
             socket,
@@ -853,14 +858,19 @@ impl Agent {
             "/bin/sh -lc"
         };
         debug!(shell, "Starting build command after recovery");
-        let execution = start_command(&command, &source_path, command_timeout)
-            .map_err(|error| AgentError::Protocol(error.to_string()))?;
+        let interactive = active
+            .as_ref()
+            .is_some_and(|current| current.interactive_input_enabled);
+        let execution =
+            start_command_with_input(&command, &source_path, command_timeout, interactive)
+                .map_err(|error| AgentError::Protocol(error.to_string()))?;
         let current = active.as_mut().ok_or_else(|| {
             AgentError::Protocol("active task disappeared after command start".to_string())
         })?;
         *execution_receiver = Some(execution.receiver);
         current.execution = Some(execution.task);
         current.execution_cancel = execution.cancel;
+        current.execution_input = execution.input;
         let running = TaskStatusPayload {
             task_id: current.task_id.clone(),
             lease_token: current.lease_token.clone(),
@@ -969,6 +979,9 @@ impl Agent {
                             )
                             .await?;
                         }
+                        Some(DecodedMessage::TaskInput(envelope)) => {
+                            self.handle_task_input(socket, active, envelope.payload).await?;
+                        }
                         Some(DecodedMessage::AgentRegistered(_)) => {
                             debug!("received duplicate agent.registered message");
                         }
@@ -1071,6 +1084,9 @@ impl Agent {
             preparation: None,
             execution: None,
             execution_cancel: None,
+            execution_input: None,
+            interactive_input_enabled: assignment.interactive_input_enabled,
+            recent_input_ids: std::collections::VecDeque::new(),
             artifact_dir: assignment.artifact_dir.clone(),
             artifact_manifest: None,
             artifact_upload: None,
@@ -1175,6 +1191,7 @@ impl Agent {
         }
 
         if let Some(current) = active.as_mut() {
+            current.execution_input.take();
             if let Some(cancel_sender) = current.execution_cancel.take() {
                 let _ = cancel_sender.send(());
             }
@@ -1194,6 +1211,7 @@ impl Agent {
             .await;
             if stop.is_err() {
                 if let Some(current) = active.as_mut() {
+                    current.execution_input.take();
                     if let Some(handle) = current.execution.take() {
                         handle.abort();
                         let _ = handle.await;
@@ -1239,6 +1257,81 @@ impl Agent {
             .await?;
         }
         Ok(())
+    }
+
+    async fn handle_task_input(
+        &self,
+        socket: &mut AgentSocket,
+        active: &mut Option<ActiveTask>,
+        input: TaskInputPayload,
+    ) -> Result<(), AgentError> {
+        let Some(current) = active.as_mut() else {
+            return Ok(());
+        };
+        if current.task_id != input.task_id
+            || !constant_time_equal(current.lease_token.as_bytes(), input.lease_token.as_bytes())
+        {
+            return Ok(());
+        }
+
+        let mut accepted = false;
+        let mut error_code = None;
+        if !current.interactive_input_enabled {
+            error_code = Some("TASK_INPUT_NOT_ENABLED".to_string());
+        } else if current.execution_input.is_none() {
+            error_code = Some("TASK_INPUT_STDIN_CLOSED".to_string());
+        } else if current.recent_input_ids.contains(&input.input_id) {
+            accepted = true;
+        } else {
+            if input.sensitive {
+                current.stdout_log_redactor.add_sensitive_value(&input.text);
+                current.stderr_log_redactor.add_sensitive_value(&input.text);
+            }
+            let mut bytes = input.text.into_bytes();
+            bytes.push(b'\n');
+            let (result_sender, result_receiver) = oneshot::channel();
+            let sender = current.execution_input.as_ref().expect("checked above");
+            if sender
+                .send(ExecutionInput {
+                    bytes,
+                    result: result_sender,
+                })
+                .await
+                .is_err()
+            {
+                error_code = Some("TASK_INPUT_STDIN_CLOSED".to_string());
+            } else {
+                match time::timeout(Duration::from_secs(5), result_receiver).await {
+                    Ok(Ok(Ok(()))) => {
+                        accepted = true;
+                        current.recent_input_ids.push_back(input.input_id.clone());
+                        while current.recent_input_ids.len() > 32 {
+                            current.recent_input_ids.pop_front();
+                        }
+                    }
+                    Ok(Ok(Err(()))) | Ok(Err(_)) => {
+                        error_code = Some("TASK_INPUT_STDIN_CLOSED".to_string());
+                    }
+                    Err(_) => {
+                        error_code = Some("TASK_INPUT_DELIVERY_TIMEOUT".to_string());
+                    }
+                }
+            }
+        }
+        let ack = TaskInputAckPayload {
+            task_id: current.task_id.clone(),
+            lease_token: current.lease_token.clone(),
+            input_id: input.input_id,
+            accepted,
+            acknowledged_at: utc_now(),
+            error_code,
+        };
+        send_envelope(
+            socket,
+            MessageType::TaskInputAck,
+            serde_json::to_value(ack)?,
+        )
+        .await
     }
 
     async fn handle_preparation_event(
@@ -2106,6 +2199,15 @@ impl SensitiveLogRedactor {
         redact_text(&combined[..process_end], &self.values)
     }
 
+    fn add_sensitive_value(&mut self, value: &str) {
+        if value.is_empty() || self.values.iter().any(|existing| existing == value) {
+            return;
+        }
+        self.values.push(value.to_string());
+        self.values
+            .sort_by_key(|item| std::cmp::Reverse(item.len()));
+    }
+
     fn finish(&mut self) -> String {
         redact_text(&std::mem::take(&mut self.pending), &self.values)
     }
@@ -2281,6 +2383,7 @@ async fn cancel_active_task(
         if let Some(cancel_sender) = task.execution_cancel.take() {
             let _ = cancel_sender.send(());
         }
+        task.execution_input.take();
         if let Some(mut receiver) = execution_receiver.take() {
             let finished = time::timeout(EXECUTION_STOP_TIMEOUT, async {
                 while let Some(event) = receiver.recv().await {
@@ -2543,6 +2646,7 @@ mod tests {
             .expect("object config")
             .clone(),
             sensitive_config_keys: vec!["password".to_string()],
+            interactive_input_enabled: false,
         };
 
         let materialized = assignment.config.clone();
@@ -2573,6 +2677,25 @@ mod tests {
         split_log.push_str(&redactor.redact("value suffix"));
         split_log.push_str(&redactor.finish());
         assert_eq!(split_log, "prefix [REDACTED] suffix");
+    }
+
+    #[test]
+    fn sensitive_input_is_redacted_before_any_split_log_can_escape() {
+        let mut stdout = SensitiveLogRedactor::default();
+        let mut stderr = SensitiveLogRedactor::default();
+        stdout.add_sensitive_value("prompt-secret");
+        stderr.add_sensitive_value("prompt-secret");
+
+        let mut stdout_log = stdout.redact("echo prompt-");
+        stdout_log.push_str(&stdout.redact("secret"));
+        stdout_log.push_str(&stdout.finish());
+        let mut stderr_log = stderr.redact("prompt-secret");
+        stderr_log.push_str(&stderr.finish());
+
+        assert!(!stdout_log.contains("prompt-secret"));
+        assert!(!stderr_log.contains("prompt-secret"));
+        assert!(stdout_log.contains("[REDACTED]"));
+        assert!(stderr_log.contains("[REDACTED]"));
     }
 
     #[test]
@@ -2666,6 +2789,9 @@ mod tests {
             preparation: None,
             execution: None,
             execution_cancel: None,
+            execution_input: None,
+            interactive_input_enabled: false,
+            recent_input_ids: std::collections::VecDeque::new(),
             artifact_dir: "dist".to_string(),
             artifact_manifest: Some(manifest),
             artifact_upload: None,
@@ -2942,7 +3068,8 @@ mod tests {
                             "artifactDir": "dist",
                             "timeoutSeconds": 10,
                             "config": { "safe": "safe-value", "secret": "sensitive-value" },
-                            "sensitiveConfigKeys": ["secret"]
+                            "sensitiveConfigKeys": ["secret"],
+                            "interactiveInputEnabled": false
                         }
                     })
                     .to_string()
@@ -3176,7 +3303,8 @@ mod tests {
                             "artifactDir": "dist",
                             "timeoutSeconds": 10,
                             "config": { "secret": "sensitive-value" },
-                            "sensitiveConfigKeys": ["secret"]
+                            "sensitiveConfigKeys": ["secret"],
+                            "interactiveInputEnabled": false
                         }
                     })
                     .to_string()

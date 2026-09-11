@@ -9,7 +9,8 @@ use command_group::{AsyncCommandGroup, AsyncGroupChild};
 #[cfg(unix)]
 use command_group::{Signal, UnixChildExt};
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::process::ChildStdin;
 use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -49,17 +50,38 @@ pub struct CommandExecution {
     pub receiver: mpsc::Receiver<ExecutionEvent>,
     pub task: JoinHandle<()>,
     pub cancel: Option<oneshot::Sender<()>>,
+    pub input: Option<mpsc::Sender<ExecutionInput>>,
 }
 
+#[derive(Debug)]
+pub struct ExecutionInput {
+    pub bytes: Vec<u8>,
+    pub result: oneshot::Sender<Result<(), ()>>,
+}
+
+#[allow(dead_code)]
 pub fn start_command(
     command: &str,
     source: &Path,
     timeout: Duration,
 ) -> Result<CommandExecution, ExecutionError> {
+    start_command_with_input(command, source, timeout, false)
+}
+
+pub fn start_command_with_input(
+    command: &str,
+    source: &Path,
+    timeout: Duration,
+    interactive: bool,
+) -> Result<CommandExecution, ExecutionError> {
     let mut process = shell_command(command);
     process
         .current_dir(source)
-        .stdin(Stdio::null())
+        .stdin(if interactive {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut group = process.group();
@@ -76,6 +98,17 @@ pub fn start_command(
         .stdout
         .take()
         .ok_or(ExecutionError::OutputFailed)?;
+    let stdin = if interactive {
+        Some(
+            child
+                .inner()
+                .stdin
+                .take()
+                .ok_or(ExecutionError::OutputFailed)?,
+        )
+    } else {
+        None
+    };
     let stderr = child
         .inner()
         .stderr
@@ -83,10 +116,18 @@ pub fn start_command(
         .ok_or(ExecutionError::OutputFailed)?;
     let (sender, receiver) = mpsc::channel(OUTPUT_CHANNEL_CAPACITY);
     let (cancel, cancel_requested) = oneshot::channel();
+    let (input, input_receiver) = if interactive {
+        let (sender, receiver) = mpsc::channel(8);
+        (Some(sender), Some(receiver))
+    } else {
+        (None, None)
+    };
     let task = tokio::spawn(run_child(
         child,
         stdout,
         stderr,
+        stdin,
+        input_receiver,
         sender,
         timeout.max(Duration::from_millis(1)),
         cancel_requested,
@@ -95,6 +136,7 @@ pub fn start_command(
         receiver,
         task,
         cancel: Some(cancel),
+        input,
     })
 }
 
@@ -117,10 +159,13 @@ fn shell_command(_command: &str) -> Command {
     Command::new("")
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_child<R1, R2>(
     mut child: AsyncGroupChild,
     stdout: R1,
     stderr: R2,
+    mut stdin: Option<ChildStdin>,
+    mut input_receiver: Option<mpsc::Receiver<ExecutionInput>>,
     sender: mpsc::Sender<ExecutionEvent>,
     timeout: Duration,
     cancel_requested: oneshot::Receiver<()>,
@@ -140,16 +185,29 @@ async fn run_child<R1, R2>(
         TimedOut,
     }
 
-    let outcome = tokio::select! {
-        cancel = &mut cancel_requested => {
-            if cancel.is_ok() {
-                ChildOutcome::Canceled
-            } else {
-                ChildOutcome::Finished(child.wait().await)
+    let outcome = loop {
+        let next = tokio::select! {
+            cancel = &mut cancel_requested => {
+                Some(if cancel.is_ok() {
+                    ChildOutcome::Canceled
+                } else {
+                    ChildOutcome::Finished(child.wait().await)
+                })
             }
+            result = child.wait() => Some(ChildOutcome::Finished(result)),
+            _ = &mut timeout_sleep => Some(ChildOutcome::TimedOut),
+            input_result = write_next_input(&mut stdin, input_receiver.as_mut()),
+                if stdin.is_some() && input_receiver.is_some() => {
+                    if input_result.is_none() || input_result == Some(Err(())) {
+                        stdin = None;
+                        input_receiver = None;
+                    }
+                    None
+                }
+        };
+        if let Some(outcome) = next {
+            break outcome;
         }
-        result = child.wait() => ChildOutcome::Finished(result),
-        _ = &mut timeout_sleep => ChildOutcome::TimedOut,
     };
     let (exit_code, timed_out, output_failed) = match outcome {
         ChildOutcome::Finished(Ok(status)) => {
@@ -184,6 +242,21 @@ async fn run_child<R1, R2>(
             output_failed,
         }))
         .await;
+}
+
+async fn write_next_input(
+    stdin: &mut Option<ChildStdin>,
+    receiver: Option<&mut mpsc::Receiver<ExecutionInput>>,
+) -> Option<Result<(), ()>> {
+    let stdin = stdin.as_mut()?;
+    let receiver = receiver?;
+    let input = receiver.recv().await?;
+    let result = match stdin.write_all(&input.bytes).await {
+        Ok(()) => stdin.flush().await.map_err(|_| ()),
+        Err(_) => Err(()),
+    };
+    let _ = input.result.send(result);
+    Some(result)
 }
 
 async fn terminate_process_tree(child: &mut AsyncGroupChild) {
@@ -292,6 +365,39 @@ mod tests {
         assert!(output
             .iter()
             .any(|(_, chunk)| chunk.contains("\"answer\":42")));
+    }
+
+    #[tokio::test]
+    async fn interactive_command_accepts_one_line_stdin_and_flushes_it() {
+        let directory = tempfile::tempdir().expect("source");
+        let command = if cfg!(windows) {
+            fs::write(
+                directory.path().join("interactive.cmd"),
+                "@echo off\nset /p line=\necho received:%line%\n",
+            )
+            .expect("interactive command script");
+            "call interactive.cmd"
+        } else {
+            "IFS= read -r line; printf 'received:%s\\n' \"$line\""
+        };
+        let mut execution =
+            start_command_with_input(command, directory.path(), Duration::from_secs(5), true)
+                .expect("interactive command should start");
+        let input = execution.input.take().expect("stdin channel");
+        let (result_sender, result_receiver) = oneshot::channel();
+        input
+            .send(ExecutionInput {
+                bytes: b"hello\n".to_vec(),
+                result: result_sender,
+            })
+            .await
+            .expect("stdin request");
+        assert!(result_receiver.await.expect("stdin result").is_ok());
+        let (output, result) = collect_until_finished(execution).await;
+        assert_eq!(result.exit_code, Some(0));
+        assert!(output
+            .iter()
+            .any(|(_, chunk)| chunk.contains("received:hello")));
     }
 
     #[tokio::test]

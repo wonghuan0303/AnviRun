@@ -89,6 +89,8 @@ pub enum MessageType {
     TaskAssignment,
     #[serde(rename = "task.cancel")]
     TaskCancel,
+    #[serde(rename = "task.input")]
+    TaskInput,
     #[serde(rename = "agent.token.revoked")]
     AgentTokenRevoked,
     #[serde(rename = "agent.hello")]
@@ -111,6 +113,8 @@ pub enum MessageType {
     TaskFailed,
     #[serde(rename = "task.canceled")]
     TaskCanceled,
+    #[serde(rename = "task.input.ack")]
+    TaskInputAck,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -187,7 +191,7 @@ dto!(TaskAssignmentPayload {
     task_id: String, lease_token: String, lease_expires_at: String, agent_id: String,
     project_id: String, build_template_id: String, git: TaskGitSource, command: String,
     artifact_dir: String, timeout_seconds: u64, config: serde_json::Map<String, Value>,
-    sensitive_config_keys: Vec<String>
+    sensitive_config_keys: Vec<String>, interactive_input_enabled: bool
 });
 dto!(TaskCancelPayload {
     task_id: String,
@@ -195,6 +199,15 @@ dto!(TaskCancelPayload {
     requested_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>
+});
+dto!(TaskInputPayload {
+    task_id: String,
+    lease_token: String,
+    input_id: String,
+    text: String,
+    sensitive: bool,
+    append_newline: bool,
+    sent_at: String
 });
 dto!(AgentTokenRevokedPayload {
     agent_id: String,
@@ -217,7 +230,9 @@ dto!(AgentHelloPayload {
     arch: String,
     workspace_root: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    current_task: Option<AgentCurrentTask>
+    current_task: Option<AgentCurrentTask>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capabilities: Option<Vec<String>>
 });
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(transparent)]
@@ -303,6 +318,15 @@ dto!(TaskCanceledPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>
 });
+dto!(TaskInputAckPayload {
+    task_id: String,
+    lease_token: String,
+    input_id: String,
+    accepted: bool,
+    acknowledged_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_code: Option<String>
+});
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProtocolEnvelopeTyped<T> {
@@ -323,6 +347,7 @@ pub enum DecodedMessage {
     TaskResultAck(ProtocolEnvelopeTyped<TaskResultAckPayload>),
     TaskAssignment(ProtocolEnvelopeTyped<TaskAssignmentPayload>),
     TaskCancel(ProtocolEnvelopeTyped<TaskCancelPayload>),
+    TaskInput(ProtocolEnvelopeTyped<TaskInputPayload>),
     AgentTokenRevoked(ProtocolEnvelopeTyped<AgentTokenRevokedPayload>),
     AgentHello(ProtocolEnvelopeTyped<AgentHelloPayload>),
     AgentHeartbeat(ProtocolEnvelopeTyped<AgentHeartbeatPayload>),
@@ -334,6 +359,7 @@ pub enum DecodedMessage {
     TaskCompleted(ProtocolEnvelopeTyped<TaskCompletedPayload>),
     TaskFailed(ProtocolEnvelopeTyped<TaskFailedPayload>),
     TaskCanceled(ProtocolEnvelopeTyped<TaskCanceledPayload>),
+    TaskInputAck(ProtocolEnvelopeTyped<TaskInputAckPayload>),
 }
 
 fn payload<T: DeserializeOwned>(raw: &ProtocolEnvelope) -> Result<T, String> {
@@ -377,6 +403,35 @@ fn valid_lease(value: &str) -> Result<(), String> {
 fn valid_task(task_id: &str, lease_token: &str) -> Result<(), String> {
     valid_id(task_id, "taskId")?;
     valid_lease(lease_token)
+}
+
+fn valid_uuid(value: &str, field: &str) -> Result<(), String> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36
+        || ![8, 13, 18, 23].iter().all(|index| bytes[*index] == b'-')
+        || !bytes
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| ![8, 13, 18, 23].contains(index))
+            .all(|(_, byte)| byte.is_ascii_hexdigit())
+        || !matches!(bytes[14], b'1'..=b'5')
+        || !matches!(bytes[19], b'8'..=b'9' | b'a'..=b'b' | b'A'..=b'B')
+    {
+        return Err(format!("{field} has invalid UUID"));
+    }
+    Ok(())
+}
+
+fn valid_task_input_text(value: &str) -> Result<(), String> {
+    if value.len() > 4_096
+        || value.chars().any(|character| {
+            let code = character as u32;
+            code < 0x20 || (0x7f..=0x9f).contains(&code)
+        })
+    {
+        return Err("task input text is invalid".to_string());
+    }
+    Ok(())
 }
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -563,6 +618,17 @@ pub fn parse_message(value: Value) -> Result<DecodedMessage, String> {
             valid_timestamp(&value.requested_at, "requestedAt")?;
             Ok(DecodedMessage::TaskCancel(typed(raw, value)))
         }
+        MessageType::TaskInput => {
+            let value: TaskInputPayload = payload(&raw)?;
+            valid_task(&value.task_id, &value.lease_token)?;
+            valid_uuid(&value.input_id, "inputId")?;
+            valid_task_input_text(&value.text)?;
+            if !value.append_newline {
+                return Err("appendNewline must be true".to_string());
+            }
+            valid_timestamp(&value.sent_at, "sentAt")?;
+            Ok(DecodedMessage::TaskInput(typed(raw, value)))
+        }
         MessageType::AgentTokenRevoked => {
             let value: AgentTokenRevokedPayload = payload(&raw)?;
             valid_timestamp(&value.revoked_at, "revokedAt")?;
@@ -638,6 +704,13 @@ pub fn parse_message(value: Value) -> Result<DecodedMessage, String> {
             valid_task(&value.task_id, &value.lease_token)?;
             valid_timestamp(&value.canceled_at, "canceledAt")?;
             Ok(DecodedMessage::TaskCanceled(typed(raw, value)))
+        }
+        MessageType::TaskInputAck => {
+            let value: TaskInputAckPayload = payload(&raw)?;
+            valid_task(&value.task_id, &value.lease_token)?;
+            valid_uuid(&value.input_id, "inputId")?;
+            valid_timestamp(&value.acknowledged_at, "acknowledgedAt")?;
+            Ok(DecodedMessage::TaskInputAck(typed(raw, value)))
         }
     }
 }

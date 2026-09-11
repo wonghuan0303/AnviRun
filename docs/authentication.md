@@ -52,3 +52,14 @@ salt；允许 Unicode，按字符限制 8-128，拒绝空白密码。登录限�
 请求体安全边界：JSON 和 URL encoded API 请求体上限为 1 MiB，超限以结构化 `VALIDATION_FAILED` 拒绝；WebSocket 消息大小限制和产物流式上传边界见 `docs/security.md`。系统面向可信内网部署，配置静态加密和更完整的 HTTPS/部署加固留到后续阶段。
 
 管理员用户管理页面位于 `/admin/users`，入口只对 ADMIN 显示。用户列表仅返回 `id`、`username`、`role`、`status`、`createdAt` 和 `updatedAt`，支持分页、用户名不区分大小写包含搜索、角色和状态筛选；不提供自助注册、用户删除或角色修改。禁用自己、禁用最后一个 ACTIVE ADMIN、非法或不存在用户 ID 都由服务端安全拒绝；启用是幂等的且不会恢复旧会话，禁用和重置密码会递增 `tokenVersion` 并撤销全部 RefreshToken。
+
+## 任务交互输入的权限边界
+
+任务详情的输入控制复用任务所有权：USER 只能控制自己项目的任务，ADMIN 只能控制未删除项目中可访问的任务；
+未认证 WebSocket、跨用户任务和已删除项目不能获得控制权。输入正文不进入 Access Token、Cookie、URL、
+数据库、普通日志或审计；审计仅保存安全的任务/请求元数据。敏感输入只在当前浏览器内存和 Agent 当前
+任务内存中短暂存在，Agent 会在写入 stdin 前同时更新 stdout/stderr 脱敏器。
+
+该能力只支持 HTTPS/WSS 下的单行标准输入。控制权属于单个 `/ws/client` socket，断开、手动释放、切换
+任务或 5 分钟无输入后失效；Server 重启或多 Server 实例不会共享控制权。输入不会进入断线重发队列，
+任务等待输入时也不会暂停原有超时。

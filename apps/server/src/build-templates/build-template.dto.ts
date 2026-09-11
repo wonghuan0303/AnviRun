@@ -9,6 +9,7 @@ export interface CreateBuildTemplateInput {
   artifactDir: string;
   formSchema: FormSchema;
   timeoutSeconds: number;
+  interactiveInputEnabled: boolean;
 }
 
 export interface UpdateBuildTemplateInput {
@@ -20,6 +21,7 @@ export interface UpdateBuildTemplateInput {
   artifactDir?: string;
   formSchema?: FormSchema;
   timeoutSeconds?: number;
+  interactiveInputEnabled?: boolean;
 }
 
 export interface BuildTemplateListQuery {
@@ -177,6 +179,12 @@ function timeoutSeconds(value: unknown, fallback?: number): number {
   return value;
 }
 
+function interactiveInputEnabled(value: unknown, fallback = false): boolean {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'boolean') throw new Error('interactiveInputEnabled must be a boolean');
+  return value;
+}
+
 function queryValue(query: Record<string, unknown>, key: string): string | undefined {
   const value = query[key];
   if (value === undefined) return undefined;
@@ -217,6 +225,7 @@ export function parseCreateBuildTemplateDto(input: unknown): CreateBuildTemplate
     'artifactDir',
     'formSchema',
     'timeoutSeconds',
+    'interactiveInputEnabled',
   ]);
   if (!hasOwn(body, 'formSchema')) throw new Error('formSchema is required');
 
@@ -229,6 +238,7 @@ export function parseCreateBuildTemplateDto(input: unknown): CreateBuildTemplate
     artifactDir: artifactDirectory(body.artifactDir),
     formSchema: formSchema(body.formSchema),
     timeoutSeconds: timeoutSeconds(body.timeoutSeconds, 3_600),
+    interactiveInputEnabled: interactiveInputEnabled(body.interactiveInputEnabled),
   };
 }
 
@@ -243,6 +253,7 @@ export function parseUpdateBuildTemplateDto(input: unknown): UpdateBuildTemplate
     'artifactDir',
     'formSchema',
     'timeoutSeconds',
+    'interactiveInputEnabled',
   ]);
   if (Object.keys(body).length === 0) throw new Error('at least one property is required');
 
@@ -256,6 +267,9 @@ export function parseUpdateBuildTemplateDto(input: unknown): UpdateBuildTemplate
     ...(hasOwn(body, 'formSchema') ? { formSchema: formSchema(body.formSchema) } : {}),
     ...(hasOwn(body, 'timeoutSeconds')
       ? { timeoutSeconds: timeoutSeconds(body.timeoutSeconds) }
+      : {}),
+    ...(hasOwn(body, 'interactiveInputEnabled')
+      ? { interactiveInputEnabled: interactiveInputEnabled(body.interactiveInputEnabled) }
       : {}),
   };
 }

@@ -2,10 +2,17 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useRoute, useRouter } from 'vue-router';
+import { utf8ByteLength } from '@anvilrun/contracts';
 
 import * as artifactApi from '@/api/artifacts';
 import { ApiError } from '@/api/client';
-import { clientLogWebSocketUrl, parseClientLogEvent } from '@/api/task-log';
+import {
+  clientLogWebSocketUrl,
+  parseClientLogEvent,
+  parseTaskInputResult,
+  parseTaskInputState,
+  type TaskInputStateEvent,
+} from '@/api/task-log';
 import * as taskApi from '@/api/tasks';
 import type { ArtifactSummary, TaskDetail, TaskLogEntry } from '@/api/types';
 import CopyableText from '@/components/CopyableText.vue';
@@ -42,6 +49,20 @@ const cancelBusy = ref(false);
 const rebuildBusy = ref(false);
 const artifactBusy = ref<string | null>(null);
 const autoScroll = ref(true);
+const inputState = ref<TaskInputStateEvent | null>(null);
+const inputText = ref('');
+const inputSensitive = ref(false);
+const inputSending = ref(false);
+const inputByteLength = computed(() => utf8ByteLength(inputText.value));
+const inputValidationMessage = computed(() => {
+  const hasControlCharacter = Array.from(inputText.value).some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code < 0x20 || (code >= 0x7f && code <= 0x9f);
+  });
+  if (hasControlCharacter) return '输入只能包含单行文本，不能包含控制字符';
+  if (inputByteLength.value > 4_096) return '输入内容不能超过 4096 字节';
+  return '';
+});
 
 let pollTimer: number | undefined;
 let reconnectTimer: number | undefined;
@@ -64,6 +85,20 @@ const canRebuild = computed(
   () =>
     task.value !== null &&
     ['SUCCEEDED', 'FAILED', 'CANCELED', 'AGENT_LOST'].includes(task.value.status),
+);
+const inputCanEdit = computed(
+  () =>
+    task.value?.status === 'RUNNING' &&
+    inputState.value?.writable === true &&
+    inputState.value?.busy !== true &&
+    !inputSending.value,
+);
+const inputCanSend = computed(() => inputCanEdit.value && inputValidationMessage.value === '');
+const inputCanAcquire = computed(
+  () =>
+    task.value?.status === 'RUNNING' &&
+    inputState.value?.enabled === true &&
+    (!inputState.value.reason || inputState.value.reason === 'TASK_INPUT_BUSY'),
 );
 
 function stopPolling(): void {
@@ -106,6 +141,13 @@ async function loadTask(
       result.task.status === 'SUCCEEDED' &&
       !succeededArtifactsRefreshAttempted;
     task.value = result.task;
+    if (isTerminalTask(result.task)) {
+      if (inputState.value?.controlledByCurrentSocket) releaseInput();
+      inputState.value = null;
+      inputText.value = '';
+      inputSensitive.value = false;
+      inputSending.value = false;
+    }
     if (transitionedToSucceeded) {
       succeededArtifactsRefreshAttempted = true;
       await loadArtifacts(generation, expectedTaskId);
@@ -213,6 +255,69 @@ function sendSubscription(current: WebSocket, generation: number, expectedTaskId
   current.send(JSON.stringify({ type: 'auth', accessToken: auth.accessToken }));
 }
 
+function inputId(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID();
+  const bytes = Array.from({ length: 16 }, () => Math.floor(Math.random() * 256));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.map((value) => value.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function inputReasonText(reason?: string): string {
+  const messages: Record<string, string> = {
+    TASK_INPUT_NOT_ENABLED: '该任务未启用交互输入',
+    TASK_INPUT_NOT_RUNNING: '任务当前不在运行状态',
+    TASK_INPUT_AGENT_UNSUPPORTED: '当前 Agent 不支持交互输入',
+    TASK_INPUT_AGENT_OFFLINE: '当前 Agent 离线',
+    TASK_INPUT_BUSY: '输入控制台正被其他窗口占用',
+    TASK_INPUT_NOT_CONTROLLER: '请先获取输入控制权',
+    TASK_INPUT_RATE_LIMITED: '发送过于频繁，请稍后再试',
+    TASK_INPUT_STDIN_CLOSED: '任务输入通道已关闭',
+    TASK_INPUT_DELIVERY_TIMEOUT: '输入发送超时',
+    TASK_INPUT_DELIVERY_FAILED: '输入发送失败',
+    TASK_INPUT_INVALID: '输入格式无效',
+    TASK_INPUT_TOO_LARGE: '输入内容不能超过 4096 字节',
+  };
+  return messages[reason ?? ''] ?? '当前无法发送输入';
+}
+
+function acquireInput(): void {
+  if (!socket || socket.readyState !== WebSocket.OPEN || !task.value) return;
+  socket.send(
+    JSON.stringify({
+      type: 'task.input.acquire',
+      taskId: task.value.id,
+      requestId: inputId(),
+    }),
+  );
+}
+
+function releaseInput(): void {
+  if (!socket || socket.readyState !== WebSocket.OPEN || !task.value) return;
+  socket.send(
+    JSON.stringify({ type: 'task.input.release', taskId: task.value.id, requestId: inputId() }),
+  );
+}
+
+function sendInput(): void {
+  if (!socket || socket.readyState !== WebSocket.OPEN || !task.value || !inputCanSend.value) return;
+  const text = inputText.value;
+  const sensitive = inputSensitive.value;
+  inputText.value = '';
+  if (sensitive) inputSensitive.value = false;
+  inputSending.value = true;
+  socket.send(
+    JSON.stringify({
+      type: 'task.input.send',
+      taskId: task.value.id,
+      inputId: inputId(),
+      text,
+      sensitive,
+    }),
+  );
+}
+
 function scheduleReconnect(generation = contextGeneration, expectedTaskId = taskId.value): void {
   if (
     !isCurrentContext(generation, expectedTaskId) ||
@@ -275,6 +380,18 @@ function connectLogs(generation = contextGeneration, expectedTaskId = taskId.val
       );
       return;
     }
+    const stateEvent = parseTaskInputState(value);
+    if (stateEvent && stateEvent.taskId === expectedTaskId) {
+      if (task.value?.status === 'RUNNING') inputState.value = stateEvent;
+      return;
+    }
+    const resultEvent = parseTaskInputResult(value);
+    if (resultEvent && resultEvent.taskId === expectedTaskId) {
+      inputSending.value = false;
+      if (resultEvent.status === 'DELIVERED') ElMessage.success('输入已发送');
+      else ElMessage.error(resultEvent.message ?? inputReasonText(resultEvent.code));
+      return;
+    }
     logWork = logWork
       .then(() => processLogMessage(value, generation, expectedTaskId))
       .catch(() => {
@@ -287,7 +404,11 @@ function connectLogs(generation = contextGeneration, expectedTaskId = taskId.val
       logConnection.value = '连接中断';
   };
   current.onclose = (event) => {
-    if (socket === current) socket = null;
+    if (socket === current) {
+      socket = null;
+      inputState.value = null;
+      inputSending.value = false;
+    }
     if (!isCurrentContext(generation, expectedTaskId)) return;
     logConnection.value = '连接中断';
     if (event.code === 1008 && !refreshAttempted) {
@@ -313,6 +434,13 @@ function closeLogs(): void {
   reconnectTimer = undefined;
   if (socket?.readyState === WebSocket.OPEN) {
     if (socketTaskId) {
+      socket.send(
+        JSON.stringify({
+          type: 'task.input.release',
+          taskId: socketTaskId,
+          requestId: inputId(),
+        }),
+      );
       socket.send(JSON.stringify({ type: 'task.log.unsubscribe', taskId: socketTaskId }));
     }
   }
@@ -462,6 +590,10 @@ function resetTaskContext(): number {
   cancelBusy.value = false;
   rebuildBusy.value = false;
   artifactBusy.value = null;
+  inputState.value = null;
+  inputText.value = '';
+  inputSensitive.value = false;
+  inputSending.value = false;
   reconnectAttempt = 0;
   refreshAttempted = false;
   succeededArtifactsRefreshAttempted = false;
@@ -745,6 +877,71 @@ onBeforeUnmount(() => {
               description="暂无日志输出"
             />
           </div>
+
+          <div v-if="task.interactiveInputEnabled" class="task-input-panel">
+            <div class="task-input-panel__header">
+              <div>
+                <strong>交互输入</strong>
+                <span class="muted-text">向构建命令的 stdin 发送一行文本</span>
+              </div>
+              <el-tag v-if="inputState?.controlledByCurrentSocket" type="success" size="small">
+                当前窗口已接管
+              </el-tag>
+            </div>
+            <div
+              v-if="inputState?.reason && !inputState.writable"
+              class="muted-text task-input-hint"
+            >
+              {{ inputReasonText(inputState.reason) }}
+            </div>
+            <div v-else-if="!inputState" class="muted-text task-input-hint">等待任务运行</div>
+            <div class="task-input-panel__controls">
+              <el-input
+                v-model="inputText"
+                :type="inputSensitive ? 'password' : 'text'"
+                :disabled="!inputCanEdit"
+                maxlength="4096"
+                placeholder="输入一行文本，按 Enter 发送"
+                @keyup.enter.exact.prevent="sendInput"
+              />
+              <div class="task-input-panel__meta">
+                <span :class="{ 'error-text': inputValidationMessage }">
+                  {{ inputByteLength }} / 4096 字节
+                </span>
+                <span v-if="inputValidationMessage" class="error-text">
+                  {{ inputValidationMessage }}
+                </span>
+              </div>
+              <el-checkbox v-model="inputSensitive" :disabled="!inputCanEdit">
+                敏感输入
+              </el-checkbox>
+              <el-button
+                v-if="!inputState?.controlledByCurrentSocket"
+                type="primary"
+                :disabled="!inputCanAcquire"
+                @click="acquireInput"
+              >
+                获取控制权
+              </el-button>
+              <el-button
+                v-else
+                type="primary"
+                :loading="inputState?.busy || inputSending"
+                :disabled="!inputCanSend"
+                @click="sendInput"
+              >
+                发送
+              </el-button>
+              <el-button
+                v-if="inputState?.controlledByCurrentSocket"
+                link
+                :disabled="inputState?.busy"
+                @click="releaseInput"
+              >
+                释放
+              </el-button>
+            </div>
+          </div>
         </el-card>
 
         <!-- 产物列表 -->
@@ -900,6 +1097,59 @@ onBeforeUnmount(() => {
 
 .timeline-container {
   padding: 8px 12px;
+}
+
+.task-input-panel {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--ar-border-color);
+  border-radius: var(--ar-radius-md);
+  background: var(--ar-bg-soft);
+}
+
+.task-input-panel__header,
+.task-input-panel__controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.task-input-panel__header {
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.task-input-panel__header .muted-text {
+  margin-left: 8px;
+  font-size: 12px;
+}
+
+.task-input-panel__controls .el-input {
+  min-width: 0;
+  flex: 1;
+}
+
+.task-input-panel__meta {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.task-input-hint {
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .task-input-panel__controls {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .task-input-panel__controls .el-input {
+    flex-basis: 100%;
+  }
 }
 
 .timeline-source {

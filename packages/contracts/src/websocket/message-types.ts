@@ -29,6 +29,8 @@ export const SERVER_TO_AGENT_MESSAGE_TYPES = [
   'task.assignment',
   /** 请求取消任务，幂等（产品设计 5.5）。 */
   'task.cancel',
+  /** 将一行用户输入写入交互任务的 stdin。 */
+  'task.input',
   /** 令牌被轮换或 Agent 被停用，连接即将关闭。 */
   'agent.token.revoked',
 ] as const;
@@ -58,6 +60,8 @@ export const AGENT_TO_SERVER_MESSAGE_TYPES = [
   'task.failed',
   /** 取消完成（终态）。 */
   'task.canceled',
+  /** 交互任务 stdin 写入结果。 */
+  'task.input.ack',
 ] as const;
 
 /** Agent 发往 Server 的消息类型。 */

@@ -31,6 +31,7 @@ const form = reactive({
   command: '',
   artifactDir: '',
   timeoutSeconds: 3600,
+  interactiveInputEnabled: false,
   formSchema: schemaText([]),
 });
 
@@ -53,6 +54,7 @@ async function loadTemplate(): Promise<void> {
   form.command = template.command;
   form.artifactDir = template.artifactDir;
   form.timeoutSeconds = template.timeoutSeconds;
+  form.interactiveInputEnabled = template.interactiveInputEnabled;
   form.formSchema = schemaText(template.formSchema);
 }
 
@@ -127,6 +129,7 @@ async function save(): Promise<void> {
     command: form.command,
     artifactDir: form.artifactDir.trim(),
     timeoutSeconds: Number(form.timeoutSeconds),
+    interactiveInputEnabled: form.interactiveInputEnabled,
     formSchema: parsedSchema.value,
   };
   try {
@@ -247,6 +250,12 @@ onMounted(() => {
           <span class="muted-text" style="margin-left: 12px">
             约 {{ Math.round(form.timeoutSeconds / 60) }} 分钟
           </span>
+        </el-form-item>
+        <el-form-item label="构建期间交互输入">
+          <el-switch v-model="form.interactiveInputEnabled" />
+          <div class="form-help">
+            启用后，任务详情页可在构建命令等待 stdin 时发送一行文本；输入不会持久化。
+          </div>
         </el-form-item>
       </el-card>
 

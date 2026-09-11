@@ -107,6 +107,7 @@ model BuildTemplate {
   command        String         @db.Text
   artifactDir    String         @db.VarChar(1024)
   formSchema     Json
+  interactiveInputEnabled Boolean @default(false)
   timeoutSeconds Int           @default(3600)
   enabled        Boolean       @default(true)
   createdBy      String         @db.Uuid
@@ -153,6 +154,7 @@ model BuildTask {
   statusReason      String?         @db.Text
   branch            String          @db.VarChar(512)
   config            Json
+  interactiveInputEnabled Boolean    @default(false)
   sourceCommit      String?         @db.VarChar(128)
   assignedArtifactDir String?       @db.VarChar(1024)
   recoveryStatus    BuildTaskStatus?

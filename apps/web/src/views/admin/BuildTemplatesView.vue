@@ -236,6 +236,13 @@ onMounted(() => {
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="交互输入" width="110">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.interactiveInputEnabled ? 'success' : 'info'">
+              {{ row.interactiveInputEnabled ? '已启用' : '已关闭' }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="更新时间" width="175">
           <template #default="{ row }">{{ formatDate(row.updatedAt) }}</template>
         </el-table-column>

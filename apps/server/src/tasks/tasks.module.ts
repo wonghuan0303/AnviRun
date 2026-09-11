@@ -10,11 +10,12 @@ import { TaskQueueService } from './task-queue.service';
 import { TaskStateService } from './task-state.service';
 import { TasksService } from './tasks.service';
 import { TaskLogsModule } from '../task-logs/task-logs.module';
+import { TaskInputService } from './task-input.service';
 
 @Module({
   imports: [AuthModule, AuthorizationModule, AgentsModule, ProjectsModule, TaskLogsModule],
   controllers: [ProjectTasksController, TasksController],
-  providers: [TaskStateService, TaskLeaseService, TaskQueueService, TasksService],
-  exports: [TaskStateService, TaskLeaseService, TaskQueueService, TasksService],
+  providers: [TaskStateService, TaskLeaseService, TaskQueueService, TaskInputService, TasksService],
+  exports: [TaskStateService, TaskLeaseService, TaskQueueService, TaskInputService, TasksService],
 })
 export class TasksModule {}

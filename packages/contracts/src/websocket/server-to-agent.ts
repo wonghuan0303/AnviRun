@@ -111,6 +111,8 @@ export interface TaskAssignmentPayload {
   readonly config: FormConfigValues;
   /** `config` 中属于敏感项的键名，日志与展示必须遮蔽。 */
   readonly sensitiveConfigKeys: readonly string[];
+  /** 是否允许在任务运行期间向 stdin 写入一行文本。 */
+  readonly interactiveInputEnabled: boolean;
 }
 
 /** 任务取消请求。 */
@@ -123,6 +125,17 @@ export interface TaskCancelPayload {
   readonly requestedAt: IsoDateTimeString;
   /** 可选取消原因，用于日志与任务详情展示。 */
   readonly reason?: string;
+}
+
+/** 将一行文本写入正在运行的交互任务 stdin。 */
+export interface TaskInputPayload {
+  readonly taskId: string;
+  readonly leaseToken: string;
+  readonly inputId: string;
+  readonly text: string;
+  readonly sensitive: boolean;
+  readonly appendNewline: true;
+  readonly sentAt: IsoDateTimeString;
 }
 
 /** Agent 令牌被吊销。收到后 Agent 必须停止上报并断开连接。 */
@@ -150,6 +163,7 @@ export interface ServerToAgentPayloadMap extends Record<ServerToAgentMessageType
   'task.result.ack': TaskResultAckPayload;
   'task.assignment': TaskAssignmentPayload;
   'task.cancel': TaskCancelPayload;
+  'task.input': TaskInputPayload;
   'agent.token.revoked': AgentTokenRevokedPayload;
 }
 
@@ -171,6 +185,8 @@ export type TaskResultAckMessage = ServerToAgentMessageOf<'task.result.ack'>;
 export type TaskAssignmentMessage = ServerToAgentMessageOf<'task.assignment'>;
 /** 任务取消消息。 */
 export type TaskCancelMessage = ServerToAgentMessageOf<'task.cancel'>;
+/** 任务 stdin 输入消息。 */
+export type TaskInputMessage = ServerToAgentMessageOf<'task.input'>;
 /** 令牌吊销消息。 */
 export type AgentTokenRevokedMessage = ServerToAgentMessageOf<'agent.token.revoked'>;
 
@@ -184,4 +200,5 @@ export type ServerToAgentMessage =
   | TaskResultAckMessage
   | TaskAssignmentMessage
   | TaskCancelMessage
+  | TaskInputMessage
   | AgentTokenRevokedMessage;

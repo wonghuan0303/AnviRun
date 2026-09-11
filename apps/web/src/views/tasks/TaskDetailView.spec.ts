@@ -95,6 +95,7 @@ const task = {
   statusReason: '命令退出码为 1',
   branch: 'main',
   config: {},
+  interactiveInputEnabled: false,
   sourceCommit: null,
   exitCode: 1,
   queuedAt: null,
@@ -639,5 +640,184 @@ describe('TaskDetailView', () => {
     await flushPromises();
 
     expect(TestWebSocket.instances).toHaveLength(0);
+  });
+
+  it('shows the interactive input panel and sends one line only after control is acquired', async () => {
+    const interactiveTask: TaskDetail = {
+      ...task,
+      status: 'RUNNING',
+      statusReason: '执行中',
+      interactiveInputEnabled: true,
+      finishedAt: null,
+      exitCode: null,
+      agent: { ...task.agent, status: 'ONLINE' },
+      buildTemplate: {
+        ...task.buildTemplate,
+        agent: { ...task.buildTemplate.agent, status: 'ONLINE' },
+      },
+    };
+    vi.mocked(taskApi.getTask).mockResolvedValue({ task: interactiveTask });
+    vi.mocked(taskApi.readTaskLogs).mockResolvedValue({
+      taskId: 'task-id',
+      offset: 0,
+      nextOffset: 0,
+      size: 0,
+      eof: true,
+      entries: [],
+    });
+    vi.mocked(artifactApi.listTaskArtifacts).mockResolvedValue({
+      taskId: 'task-id',
+      items: [],
+      page: 1,
+      pageSize: 20,
+      total: 0,
+    });
+
+    const wrapper = mount(TaskDetailView, { global: { plugins: [ElementPlus] } });
+    mountedWrappers.push(wrapper);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('交互输入');
+    const current = TestWebSocket.instances.at(-1);
+    expect(current).toBeDefined();
+    current?.open();
+    current?.receive({ type: 'auth.ok' });
+    current?.receive({
+      type: 'task.input.state',
+      taskId: 'task-id',
+      enabled: true,
+      writable: false,
+      controlledByCurrentSocket: false,
+      busy: false,
+    });
+    await flushPromises();
+
+    const acquire = wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('获取控制权'));
+    expect(acquire).toBeDefined();
+    await acquire?.trigger('click');
+    expect(current?.sent.some((value) => value.includes('task.input.acquire'))).toBe(true);
+
+    current?.receive({
+      type: 'task.input.state',
+      taskId: 'task-id',
+      enabled: true,
+      writable: true,
+      controlledByCurrentSocket: true,
+      busy: false,
+    });
+    await flushPromises();
+    const input = wrapper.find('input[placeholder="输入一行文本，按 Enter 发送"]');
+    await input.setValue('hello');
+    expect(wrapper.text()).toContain('5 / 4096 字节');
+    const send = wrapper.findAll('button').find((button) => button.text() === '发送');
+    expect(send).toBeDefined();
+    await send?.trigger('click');
+    const sentInput = current?.sent.find((value) => value.includes('task.input.send'));
+    expect(sentInput).toBeDefined();
+    expect(JSON.parse(sentInput as string)).toMatchObject({
+      type: 'task.input.send',
+      taskId: 'task-id',
+      text: 'hello',
+      sensitive: false,
+    });
+    expect((input.element as HTMLInputElement).value).toBe('');
+
+    current?.receive({
+      type: 'task.input.state',
+      taskId: 'task-id',
+      enabled: true,
+      writable: true,
+      controlledByCurrentSocket: true,
+      busy: false,
+    });
+    current?.receive({
+      type: 'task.input.result',
+      taskId: 'task-id',
+      inputId: 'input-id',
+      status: 'REJECTED',
+      code: 'TASK_INPUT_DELIVERY_TIMEOUT',
+      message: '输入发送超时',
+    });
+    await flushPromises();
+    expect((input.element as HTMLInputElement).disabled).toBe(false);
+    expect((send?.element as HTMLButtonElement).disabled).toBe(false);
+    expect(current?.sent.filter((value) => value.includes('task.input.send'))).toHaveLength(1);
+  });
+
+  it('validates interactive input using UTF-8 bytes and blocks unsafe or oversized text', async () => {
+    const interactiveTask: TaskDetail = {
+      ...task,
+      status: 'RUNNING',
+      statusReason: '执行中',
+      interactiveInputEnabled: true,
+      finishedAt: null,
+      exitCode: null,
+      agent: { ...task.agent, status: 'ONLINE' },
+      buildTemplate: {
+        ...task.buildTemplate,
+        agent: { ...task.buildTemplate.agent, status: 'ONLINE' },
+      },
+    };
+    vi.mocked(taskApi.getTask).mockResolvedValue({ task: interactiveTask });
+    vi.mocked(taskApi.readTaskLogs).mockResolvedValue({
+      taskId: 'task-id',
+      offset: 0,
+      nextOffset: 0,
+      size: 0,
+      eof: true,
+      entries: [],
+    });
+    vi.mocked(artifactApi.listTaskArtifacts).mockResolvedValue({
+      taskId: 'task-id',
+      items: [],
+      page: 1,
+      pageSize: 20,
+      total: 0,
+    });
+
+    const wrapper = mount(TaskDetailView, { global: { plugins: [ElementPlus] } });
+    mountedWrappers.push(wrapper);
+    await flushPromises();
+    const current = TestWebSocket.instances.at(-1);
+    current?.open();
+    current?.receive({ type: 'auth.ok' });
+    current?.receive({
+      type: 'task.input.state',
+      taskId: 'task-id',
+      enabled: true,
+      writable: true,
+      controlledByCurrentSocket: true,
+      busy: false,
+    });
+    await flushPromises();
+
+    const input = wrapper.find('input[placeholder="输入一行文本，按 Enter 发送"]');
+    await input.setValue('中'.repeat(1_366));
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('4098 / 4096 字节');
+    expect(wrapper.text()).toContain('输入内容不能超过 4096 字节');
+    expect((input.element as HTMLInputElement).disabled).toBe(false);
+    const send = wrapper.findAll('button').find((button) => button.text() === '发送');
+    expect((send?.element as HTMLButtonElement).disabled).toBe(true);
+    expect(current?.sent.some((value) => value.includes('task.input.send'))).toBe(false);
+
+    await input.setValue('ok');
+    await flushPromises();
+    expect(wrapper.text()).toContain('2 / 4096 字节');
+    expect((input.element as HTMLInputElement).disabled).toBe(false);
+    expect((send?.element as HTMLButtonElement).disabled).toBe(false);
+
+    await input.setValue('line\u0001next');
+    await flushPromises();
+    expect(wrapper.text()).toContain('输入只能包含单行文本，不能包含控制字符');
+    expect((input.element as HTMLInputElement).disabled).toBe(false);
+    expect((send?.element as HTMLButtonElement).disabled).toBe(true);
+
+    await input.setValue('safe again');
+    await flushPromises();
+    expect((send?.element as HTMLButtonElement).disabled).toBe(false);
   });
 });

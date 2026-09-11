@@ -22,6 +22,10 @@ const SAFE_METADATA_KEYS = new Set([
   'taskId',
   'previousTaskId',
   'outcome',
+  'inputId',
+  'sensitive',
+  'byteLength',
+  'errorCode',
 ]);
 
 function defaultResult(action: string): 'SUCCESS' | 'FAILURE' {

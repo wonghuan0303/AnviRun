@@ -62,6 +62,20 @@ T5.1 日志链路：每个任务的 stdout/stderr 日志按 UTF-8 NDJSON 分片�
 
 ## 手工 Git smoke
 
+## 任务交互输入
+
+当任务 assignment 的 `interactiveInputEnabled` 为 `true` 时，Agent 使用 `Stdio::piped()` 启动
+Windows `cmd.exe` 或 Unix `sh`，并为当前命令建立有界 stdin 输入通道；普通任务仍使用
+`Stdio::null()`。Server 只向 hello 中声明 `task-input-v1` 的 Agent 派发这类任务。
+
+收到合法的 `task.input` 后，Agent 先在 stdout/stderr 脱敏器中加入敏感值，再按 UTF-8 文本、一次
+换行、flush 的顺序写入当前进程 stdin，成功后发送不含正文的 `task.input.ack`。输入只在 RUNNING
+阶段接受；命令退出、取消、超时、断线清理或 Agent 关闭后 stdin 通道关闭，输入不会缓存、重发或
+流入下一个任务。ACK 仅代表已写入 stdin，不代表命令已经处理。
+
+交互输入只支持单行标准输入，不支持 GUI 弹窗、PTY/ConPTY、全屏 TUI 或终端控制序列。等待输入
+不会暂停任务超时计时；生产部署必须使用 HTTPS/WSS。
+
 ## T5.2 取消与跨平台进程树终止
 
 收到 task.cancel 后，Agent 仅接受与当前任务和租约完全匹配的请求。准备阶段会向 Git 操作发送取消信号，并等待 Windows Job Object 或 Unix 进程组确认终止；执行阶段同样终止整个任务进程树，Unix 先发送 SIGTERM，短暂宽限后发送 SIGKILL。停止后保留当前 workspace 和项目锁，再回传 task.canceled；收到匹配的 `task.result.ack` 后才释放项目锁和本地活动状态。Agent 退出、ABANDON 等没有终态 ACK 的销毁路径才直接释放锁；停止/清理失败回传不含敏感值的结构化 `TASK_CANCEL_CLEANUP_FAILED` task.failed，并同样等待终态 ACK。
