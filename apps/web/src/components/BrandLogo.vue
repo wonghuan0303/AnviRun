@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { PRODUCT_NAME } from '@/config/product';
+
 withDefaults(
   defineProps<{
     size?: 'small' | 'default' | 'large';
@@ -36,7 +38,7 @@ withDefaults(
       />
     </svg>
     <div class="brand-logo__text">
-      <span class="brand-logo__name">AnvilRun</span>
+      <span class="brand-logo__name">{{ PRODUCT_NAME }}</span>
       <span v-if="showSubtitle" class="brand-logo__tagline">铸程 · 构建服务平台</span>
     </div>
   </div>

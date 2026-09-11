@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 
 import BrandLogo from '@/components/BrandLogo.vue';
+import { PRODUCT_NAME } from '@/config/product';
 import { errorMessage } from '@/utils/errors';
 import { useAuthStore } from '@/stores/auth';
 
@@ -48,7 +49,7 @@ async function submit(): Promise<void> {
           <div class="login-card__brand-header">
             <BrandLogo size="large" />
             <div class="login-card__title">
-              <span>AnvilRun</span>
+              <span>{{ PRODUCT_NAME }}</span>
               <small>把固定打包机变成团队共享的构建服务</small>
             </div>
           </div>

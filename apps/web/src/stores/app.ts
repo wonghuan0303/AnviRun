@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 
+import { PRODUCT_FULL_NAME } from '@/config/product';
+
 /**
  * 应用级基础状态。
  *
@@ -8,7 +10,7 @@ import { ref } from 'vue';
  * 当前用户与权限状态在 T1.2、T1.3 加入。
  */
 export const useAppStore = defineStore('app', () => {
-  const appName = ref('AnvilRun（铸程）构建任务平台');
+  const appName = ref(PRODUCT_FULL_NAME);
 
   return { appName };
 });

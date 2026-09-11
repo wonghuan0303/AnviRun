@@ -1,6 +1,8 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { PRODUCT_FULL_NAME } from '@/config/product';
+
 import { useAppStore } from './app';
 
 describe('useAppStore', () => {
@@ -9,6 +11,6 @@ describe('useAppStore', () => {
   });
 
   it('exposes the application name', () => {
-    expect(useAppStore().appName).toBe('AnvilRun（铸程）构建任务平台');
+    expect(useAppStore().appName).toBe(PRODUCT_FULL_NAME);
   });
 });
