@@ -16,6 +16,10 @@ import {
 export const FORM_SCHEMA_ISSUE_CODES = [
   /** 模板顶层不是数组。 */
   'SCHEMA_NOT_ARRAY',
+  /** 顶层同时混用了 tab 和普通字段。 */
+  'SCHEMA_LAYOUT_MIXED',
+  /** tab 的 children 不是非空普通字段数组。 */
+  'TAB_CHILDREN_INVALID',
   /** 数组元素不是对象。 */
   'FIELD_NOT_OBJECT',
   /** 缺少 `type`。 */

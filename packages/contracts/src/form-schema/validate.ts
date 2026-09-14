@@ -35,10 +35,12 @@ import {
   FORM_FILE_EXTENSION_PATTERN,
   FORM_FILE_HARD_MAX_BYTES,
   FORM_FILE_NAME_PATTERN_MAX_LENGTH,
+  listFormFields,
   type FormField,
   type FormFieldOptionValue,
   type FormFieldType,
   type FormSchema,
+  type TabFormNode,
 } from './field-types';
 import { createFormSchemaIssue, type FormSchemaIssue, type FormSchemaIssueContext } from './issues';
 
@@ -94,6 +96,33 @@ export function validateFormSchema(input: unknown): FormSchemaValidationResult {
 
   const fields: readonly unknown[] = input;
   const issues: FormSchemaIssue[] = [];
+  const tabCount = fields.filter((field) => isPlainObject(field) && field.type === 'tab').length;
+  if (tabCount > 0 && tabCount !== fields.length) {
+    return {
+      ok: false,
+      issues: [
+        createFormSchemaIssue(
+          'SCHEMA_LAYOUT_MIXED',
+          [],
+          '模板顶层不能混用 tab 与普通字段；请全部使用 tab，或继续使用扁平字段数组',
+        ),
+      ],
+    };
+  }
+
+  if (tabCount > 0) {
+    const seenTabNames = new Map<string, number>();
+    fields.forEach((field, index) => validateTab(field, index, seenTabNames, issues));
+    if (issues.length > 0) return { ok: false, issues };
+    return {
+      ok: true,
+      value: (fields as readonly TabFormNode[]).map((tab) => ({
+        ...tab,
+        children: tab.children.map(normalizeField),
+      })),
+    };
+  }
+
   const seenNames = new Map<string, number>();
 
   fields.forEach((field, index) => {
@@ -144,7 +173,77 @@ export function isSensitiveFormField(field: FormField): boolean {
  * Agent 据此遮蔽日志中的敏感值（产品设计第 11 节）。
  */
 export function listSensitiveFormFieldNames(schema: FormSchema): readonly string[] {
-  return schema.filter((field) => isSensitiveFormField(field)).map((field) => field.name);
+  return listFormFields(schema)
+    .filter(({ field }) => isSensitiveFormField(field))
+    .map(({ field }) => field.name);
+}
+
+function validateTab(
+  value: unknown,
+  index: number,
+  seenNames: Map<string, number>,
+  issues: FormSchemaIssue[],
+): void {
+  if (!isPlainObject(value)) {
+    issues.push(
+      createFormSchemaIssue('FIELD_NOT_OBJECT', [index], 'tab 必须是对象', { fieldIndex: index }),
+    );
+    return;
+  }
+  const name = validateFieldName(value, index, seenNames, issues);
+  const context: FormSchemaIssueContext = { fieldIndex: index, fieldName: name };
+  validateFieldLabel(value, index, context, issues);
+  if (value.description !== undefined && !isPlainText(value.description)) {
+    issues.push(
+      createFormSchemaIssue(
+        'PROPERTY_TYPE_INVALID',
+        [index, 'description'],
+        'description 必须是纯文本字符串',
+        { ...context, property: 'description' },
+      ),
+    );
+  }
+  for (const property of findUnknownProperties(value, [
+    'type',
+    'name',
+    'label',
+    'description',
+    'children',
+  ])) {
+    issues.push(
+      createFormSchemaIssue(
+        'UNKNOWN_PROPERTY',
+        [index, property],
+        `tab 不允许属性 ${describeToken(property)}`,
+        { ...context, property },
+      ),
+    );
+  }
+  if (!Array.isArray(value.children) || value.children.length === 0) {
+    issues.push(
+      createFormSchemaIssue(
+        'TAB_CHILDREN_INVALID',
+        [index, 'children'],
+        'tab.children 必须是至少包含一个普通字段的数组',
+        { ...context, property: 'children' },
+      ),
+    );
+    return;
+  }
+  const childIssues: FormSchemaIssue[] = [];
+  const childNames = new Map<string, number>();
+  value.children.forEach((child, childIndex) =>
+    validateField(child, childIndex, childNames, childIssues),
+  );
+  for (const issue of childIssues) {
+    issues.push(
+      createFormSchemaIssue(issue.code, [index, 'children', ...issue.path], issue.message, {
+        fieldIndex: issue.fieldIndex,
+        fieldName: issue.fieldName,
+        property: issue.property,
+      }),
+    );
+  }
 }
 
 function normalizeField(field: FormField): FormField {

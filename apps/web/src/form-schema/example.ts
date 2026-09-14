@@ -1,4 +1,4 @@
-import type { FormFieldType, FormSchema } from '@anvilrun/contracts';
+import type { FormField, FormFieldType, FormSchema } from '@anvilrun/contracts';
 
 export const FORM_FIELD_TYPE_GUIDE: readonly {
   type: FormFieldType;
@@ -16,7 +16,7 @@ export const FORM_FIELD_TYPE_GUIDE: readonly {
   { type: 'file', label: '文件上传' },
 ];
 
-export const FORM_SCHEMA_EXAMPLE = [
+const FORM_SCHEMA_EXAMPLE_FIELDS = [
   {
     type: 'input',
     name: 'branchName',
@@ -99,6 +99,22 @@ export const FORM_SCHEMA_EXAMPLE = [
     fileNamePattern: 'my-app-[0-9]+\\.[0-9]+\\.[0-9]+\\.(zip|tar\\.gz)',
     maxSizeBytes: 536870912,
     description: '包名示例：my-app-1.2.3.zip',
+  },
+] satisfies readonly FormField[];
+
+export const FORM_SCHEMA_EXAMPLE = [
+  {
+    type: 'tab',
+    name: 'basic',
+    label: '基础配置',
+    description: '常用构建参数',
+    children: FORM_SCHEMA_EXAMPLE_FIELDS.slice(0, 5),
+  },
+  {
+    type: 'tab',
+    name: 'advanced',
+    label: '高级配置',
+    children: FORM_SCHEMA_EXAMPLE_FIELDS.slice(5),
   },
 ] satisfies FormSchema;
 

@@ -1,7 +1,14 @@
 <script setup lang="ts">
-import type { FormField, FormSchema } from '@anvilrun/contracts';
+import { computed } from 'vue';
+import type { FormField, FormSchema, TabFormNode } from '@anvilrun/contracts';
 
-defineProps<{ schema: FormSchema }>();
+const props = defineProps<{ schema: FormSchema }>();
+const tabs = computed<readonly TabFormNode[]>(() =>
+  props.schema.filter((node): node is TabFormNode => node.type === 'tab'),
+);
+const fields = computed<readonly FormField[]>(() =>
+  props.schema.filter((node): node is FormField => node.type !== 'tab'),
+);
 
 function options(field: FormField): readonly { label: string; value: string | number }[] {
   return 'options' in field ? field.options : [];
@@ -10,9 +17,15 @@ function options(field: FormField): readonly { label: string; value: string | nu
 
 <template>
   <el-empty v-if="schema.length === 0" description="空表单，不需要填写配置" />
+  <el-tabs v-else-if="tabs.length" class="schema-preview__tabs">
+    <el-tab-pane v-for="tab in tabs" :key="tab.name" :name="tab.name" :label="tab.label">
+      <p v-if="tab.description" class="schema-preview__description">{{ tab.description }}</p>
+      <FormSchemaPreview :schema="tab.children" />
+    </el-tab-pane>
+  </el-tabs>
   <el-form v-else label-position="top" class="schema-preview">
     <el-form-item
-      v-for="field in schema"
+      v-for="field in fields"
       :key="field.name"
       :label="field.label"
       :required="field.required"
@@ -87,5 +100,14 @@ function options(field: FormField): readonly { label: string; value: string | nu
 <style scoped>
 .schema-preview__control {
   width: 100%;
+}
+
+.schema-preview__tabs {
+  width: 100%;
+}
+
+.schema-preview__description {
+  color: var(--ar-text-secondary);
+  font-size: 13px;
 }
 </style>

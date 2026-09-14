@@ -73,6 +73,39 @@ describe('T0.2 shared contract baseline', () => {
     for (const message of invalidMessages) expect(validateProtocolMessage(message).ok).toBe(false);
   });
 
+  it('validates nested tab config and nested input-file paths in task assignments', () => {
+    const base = serverMessages.find((message) => message.type === 'task.assignment');
+    expect(base).toBeDefined();
+    expect(
+      validateProtocolMessage({
+        ...base,
+        payload: {
+          ...base?.payload,
+          config: {
+            package: {
+              packageFile: {
+                fileId: '00000000-0000-4000-8000-000000000001',
+                fileName: 'app.zip',
+                size: 12,
+                sha256: 'a'.repeat(64),
+              },
+            },
+          },
+          inputFiles: [
+            {
+              fileId: '00000000-0000-4000-8000-000000000001',
+              fieldName: 'package/packageFile',
+              fileName: 'app.zip',
+              size: 12,
+              sha256: 'a'.repeat(64),
+              targetRelativePath: '.anvilrun/inputs/package/packageFile/app.zip',
+            },
+          ],
+        },
+      }).ok,
+    ).toBe(true);
+  });
+
   it('validates interactive task input and rejects unsafe lines', () => {
     const input = {
       id: 'input-message',

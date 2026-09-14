@@ -45,6 +45,7 @@ export const FORM_SCHEMA_RUNTIME_ONLY_RULES: readonly string[] = [
   'defaultValue 必须同时满足 minLength / maxLength / pattern / min / max（DEFAULT_VALUE_CONSTRAINT_VIOLATION）',
   'label、placeholder、description、options[].label 必须是纯文本：不含控制字符，不含 HTML/XML 标签（FIELD_LABEL_INVALID、PROPERTY_TYPE_INVALID、OPTION_LABEL_INVALID）',
   'date 的 defaultValue 必须是日历上真实存在的日期，含闰年判定（DEFAULT_VALUE_CONSTRAINT_VIOLATION）',
+  '顶层不能混用 tab 与普通字段，且 tab.children 不能继续包含 tab（SCHEMA_LAYOUT_MIXED、FIELD_TYPE_UNKNOWN）',
 ];
 
 const OPTION_VALUE_DEF = { type: ['string', 'number'] } as const;
@@ -73,11 +74,11 @@ export const FORM_SCHEMA_JSON_SCHEMA: JsonSchemaDocument = {
   $id: FORM_SCHEMA_JSON_SCHEMA_ID,
   title: '构建平台配置表单模板',
   description:
-    '管理员上传的配置表单模板：字段数组，允许为空数组。控件类型限定为白名单，' +
+    '管理员上传的配置表单模板：支持扁平字段数组或顶层 tab 数组，允许为空数组。控件类型限定为白名单，' +
     '不允许任意组件名、事件、插槽、HTML 或未批准属性。',
   'x-runtimeOnlyRules': FORM_SCHEMA_RUNTIME_ONLY_RULES,
   type: 'array',
-  items: { $ref: '#/$defs/formField' },
+  items: { $ref: '#/$defs/formNode' },
   $defs: {
     fieldName: {
       description: '配置键，同一模板内唯一',
@@ -110,6 +111,9 @@ export const FORM_SCHEMA_JSON_SCHEMA: JsonSchemaDocument = {
       uniqueItems: true,
       items: { $ref: '#/$defs/option' },
     },
+    formNode: {
+      oneOf: [{ $ref: '#/$defs/formField' }, { $ref: '#/$defs/tabNode' }],
+    },
     formField: {
       description: `按 type 判别的控件定义，type 取值限定为 ${FORM_FIELD_TYPES.join(' | ')}`,
       oneOf: [
@@ -124,6 +128,22 @@ export const FORM_SCHEMA_JSON_SCHEMA: JsonSchemaDocument = {
         { $ref: '#/$defs/passwordField' },
         { $ref: '#/$defs/fileField' },
       ],
+    },
+    tabNode: {
+      type: 'object',
+      required: ['type', 'name', 'label', 'children'],
+      additionalProperties: false,
+      properties: {
+        type: { const: 'tab' },
+        name: COMMON_PROPERTIES.name,
+        label: COMMON_PROPERTIES.label,
+        description: COMMON_PROPERTIES.description,
+        children: {
+          type: 'array',
+          minItems: 1,
+          items: { $ref: '#/$defs/formField' },
+        },
+      },
     },
     inputField: {
       type: 'object',

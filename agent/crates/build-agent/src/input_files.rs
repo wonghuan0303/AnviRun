@@ -117,15 +117,46 @@ pub async fn download_input_files(
         tokio::fs::rename(&temporary, &target)
             .await
             .map_err(|_| InputFileError::Path)?;
-        config.insert(
-            item.field_name.clone(),
+        insert_config_value(
+            config,
+            &item.field_name,
             serde_json::json!({
                 "fileId": item.file_id, "fileName": item.file_name, "size": item.size,
                 "sha256": item.sha256, "path": item.target_relative_path
             }),
-        );
+        )?;
     }
     Ok(())
+}
+
+fn insert_config_value(
+    target: &mut Map<String, Value>,
+    path: &str,
+    value: Value,
+) -> Result<(), InputFileError> {
+    let segments = path.split('/').collect::<Vec<_>>();
+    insert_segments(target, &segments, value)
+}
+
+fn insert_segments(
+    target: &mut Map<String, Value>,
+    segments: &[&str],
+    value: Value,
+) -> Result<(), InputFileError> {
+    match segments {
+        [leaf] if !leaf.is_empty() => {
+            target.insert((*leaf).to_owned(), value);
+            Ok(())
+        }
+        [head, tail @ ..] if !head.is_empty() => {
+            let nested = target
+                .get_mut(*head)
+                .and_then(Value::as_object_mut)
+                .ok_or(InputFileError::Path)?;
+            insert_segments(nested, tail, value)
+        }
+        _ => Err(InputFileError::Path),
+    }
 }
 
 fn reject_symlink_parents(source: &Path, parent: &Path) -> Result<(), InputFileError> {
@@ -152,4 +183,22 @@ fn has_reparse_point(metadata: &std::fs::Metadata) -> bool {
 #[cfg(not(windows))]
 fn has_reparse_point(_: &std::fs::Metadata) -> bool {
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::insert_config_value;
+    use serde_json::{json, Map};
+
+    #[test]
+    fn inserts_file_metadata_at_a_nested_tab_path() {
+        let mut config = Map::from_iter([("package".to_owned(), json!({"packageFile": null}))]);
+        insert_config_value(
+            &mut config,
+            "package/packageFile",
+            json!({"fileId": "file-id", "path": ".anvilrun/inputs/package/file.zip"}),
+        )
+        .expect("nested path should be writable");
+        assert_eq!(config["package"]["packageFile"]["fileId"], "file-id");
+    }
 }

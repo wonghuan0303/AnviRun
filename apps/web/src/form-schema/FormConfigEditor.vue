@@ -10,6 +10,7 @@ import {
   type FormFieldOptionValue,
   type FormFieldValue,
   type FormSchema,
+  type TabFormNode,
 } from '@anvilrun/contracts';
 import { uploadConfigFile } from '@/api/config-files';
 import { ElMessage } from 'element-plus';
@@ -21,11 +22,18 @@ const props = withDefaults(
     externalIssues?: readonly FormConfigIssue[];
     compact?: boolean;
     buildTemplateId?: string;
+    pathPrefix?: readonly string[];
   }>(),
-  { externalIssues: () => [], compact: false, buildTemplateId: '' },
+  { externalIssues: () => [], compact: false, buildTemplateId: '', pathPrefix: () => [] },
 );
 
 const uploadingFields = ref(new Set<string>());
+const tabs = computed<readonly TabFormNode[]>(() =>
+  props.schema.filter((node): node is TabFormNode => node.type === 'tab'),
+);
+const flatFields = computed<readonly FormField[]>(() =>
+  props.schema.filter((node): node is FormField => node.type !== 'tab'),
+);
 
 const emit = defineEmits<{
   'update:modelValue': [value: FormConfigValues];
@@ -49,15 +57,34 @@ const displayIssues = computed<readonly FormConfigIssue[]>(() => {
 });
 
 const topIssues = computed(() =>
-  displayIssues.value.filter(
-    (issue) => !issue.fieldName || !props.schema.some((field) => field.name === issue.fieldName),
-  ),
+  displayIssues.value.filter((issue) => {
+    const rootName = issue.path[0];
+    return typeof rootName !== 'string' || !props.schema.some((node) => node.name === rootName);
+  }),
 );
 
 function fieldIssues(fieldName: string): readonly FormConfigIssue[] {
   return displayIssues.value.filter(
     (issue) => issue.fieldName === fieldName || issue.path[0] === fieldName,
   );
+}
+
+function tabValue(tab: TabFormNode): FormConfigValues {
+  const value = props.modelValue[tab.name];
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as FormConfigValues)
+    : {};
+}
+
+function tabIssues(tab: TabFormNode): readonly FormConfigIssue[] {
+  return props.externalIssues
+    .filter((issue) => issue.path[0] === tab.name)
+    .map((issue) => ({ ...issue, path: issue.path.slice(1) }));
+}
+
+function updateTab(tab: TabFormNode, value: FormConfigValues): void {
+  emit('update:modelValue', { ...props.modelValue, [tab.name]: value });
+  emit('field-change', tab.name);
 }
 
 function valueFor(field: FormField): unknown {
@@ -169,7 +196,11 @@ async function uploadFile(
   }
   uploadingFields.value = new Set(uploadingFields.value).add(field.name);
   try {
-    const result = await uploadConfigFile(props.buildTemplateId, field.name, file);
+    const result = await uploadConfigFile(
+      props.buildTemplateId,
+      [...props.pathPrefix, field.name],
+      file,
+    );
     updateField(field, result.file);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '文件上传失败');
@@ -210,6 +241,23 @@ watch(localIssues, emitValidation);
     </el-alert>
 
     <el-empty v-if="schema.length === 0" description="当前模板没有配置项" />
+    <el-tabs v-else-if="tabs.length" class="config-editor__tabs">
+      <el-tab-pane v-for="tab in tabs" :key="tab.name" :name="tab.name" :label="tab.label">
+        <div v-if="tab.description" class="config-editor__tab-description">
+          {{ tab.description }}
+        </div>
+        <FormConfigEditor
+          :schema="tab.children"
+          :model-value="tabValue(tab)"
+          :external-issues="tabIssues(tab)"
+          :compact="compact"
+          :build-template-id="buildTemplateId"
+          :path-prefix="[...pathPrefix, tab.name]"
+          @update:model-value="updateTab(tab, $event)"
+          @field-change="emit('field-change', tab.name)"
+        />
+      </el-tab-pane>
+    </el-tabs>
     <el-form
       v-else
       :label-position="compact ? 'left' : 'top'"
@@ -218,7 +266,7 @@ watch(localIssues, emitValidation);
       :class="{ 'config-editor__form--compact': compact }"
     >
       <el-form-item
-        v-for="field in schema"
+        v-for="field in flatFields"
         :key="field.name"
         :label="field.label"
         :required="field.required"
@@ -364,6 +412,16 @@ watch(localIssues, emitValidation);
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.config-editor__tabs {
+  width: 100%;
+}
+
+.config-editor__tab-description {
+  margin-bottom: 12px;
+  color: var(--ar-text-secondary);
+  font-size: 13px;
 }
 
 .config-editor__item {

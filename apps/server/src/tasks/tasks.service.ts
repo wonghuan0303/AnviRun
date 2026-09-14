@@ -3,6 +3,7 @@ import { BuildTaskStatus, Prisma } from '@prisma/client';
 import {
   validateFormConfigValues,
   validateFormSchema,
+  listFormFields,
   type FormConfigIssue,
   type FormSchema,
 } from '@anvilrun/contracts';
@@ -300,17 +301,25 @@ export class TasksService {
           },
           select: { id: true },
         });
-        const fileFields = schema.filter((field) => field.type === 'file');
-        for (const field of fileFields) {
-          const value = config.value[field.name];
+        const fileFields = listFormFields(schema).filter(({ field }) => field.type === 'file');
+        for (const { path } of fileFields) {
+          let value: unknown = config.value;
+          for (const segment of path) {
+            value =
+              typeof value === 'object' && value !== null && !Array.isArray(value)
+                ? (value as Record<string, unknown>)[segment]
+                : undefined;
+          }
           if (!value || typeof value !== 'object' || Array.isArray(value) || !('fileId' in value))
             continue;
+          const fileId = typeof value.fileId === 'string' ? value.fileId : '';
+          if (!fileId) throw new ApiException('CONFIG_FILE_REFERENCE_INVALID');
           const file = await tx.configFile.findFirst({
             where: {
-              id: value.fileId,
+              id: fileId,
               projectId: project.id,
               buildTemplateId: project.buildTemplateId,
-              fieldName: field.name,
+              fieldName: path.join('/'),
             },
           });
           if (!file) throw new ApiException('CONFIG_FILE_REFERENCE_INVALID');
@@ -318,8 +327,8 @@ export class TasksService {
             data: {
               taskId: created.id,
               configFileId: file.id,
-              fieldName: field.name,
-              targetRelativePath: `.anvilrun/inputs/${field.name}/${file.originalName}`,
+              fieldName: path.join('/'),
+              targetRelativePath: `.anvilrun/inputs/${path.join('/')}/${file.originalName}`,
               originalName: file.originalName,
               size: file.size,
               sha256: file.sha256,

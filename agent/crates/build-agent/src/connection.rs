@@ -2356,7 +2356,7 @@ fn validate_assignment(
     }
     for file in &assignment.input_files {
         if Uuid::parse_str(&file.file_id).is_err()
-            || !safe_text(&file.field_name)
+            || !safe_config_path(&file.field_name)
             || !safe_text(&file.file_name)
             || !safe_relative_path(&file.target_relative_path)
             || file.sha256.len() != 64
@@ -2371,6 +2371,20 @@ fn validate_assignment(
         }
     }
     Ok(())
+}
+
+fn safe_config_path(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 255
+        && value.split('/').all(|segment| {
+            !segment.is_empty()
+                && segment.len() <= 64
+                && segment.bytes().enumerate().all(|(index, byte)| {
+                    byte.is_ascii_alphabetic()
+                        || byte == b'_'
+                        || (index > 0 && (byte.is_ascii_digit() || matches!(byte, b'.' | b'-')))
+                })
+        })
 }
 
 fn valid_lease_token(value: &str) -> bool {

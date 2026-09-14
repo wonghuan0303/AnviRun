@@ -32,7 +32,10 @@ describe('FormSchemaEditor', () => {
     expect(wrapper.text()).toContain('allowedExtensions');
     const parsed = parseFormSchemaText(FORM_SCHEMA_EXAMPLE_TEXT);
     expect(parsed.issues).toHaveLength(0);
-    expect(parsed.value).toHaveLength(10);
+    expect(parsed.value).toHaveLength(2);
+    expect(
+      parsed.value?.flatMap((node) => (node.type === 'tab' ? node.children : [node])),
+    ).toHaveLength(10);
   });
 
   it('shows syntax errors and a safe preview for valid JSON', async () => {

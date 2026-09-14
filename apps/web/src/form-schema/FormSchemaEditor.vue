@@ -131,7 +131,8 @@ onMounted(parse);
     <el-collapse class="schema-editor__guide">
       <el-collapse-item name="schema-example" title="查看支持类型与 JSON 配置示例">
         <p class="schema-editor__guide-intro">
-          每个字段都需要 type、name 和 label；required、description 等为公共可选属性。
+          可继续使用扁平字段数组；需要分组时，顶层全部使用 tab，name 是嵌套 JSON key，label
+          是页签中文名，children 放普通字段。
         </p>
         <div class="schema-editor__types" aria-label="支持的字段类型">
           <span v-for="item in FORM_FIELD_TYPE_GUIDE" :key="item.type">
@@ -140,7 +141,7 @@ onMounted(parse);
           </span>
         </div>
         <p class="schema-editor__guide-note">
-          文件类型通过 allowedExtensions 限制格式，fileNamePattern
+          children 支持以下 10 种字段。文件类型通过 allowedExtensions 限制格式，fileNamePattern
           按完整文件名限制包名，maxSizeBytes 限制字节数。
         </p>
         <pre class="schema-editor__example"><code>{{ FORM_SCHEMA_EXAMPLE_TEXT }}</code></pre>

@@ -26,7 +26,10 @@ import {
 export type FormFieldValue =
   string | number | boolean | readonly FormFieldOptionValue[] | FileConfigValue | null;
 
-export type FormConfigValues = Readonly<Record<string, FormFieldValue>>;
+export type FormConfigValue = FormFieldValue | FormConfigValues;
+export interface FormConfigValues {
+  readonly [key: string]: FormConfigValue;
+}
 
 export const FORM_CONFIG_ISSUE_CODES = [
   'CONFIG_NOT_OBJECT',
@@ -517,11 +520,11 @@ function validateFieldValue(
 }
 
 interface Evaluation {
-  readonly value: Record<string, FormFieldValue>;
+  readonly value: FormConfigValues;
   readonly issues: FormConfigIssue[];
 }
 
-function evaluateConfig(schema: FormSchema, input: unknown): Evaluation {
+function evaluateLeafConfig(schema: readonly FormField[], input: unknown): Evaluation {
   if (!isStrictJsonObject(input)) {
     return {
       value: {},
@@ -580,6 +583,42 @@ function evaluateConfig(schema: FormSchema, input: unknown): Evaluation {
   return { value: result, issues };
 }
 
+function prefixIssue(issue: FormConfigIssue, segment: string): FormConfigIssue {
+  return {
+    ...issue,
+    ...createIssue(issue.code, [segment, ...issue.path], issue.message),
+  };
+}
+
+function evaluateConfig(schema: FormSchema, input: unknown): Evaluation {
+  const tabs = schema.filter((node) => node.type === 'tab');
+  if (tabs.length === 0) return evaluateLeafConfig(schema as readonly FormField[], input);
+  if (!isStrictJsonObject(input)) {
+    return {
+      value: {},
+      issues: [
+        configIssue(
+          'CONFIG_NOT_OBJECT',
+          [],
+          '项目配置必须是普通 JSON 对象',
+          undefined,
+          'object',
+          describeValueType(input),
+        ),
+      ],
+    };
+  }
+  const value: Record<string, FormConfigValues> = {};
+  const issues: FormConfigIssue[] = [];
+  for (const tab of tabs) {
+    const candidate = hasOwn(input, tab.name) ? input[tab.name] : {};
+    const checked = evaluateLeafConfig(tab.children, candidate);
+    value[tab.name] = checked.value;
+    issues.push(...checked.issues.map((issue) => prefixIssue(issue, tab.name)));
+  }
+  return { value, issues };
+}
+
 export function validateFormConfigValues(
   schema: FormSchema,
   input: unknown,
@@ -604,7 +643,20 @@ export function analyzeFormConfigCompatibility(
   storedConfig: unknown,
 ): FormConfigCompatibility {
   const obsoleteFields = isStrictJsonObject(storedConfig)
-    ? Object.keys(storedConfig).filter((key) => !schema.some((field) => field.name === key))
+    ? schema.some((node) => node.type === 'tab')
+      ? [
+          ...Object.keys(storedConfig).filter((key) => !schema.some((node) => node.name === key)),
+          ...schema.flatMap((node) => {
+            if (node.type !== 'tab') return [];
+            const nested = storedConfig[node.name];
+            return isStrictJsonObject(nested)
+              ? Object.keys(nested)
+                  .filter((key) => !node.children.some((field) => field.name === key))
+                  .map((key) => `${node.name}.${key}`)
+              : [];
+          }),
+        ]
+      : Object.keys(storedConfig).filter((key) => !schema.some((field) => field.name === key))
     : [];
 
   const evaluated = evaluateConfig(schema, storedConfig);

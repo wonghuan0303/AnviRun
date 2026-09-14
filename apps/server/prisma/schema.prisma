@@ -203,7 +203,7 @@ model ConfigFile {
   ownerId         String               @db.Uuid
   projectId       String?              @db.Uuid
   buildTemplateId String               @db.Uuid
-  fieldName       String               @db.VarChar(64)
+  fieldName       String               @db.VarChar(255)
   originalName    String               @db.VarChar(512)
   size            BigInt
   sha256          String               @db.Char(64)
@@ -226,7 +226,7 @@ model BuildTaskInputFile {
   id                 String     @id @default(uuid()) @db.Uuid
   taskId             String     @db.Uuid
   configFileId       String     @db.Uuid
-  fieldName          String     @db.VarChar(64)
+  fieldName          String     @db.VarChar(255)
   targetRelativePath String     @db.VarChar(2048)
   originalName       String     @db.VarChar(512)
   size               BigInt

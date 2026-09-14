@@ -23,6 +23,8 @@ export const FORM_FIELD_TYPES = [
   'file',
 ] as const;
 
+export const FORM_SCHEMA_NODE_TYPES = [...FORM_FIELD_TYPES, 'tab'] as const;
+
 export const FORM_FILE_DEFAULT_MAX_BYTES = 256 * 1024 * 1024;
 export const FORM_FILE_HARD_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 export const FORM_FILE_EXTENSION_PATTERN = /^\.[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$/;
@@ -151,6 +153,15 @@ export interface FileFormField {
   readonly sensitive?: never;
 }
 
+/** 顶层页签容器；name 同时是嵌套配置对象的 key。 */
+export interface TabFormNode {
+  readonly type: 'tab';
+  readonly name: string;
+  readonly label: string;
+  readonly description?: string;
+  readonly children: readonly FormField[];
+}
+
 /** 配置表单字段判别联合，判别属性为 `type`。 */
 export type FormField =
   | InputFormField
@@ -164,8 +175,24 @@ export type FormField =
   | PasswordFormField
   | FileFormField;
 
-/** 配置表单模板：字段数组，允许为空数组（产品设计 5.2）。 */
-export type FormSchema = readonly FormField[];
+export type FormSchemaNode = FormField | TabFormNode;
+
+/** 配置表单模板：旧式扁平字段数组，或全部由 tab 组成的嵌套数组。 */
+export type FormSchema = readonly FormSchemaNode[];
+
+export interface FormFieldPath {
+  readonly field: FormField;
+  readonly path: readonly string[];
+}
+
+/** 按配置路径展开全部叶子字段。 */
+export function listFormFields(schema: FormSchema): readonly FormFieldPath[] {
+  return schema.flatMap((node) =>
+    node.type === 'tab'
+      ? node.children.map((field) => ({ field, path: [node.name, field.name] }))
+      : [{ field: node, path: [node.name] }],
+  );
+}
 
 /** `date` 控件默认值的格式：`YYYY-MM-DD`。 */
 export const FORM_FIELD_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;

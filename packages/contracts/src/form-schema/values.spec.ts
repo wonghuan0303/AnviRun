@@ -8,6 +8,53 @@ import {
 } from './index';
 
 describe('form config values', () => {
+  it('validates tab children and produces nested config objects', () => {
+    const tabSchema: FormSchema = [
+      {
+        type: 'tab',
+        name: 'basic',
+        label: '基础配置',
+        children: [
+          { type: 'input', name: 'branch', label: '分支', defaultValue: 'main' },
+          { type: 'switch', name: 'minify', label: '压缩', required: true },
+        ],
+      },
+      {
+        type: 'tab',
+        name: 'package',
+        label: '打包配置',
+        children: [{ type: 'number', name: 'retries', label: '重试次数', defaultValue: 2 }],
+      },
+    ];
+    expect(validateFormSchema(tabSchema).ok).toBe(true);
+    expect(normalizeFormConfigValues(tabSchema, { basic: { minify: true } })).toEqual({
+      basic: { branch: 'main', minify: true },
+      package: { retries: 2 },
+    });
+  });
+
+  it('rejects mixed layouts, empty tabs, and nested tabs', () => {
+    expect(
+      validateFormSchema([
+        { type: 'input', name: 'branch', label: '分支' },
+        { type: 'tab', name: 'advanced', label: '高级', children: [] },
+      ]).ok,
+    ).toBe(false);
+    expect(validateFormSchema([{ type: 'tab', name: 'empty', label: '空', children: [] }]).ok).toBe(
+      false,
+    );
+    expect(
+      validateFormSchema([
+        {
+          type: 'tab',
+          name: 'outer',
+          label: '外层',
+          children: [{ type: 'tab', name: 'inner', label: '内层', children: [] }],
+        },
+      ]).ok,
+    ).toBe(false);
+  });
+
   it('rejects unsafe or malformed file schema constraints', () => {
     expect(
       validateFormSchema([

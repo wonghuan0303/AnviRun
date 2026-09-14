@@ -23,13 +23,20 @@ describe('ConfigFilesService', () => {
           enabled: true,
           formSchema: [
             {
-              type: 'file',
-              name: 'packageFile',
-              label: '安装包',
-              required: true,
-              allowedExtensions: ['.zip'],
-              fileNamePattern: 'app-[0-9]+\\.zip',
-              maxSizeBytes: 32,
+              type: 'tab',
+              name: 'package',
+              label: '打包配置',
+              children: [
+                {
+                  type: 'file',
+                  name: 'packageFile',
+                  label: '安装包',
+                  required: true,
+                  allowedExtensions: ['.zip'],
+                  fileNamePattern: 'app-[0-9]+\\.zip',
+                  maxSizeBytes: 32,
+                },
+              ],
             },
           ],
         }),
@@ -58,7 +65,7 @@ describe('ConfigFilesService', () => {
     const result = await service.upload(
       actor,
       templateId,
-      'packageFile',
+      'package/packageFile',
       'app-1.zip',
       'application/zip',
       '11',
@@ -77,9 +84,70 @@ describe('ConfigFilesService', () => {
       yield Buffer.from('x');
     }
     await expect(
-      service.upload(actor, templateId, 'packageFile', 'other.zip', 'application/zip', '1', body()),
+      service.upload(
+        actor,
+        templateId,
+        'package/packageFile',
+        'other.zip',
+        'application/zip',
+        '1',
+        body(),
+      ),
     ).rejects.toBeInstanceOf(ApiException);
     expect(read).toBe(false);
+  });
+
+  it('canonicalizes a nested uploaded file reference at its tab path', async () => {
+    const fileId = '00000000-0000-4000-8000-000000000004';
+    const transaction = {
+      configFile: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: fileId,
+          ownerId: actor.id,
+          projectId: null,
+          buildTemplateId: templateId,
+          fieldName: 'package/packageFile',
+          originalName: 'app-1.zip',
+          size: BigInt(11),
+          sha256: 'a'.repeat(64),
+          expiresAt: new Date(Date.now() + 60_000),
+        }),
+      },
+    };
+    const schema = [
+      {
+        type: 'tab' as const,
+        name: 'package',
+        label: '打包配置',
+        children: [
+          {
+            type: 'file' as const,
+            name: 'packageFile',
+            label: '安装包',
+            required: true,
+            allowedExtensions: ['.zip'],
+          },
+        ],
+      },
+    ];
+
+    const result = await service.canonicalizeConfig(
+      transaction as never,
+      actor.id,
+      null,
+      templateId,
+      schema,
+      { package: { packageFile: { fileId } } },
+    );
+
+    expect(result.config.package).toEqual({
+      packageFile: {
+        fileId,
+        fileName: 'app-1.zip',
+        size: 11,
+        sha256: 'a'.repeat(64),
+      },
+    });
   });
 
   it('binds selected files and detaches replaced project files for later cleanup', async () => {

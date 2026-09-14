@@ -12,8 +12,10 @@ export {
   FORM_FILE_EXTENSION_PATTERN,
   FORM_FILE_HARD_MAX_BYTES,
   FORM_FILE_NAME_PATTERN_MAX_LENGTH,
+  FORM_SCHEMA_NODE_TYPES,
   OPTION_BASED_FORM_FIELD_TYPES,
   isOptionBasedFormFieldType,
+  listFormFields,
 } from './field-types';
 export type {
   CheckboxFormField,
@@ -25,7 +27,9 @@ export type {
   FormFieldOption,
   FormFieldOptionValue,
   FormFieldType,
+  FormFieldPath,
   FormSchema,
+  FormSchemaNode,
   InputFormField,
   NumberFormField,
   OptionBasedFormFieldType,
@@ -34,6 +38,7 @@ export type {
   SelectFormField,
   SwitchFormField,
   TextareaFormField,
+  TabFormNode,
 } from './field-types';
 
 export {
@@ -50,6 +55,7 @@ export type {
   FormConfigValidationFailure,
   FormConfigValidationResult,
   FormConfigValues,
+  FormConfigValue,
   FormFieldValue,
 } from './values';
 

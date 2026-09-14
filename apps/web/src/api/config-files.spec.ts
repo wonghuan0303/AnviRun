@@ -14,10 +14,10 @@ describe('config files API', () => {
   it('uploads the original File as an octet stream and encodes its context', async () => {
     const file = new File(['{}'], 'app config.json', { type: 'application/json' });
 
-    await uploadConfigFile('template-id', 'packageFile', file);
+    await uploadConfigFile('template-id', ['package', 'packageFile'], file);
 
     expect(apiRequest).toHaveBeenCalledWith(
-      '/config-files?buildTemplateId=template-id&fieldName=packageFile&fileName=app+config.json',
+      '/config-files?buildTemplateId=template-id&fieldName=package%2FpackageFile&fileName=app+config.json',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },

@@ -6,6 +6,7 @@ import type { Response } from 'express';
 import {
   fileMatchesField,
   FORM_FILE_DEFAULT_MAX_BYTES,
+  listFormFields,
   validateFormSchema,
   type FileConfigValue,
 } from '@anvilrun/contracts';
@@ -74,9 +75,10 @@ export class ConfigFilesService implements OnModuleInit, OnModuleDestroy {
       select: { enabled: true, formSchema: true },
     });
     const checked = validateFormSchema(template?.formSchema);
-    const field = checked.ok
-      ? checked.value.find((item) => item.name === fieldName && item.type === 'file')
+    const entry = checked.ok
+      ? listFormFields(checked.value).find((item) => item.path.join('/') === fieldName)
       : undefined;
+    const field = entry?.field.type === 'file' ? entry.field : undefined;
     if (!template?.enabled || !field || field.type !== 'file')
       throw new ApiException('CONFIG_FILE_INVALID');
     const declared = Number(contentLength);
@@ -209,10 +211,10 @@ export class ConfigFilesService implements OnModuleInit, OnModuleDestroy {
       throw new ApiException('PROJECT_CONFIG_INVALID');
     const next: Record<string, unknown> = { ...(input as Record<string, unknown>) };
     const fileIds: string[] = [];
-    for (const field of schema) {
-      if (field.type !== 'file' || next[field.name] === undefined || next[field.name] === null)
-        continue;
-      const candidate = next[field.name];
+    for (const { field, path } of listFormFields(schema)) {
+      const current = this.valueAtPath(next, path);
+      if (field.type !== 'file' || current === undefined || current === null) continue;
+      const candidate = current;
       const fileId =
         typeof candidate === 'object' &&
         candidate !== null &&
@@ -229,12 +231,12 @@ export class ConfigFilesService implements OnModuleInit, OnModuleDestroy {
         !file ||
         (!attachedToCurrentProject && !validPendingOwner) ||
         file.buildTemplateId !== templateId ||
-        file.fieldName !== field.name ||
+        file.fieldName !== path.join('/') ||
         (file.projectId === null && (!file.expiresAt || file.expiresAt <= new Date())) ||
         !fileMatchesField(field, file.originalName, Number(file.size))
       )
         throw new ApiException('CONFIG_FILE_REFERENCE_INVALID');
-      next[field.name] = this.publicValue(file);
+      this.setValueAtPath(next, path, this.publicValue(file));
       fileIds.push(file.id);
     }
     const checked = validateFormConfigValues(schema, next);
@@ -304,5 +306,30 @@ export class ConfigFilesService implements OnModuleInit, OnModuleDestroy {
       Buffer.byteLength(value, 'utf8') <= 255 &&
       !RESERVED.test(value)
     );
+  }
+
+  private valueAtPath(root: Record<string, unknown>, path: readonly string[]): unknown {
+    let current: unknown = root;
+    for (const segment of path) {
+      if (typeof current !== 'object' || current === null || Array.isArray(current))
+        return undefined;
+      current = (current as Record<string, unknown>)[segment];
+    }
+    return current;
+  }
+
+  private setValueAtPath(
+    root: Record<string, unknown>,
+    path: readonly string[],
+    value: unknown,
+  ): void {
+    let current = root;
+    for (const segment of path.slice(0, -1)) {
+      const child = current[segment];
+      if (typeof child !== 'object' || child === null || Array.isArray(child)) return;
+      current = child as Record<string, unknown>;
+    }
+    const leaf = path.at(-1);
+    if (leaf) current[leaf] = value;
   }
 }

@@ -19,6 +19,7 @@ import {
 } from '../validation/primitives';
 import { isAgentReportableTaskStatus, isTerminalTaskStatus } from '../task/task-status';
 import { isLogStream, TASK_LOG_CHUNK_MAX_BYTES, utf8ByteLength } from '../task/task-log';
+import { FORM_FIELD_NAME_PATTERN } from '../form-schema/field-types';
 import {
   isSupportedProtocolVersion,
   LEASE_TOKEN_PATTERN,
@@ -315,7 +316,7 @@ function taskInputProperties(
   timeProperty(value, 'sentAt', path, issues);
 }
 
-function configValue(value: unknown): boolean {
+function configValue(value: unknown, depth = 0): boolean {
   return (
     value === null ||
     isString(value) ||
@@ -323,12 +324,16 @@ function configValue(value: unknown): boolean {
     typeof value === 'boolean' ||
     (Array.isArray(value) && value.every((item) => isString(item) || isFiniteNumber(item))) ||
     (isPlainObject(value) &&
-      Object.keys(value).length === 4 &&
-      isString(value.fileId) &&
-      isString(value.fileName) &&
-      isFiniteNumber(value.size) &&
-      isString(value.sha256) &&
-      /^[a-f0-9]{64}$/.test(value.sha256))
+      ((Object.keys(value).length === 4 &&
+        isString(value.fileId) &&
+        isString(value.fileName) &&
+        isFiniteNumber(value.size) &&
+        isString(value.sha256) &&
+        /^[a-f0-9]{64}$/.test(value.sha256)) ||
+        (depth < 2 &&
+          Object.entries(value).every(
+            ([key, nested]) => FORM_FIELD_NAME_PATTERN.test(key) && configValue(nested, depth + 1),
+          ))))
   );
 }
 
@@ -370,7 +375,7 @@ function configObject(
   const config = objectValue(raw, path, issues);
   if (config === undefined) return;
   for (const [key, value] of Object.entries(config))
-    if (!PROTOCOL_ID_PATTERN.test(key) || !configValue(value))
+    if (!FORM_FIELD_NAME_PATTERN.test(key) || !configValue(value))
       issue(issues, 'PROPERTY_INVALID', [...path, key], 'config 只能包含协议键名和 JSON 基础值');
 }
 

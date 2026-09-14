@@ -10,6 +10,12 @@ import type { AgentSummary } from '@/api/types';
 import FormSchemaEditor from '@/form-schema/FormSchemaEditor.vue';
 import { isFormSchemaIssues, schemaText, type JsonSyntaxIssue } from '@/form-schema/schema';
 import { errorDetails, errorMessage } from '@/utils/errors';
+import {
+  BUILD_TIMEOUT_MAX_SECONDS,
+  BUILD_TIMEOUT_MIN_SECONDS,
+  BUILD_TIMEOUT_STEP_SECONDS,
+  isValidBuildTimeoutSeconds,
+} from './build-template-timeout';
 
 const route = useRoute();
 const router = useRouter();
@@ -103,6 +109,10 @@ function validate(): boolean {
     error.value = '请填写所有必填字段';
     return false;
   }
+  if (!isValidBuildTimeoutSeconds(Number(form.timeoutSeconds))) {
+    error.value = '超时时间需设置为 1 至 86400 之间的整数秒';
+    return false;
+  }
   if (schemaSyntaxIssue.value || !parsedSchema.value || localSchemaIssues.value.length) {
     error.value = '请先修复 formSchema JSON 和协议错误';
     return false;
@@ -171,7 +181,14 @@ onMounted(() => {
 
     <el-skeleton v-if="loading" :rows="8" animated />
 
-    <el-form v-else :model="form" label-position="top" class="template-form" @submit.prevent="save">
+    <el-form
+      v-else
+      :model="form"
+      label-position="top"
+      class="template-form"
+      novalidate
+      @submit.prevent="save"
+    >
       <el-card shadow="never" class="editor-section-card">
         <template #header>
           <div class="card-section-title">1. 基本信息与执行节点</div>
@@ -246,7 +263,12 @@ onMounted(() => {
           </div>
         </el-form-item>
         <el-form-item label="超时时间（秒）" required>
-          <el-input-number v-model="form.timeoutSeconds" :min="1" :max="86400" :step="60" />
+          <el-input-number
+            v-model="form.timeoutSeconds"
+            :min="BUILD_TIMEOUT_MIN_SECONDS"
+            :max="BUILD_TIMEOUT_MAX_SECONDS"
+            :step="BUILD_TIMEOUT_STEP_SECONDS"
+          />
           <span class="muted-text" style="margin-left: 12px">
             约 {{ Math.round(form.timeoutSeconds / 60) }} 分钟
           </span>
@@ -264,7 +286,7 @@ onMounted(() => {
           <div class="card-section-title">3. 动态表单契约 (formSchema)</div>
         </template>
         <div class="schema-tip">
-          表单协议只在浏览器本地解析和预览，保存时提交校验后的 JSON。支持 10
+          表单协议只在浏览器本地解析和预览，保存时提交校验后的 JSON。支持 tab 嵌套分组和 10
           种标准白名单控件，配置说明与完整示例见下方。
         </div>
         <el-form-item label="formSchema JSON" required>

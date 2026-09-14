@@ -37,6 +37,29 @@ const schema: FormSchema = [
 const global = { plugins: [ElementPlus] };
 
 describe('FormConfigEditor', () => {
+  it('renders tab nodes and emits their values as nested objects', async () => {
+    const tabSchema: FormSchema = [
+      {
+        type: 'tab',
+        name: 'basic',
+        label: '基础配置',
+        children: [{ type: 'input', name: 'branch', label: '分支' }],
+      },
+    ];
+    const wrapper = mount(FormConfigEditor, {
+      props: { schema: tabSchema, modelValue: {} },
+      global,
+    });
+
+    expect(wrapper.text()).toContain('基础配置');
+    expect(wrapper.text()).toContain('分支');
+    await wrapper.find('input').setValue('main');
+    await nextTick();
+    expect(wrapper.emitted('update:modelValue')?.at(-1)?.[0]).toEqual({
+      basic: { branch: 'main' },
+    });
+  });
+
   it('renders every whitelisted control explicitly and uses defaults', async () => {
     const wrapper = mount(FormConfigEditor, {
       props: { schema, modelValue: {} },

@@ -2,238 +2,581 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://buildplatform.local/schemas/form-schema.schema.json",
   "title": "构建平台配置表单模板",
-  "description": "管理员上传的配置表单模板。跨字段语义规则由运行时校验器补充。",
+  "description": "管理员上传的配置表单模板：支持扁平字段数组或顶层 tab 数组，允许为空数组。控件类型限定为白名单，不允许任意组件名、事件、插槽、HTML 或未批准属性。",
+  "x-runtimeOnlyRules": [
+    "同一模板内 name 必须唯一（FIELD_NAME_DUPLICATE）",
+    "select / radio 的 defaultValue 必须出现在 options 中（DEFAULT_VALUE_NOT_ALLOWED）",
+    "checkbox 的 defaultValue 每一项都必须出现在 options 中（DEFAULT_VALUE_NOT_ALLOWED）",
+    "options[].value 按“类型 + 取值”去重；uniqueItems 只能识别整项重复（OPTION_VALUE_DUPLICATE）",
+    "minLength 不得大于 maxLength、min 不得大于 max（CONSTRAINT_RANGE_INVALID）",
+    "pattern 必须可被 new RegExp() 编译（CONSTRAINT_INVALID）",
+    "defaultValue 必须同时满足 minLength / maxLength / pattern / min / max（DEFAULT_VALUE_CONSTRAINT_VIOLATION）",
+    "label、placeholder、description、options[].label 必须是纯文本：不含控制字符，不含 HTML/XML 标签（FIELD_LABEL_INVALID、PROPERTY_TYPE_INVALID、OPTION_LABEL_INVALID）",
+    "date 的 defaultValue 必须是日历上真实存在的日期，含闰年判定（DEFAULT_VALUE_CONSTRAINT_VIOLATION）",
+    "顶层不能混用 tab 与普通字段，且 tab.children 不能继续包含 tab（SCHEMA_LAYOUT_MIXED、FIELD_TYPE_UNKNOWN）"
+  ],
   "type": "array",
-  "items": { "$ref": "#/$defs/formField" },
+  "items": {
+    "$ref": "#/$defs/formNode"
+  },
   "$defs": {
-    "fieldName": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_.-]{0,63}$" },
-    "plainText": { "type": "string" },
-    "optionValue": { "type": ["string", "number"] },
+    "fieldName": {
+      "description": "配置键，同一模板内唯一",
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_.-]{0,63}$"
+    },
+    "fieldLabel": {
+      "description": "页面显示名称，非空纯文本",
+      "type": "string",
+      "minLength": 1
+    },
+    "plainText": {
+      "description": "纯文本；“无控制字符、无标签”由运行时校验器保证",
+      "type": "string"
+    },
+    "optionValue": {
+      "type": [
+        "string",
+        "number"
+      ]
+    },
     "option": {
       "type": "object",
-      "required": ["label", "value"],
+      "required": [
+        "label",
+        "value"
+      ],
       "additionalProperties": false,
       "properties": {
-        "label": { "type": "string", "minLength": 1 },
-        "value": { "$ref": "#/$defs/optionValue" }
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "$ref": "#/$defs/optionValue"
+        }
       }
     },
-    "options": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/option" } },
-    "common": {
+    "options": {
+      "description": "select / radio / checkbox 的候选项，至少一项",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/option"
+      }
+    },
+    "formNode": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/formField"
+        },
+        {
+          "$ref": "#/$defs/tabNode"
+        }
+      ]
+    },
+    "formField": {
+      "description": "按 type 判别的控件定义，type 取值限定为 input | textarea | number | select | radio | checkbox | switch | date | password | file",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/inputField"
+        },
+        {
+          "$ref": "#/$defs/textareaField"
+        },
+        {
+          "$ref": "#/$defs/numberField"
+        },
+        {
+          "$ref": "#/$defs/selectField"
+        },
+        {
+          "$ref": "#/$defs/radioField"
+        },
+        {
+          "$ref": "#/$defs/checkboxField"
+        },
+        {
+          "$ref": "#/$defs/switchField"
+        },
+        {
+          "$ref": "#/$defs/dateField"
+        },
+        {
+          "$ref": "#/$defs/passwordField"
+        },
+        {
+          "$ref": "#/$defs/fileField"
+        }
+      ]
+    },
+    "tabNode": {
       "type": "object",
-      "required": ["type", "name", "label"],
+      "required": [
+        "type",
+        "name",
+        "label",
+        "children"
+      ],
+      "additionalProperties": false,
       "properties": {
-        "name": { "$ref": "#/$defs/fieldName" },
-        "label": { "$ref": "#/$defs/plainText", "minLength": 1 },
-        "defaultValue": {},
-        "required": { "type": "boolean" },
-        "placeholder": { "$ref": "#/$defs/plainText" },
-        "description": { "$ref": "#/$defs/plainText" },
-        "disabled": { "type": "boolean" },
-        "sensitive": { "type": "boolean" }
+        "type": {
+          "const": "tab"
+        },
+        "name": {
+          "$ref": "#/$defs/fieldName"
+        },
+        "label": {
+          "$ref": "#/$defs/fieldLabel"
+        },
+        "description": {
+          "$ref": "#/$defs/plainText"
+        },
+        "children": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/formField"
+          }
+        }
       }
     },
     "inputField": {
       "type": "object",
-      "required": ["type", "name", "label"],
+      "required": [
+        "type",
+        "name",
+        "label"
+      ],
       "additionalProperties": false,
       "properties": {
-        "type": { "const": "input" },
-        "name": { "$ref": "#/$defs/fieldName" },
-        "label": { "type": "string", "minLength": 1 },
-        "defaultValue": { "type": "string" },
-        "required": { "type": "boolean" },
-        "placeholder": { "type": "string" },
-        "description": { "type": "string" },
-        "disabled": { "type": "boolean" },
-        "sensitive": { "type": "boolean" },
-        "minLength": { "type": "integer", "minimum": 0 },
-        "maxLength": { "type": "integer", "minimum": 0 },
-        "pattern": { "type": "string", "maxLength": 512 }
+        "type": {
+          "const": "input"
+        },
+        "name": {
+          "$ref": "#/$defs/fieldName"
+        },
+        "label": {
+          "$ref": "#/$defs/fieldLabel"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "placeholder": {
+          "$ref": "#/$defs/plainText"
+        },
+        "description": {
+          "$ref": "#/$defs/plainText"
+        },
+        "disabled": {
+          "type": "boolean"
+        },
+        "sensitive": {
+          "type": "boolean"
+        },
+        "defaultValue": {
+          "type": "string"
+        },
+        "minLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pattern": {
+          "type": "string",
+          "maxLength": 512
+        }
       }
     },
     "textareaField": {
       "type": "object",
-      "required": ["type", "name", "label"],
+      "required": [
+        "type",
+        "name",
+        "label"
+      ],
       "additionalProperties": false,
       "properties": {
-        "type": { "const": "textarea" },
-        "name": { "$ref": "#/$defs/fieldName" },
-        "label": { "type": "string", "minLength": 1 },
-        "defaultValue": { "type": "string" },
-        "required": { "type": "boolean" },
-        "placeholder": { "type": "string" },
-        "description": { "type": "string" },
-        "disabled": { "type": "boolean" },
-        "sensitive": { "type": "boolean" },
-        "minLength": { "type": "integer", "minimum": 0 },
-        "maxLength": { "type": "integer", "minimum": 0 }
+        "type": {
+          "const": "textarea"
+        },
+        "name": {
+          "$ref": "#/$defs/fieldName"
+        },
+        "label": {
+          "$ref": "#/$defs/fieldLabel"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "placeholder": {
+          "$ref": "#/$defs/plainText"
+        },
+        "description": {
+          "$ref": "#/$defs/plainText"
+        },
+        "disabled": {
+          "type": "boolean"
+        },
+        "sensitive": {
+          "type": "boolean"
+        },
+        "defaultValue": {
+          "type": "string"
+        },
+        "minLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxLength": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     },
     "numberField": {
       "type": "object",
-      "required": ["type", "name", "label"],
+      "required": [
+        "type",
+        "name",
+        "label"
+      ],
       "additionalProperties": false,
       "properties": {
-        "type": { "const": "number" },
-        "name": { "$ref": "#/$defs/fieldName" },
-        "label": { "type": "string", "minLength": 1 },
-        "defaultValue": { "type": "number" },
-        "required": { "type": "boolean" },
-        "placeholder": { "type": "string" },
-        "description": { "type": "string" },
-        "disabled": { "type": "boolean" },
-        "sensitive": { "type": "boolean" },
-        "min": { "type": "number" },
-        "max": { "type": "number" },
-        "step": { "type": "number", "exclusiveMinimum": 0 }
+        "type": {
+          "const": "number"
+        },
+        "name": {
+          "$ref": "#/$defs/fieldName"
+        },
+        "label": {
+          "$ref": "#/$defs/fieldLabel"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "placeholder": {
+          "$ref": "#/$defs/plainText"
+        },
+        "description": {
+          "$ref": "#/$defs/plainText"
+        },
+        "disabled": {
+          "type": "boolean"
+        },
+        "sensitive": {
+          "type": "boolean"
+        },
+        "defaultValue": {
+          "type": "number"
+        },
+        "min": {
+          "type": "number"
+        },
+        "max": {
+          "type": "number"
+        },
+        "step": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
       }
     },
     "selectField": {
       "type": "object",
-      "required": ["type", "name", "label", "options"],
+      "required": [
+        "type",
+        "name",
+        "label",
+        "options"
+      ],
       "additionalProperties": false,
       "properties": {
-        "type": { "const": "select" },
-        "name": { "$ref": "#/$defs/fieldName" },
-        "label": { "type": "string", "minLength": 1 },
-        "defaultValue": { "$ref": "#/$defs/optionValue" },
-        "required": { "type": "boolean" },
-        "placeholder": { "type": "string" },
-        "description": { "type": "string" },
-        "disabled": { "type": "boolean" },
-        "sensitive": { "type": "boolean" },
-        "options": { "$ref": "#/$defs/options" }
+        "type": {
+          "const": "select"
+        },
+        "name": {
+          "$ref": "#/$defs/fieldName"
+        },
+        "label": {
+          "$ref": "#/$defs/fieldLabel"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "placeholder": {
+          "$ref": "#/$defs/plainText"
+        },
+        "description": {
+          "$ref": "#/$defs/plainText"
+        },
+        "disabled": {
+          "type": "boolean"
+        },
+        "sensitive": {
+          "type": "boolean"
+        },
+        "defaultValue": {
+          "$ref": "#/$defs/optionValue"
+        },
+        "options": {
+          "$ref": "#/$defs/options"
+        }
       }
     },
     "radioField": {
       "type": "object",
-      "required": ["type", "name", "label", "options"],
+      "required": [
+        "type",
+        "name",
+        "label",
+        "options"
+      ],
       "additionalProperties": false,
       "properties": {
-        "type": { "const": "radio" },
-        "name": { "$ref": "#/$defs/fieldName" },
-        "label": { "type": "string", "minLength": 1 },
-        "defaultValue": { "$ref": "#/$defs/optionValue" },
-        "required": { "type": "boolean" },
-        "placeholder": { "type": "string" },
-        "description": { "type": "string" },
-        "disabled": { "type": "boolean" },
-        "sensitive": { "type": "boolean" },
-        "options": { "$ref": "#/$defs/options" }
+        "type": {
+          "const": "radio"
+        },
+        "name": {
+          "$ref": "#/$defs/fieldName"
+        },
+        "label": {
+          "$ref": "#/$defs/fieldLabel"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "placeholder": {
+          "$ref": "#/$defs/plainText"
+        },
+        "description": {
+          "$ref": "#/$defs/plainText"
+        },
+        "disabled": {
+          "type": "boolean"
+        },
+        "sensitive": {
+          "type": "boolean"
+        },
+        "defaultValue": {
+          "$ref": "#/$defs/optionValue"
+        },
+        "options": {
+          "$ref": "#/$defs/options"
+        }
       }
     },
     "checkboxField": {
       "type": "object",
-      "required": ["type", "name", "label", "options"],
+      "required": [
+        "type",
+        "name",
+        "label",
+        "options"
+      ],
       "additionalProperties": false,
       "properties": {
-        "type": { "const": "checkbox" },
-        "name": { "$ref": "#/$defs/fieldName" },
-        "label": { "type": "string", "minLength": 1 },
+        "type": {
+          "const": "checkbox"
+        },
+        "name": {
+          "$ref": "#/$defs/fieldName"
+        },
+        "label": {
+          "$ref": "#/$defs/fieldLabel"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "placeholder": {
+          "$ref": "#/$defs/plainText"
+        },
+        "description": {
+          "$ref": "#/$defs/plainText"
+        },
+        "disabled": {
+          "type": "boolean"
+        },
+        "sensitive": {
+          "type": "boolean"
+        },
         "defaultValue": {
           "type": "array",
-          "items": { "$ref": "#/$defs/optionValue" },
-          "uniqueItems": true
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/optionValue"
+          }
         },
-        "required": { "type": "boolean" },
-        "placeholder": { "type": "string" },
-        "description": { "type": "string" },
-        "disabled": { "type": "boolean" },
-        "sensitive": { "type": "boolean" },
-        "options": { "$ref": "#/$defs/options" }
+        "options": {
+          "$ref": "#/$defs/options"
+        }
       }
     },
     "switchField": {
       "type": "object",
-      "required": ["type", "name", "label"],
+      "required": [
+        "type",
+        "name",
+        "label"
+      ],
       "additionalProperties": false,
       "properties": {
-        "type": { "const": "switch" },
-        "name": { "$ref": "#/$defs/fieldName" },
-        "label": { "type": "string", "minLength": 1 },
-        "defaultValue": { "type": "boolean" },
-        "required": { "type": "boolean" },
-        "placeholder": { "type": "string" },
-        "description": { "type": "string" },
-        "disabled": { "type": "boolean" },
-        "sensitive": { "type": "boolean" }
+        "type": {
+          "const": "switch"
+        },
+        "name": {
+          "$ref": "#/$defs/fieldName"
+        },
+        "label": {
+          "$ref": "#/$defs/fieldLabel"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "placeholder": {
+          "$ref": "#/$defs/plainText"
+        },
+        "description": {
+          "$ref": "#/$defs/plainText"
+        },
+        "disabled": {
+          "type": "boolean"
+        },
+        "sensitive": {
+          "type": "boolean"
+        },
+        "defaultValue": {
+          "type": "boolean"
+        }
       }
     },
     "dateField": {
       "type": "object",
-      "required": ["type", "name", "label"],
+      "required": [
+        "type",
+        "name",
+        "label"
+      ],
       "additionalProperties": false,
       "properties": {
-        "type": { "const": "date" },
-        "name": { "$ref": "#/$defs/fieldName" },
-        "label": { "type": "string", "minLength": 1 },
-        "defaultValue": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
-        "required": { "type": "boolean" },
-        "placeholder": { "type": "string" },
-        "description": { "type": "string" },
-        "disabled": { "type": "boolean" },
-        "sensitive": { "type": "boolean" }
+        "type": {
+          "const": "date"
+        },
+        "name": {
+          "$ref": "#/$defs/fieldName"
+        },
+        "label": {
+          "$ref": "#/$defs/fieldLabel"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "placeholder": {
+          "$ref": "#/$defs/plainText"
+        },
+        "description": {
+          "$ref": "#/$defs/plainText"
+        },
+        "disabled": {
+          "type": "boolean"
+        },
+        "sensitive": {
+          "type": "boolean"
+        },
+        "defaultValue": {
+          "description": "YYYY-MM-DD；日历有效性由运行时校验器保证",
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
       }
     },
     "passwordField": {
       "type": "object",
-      "required": ["type", "name", "label"],
+      "required": [
+        "type",
+        "name",
+        "label"
+      ],
       "additionalProperties": false,
       "properties": {
-        "type": { "const": "password" },
-        "name": { "$ref": "#/$defs/fieldName" },
-        "label": { "type": "string", "minLength": 1 },
-        "defaultValue": { "type": "string" },
-        "required": { "type": "boolean" },
-        "placeholder": { "type": "string" },
-        "description": { "type": "string" },
-        "disabled": { "type": "boolean" },
-        "sensitive": { "const": true }
+        "type": {
+          "const": "password"
+        },
+        "name": {
+          "$ref": "#/$defs/fieldName"
+        },
+        "label": {
+          "$ref": "#/$defs/fieldLabel"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "placeholder": {
+          "$ref": "#/$defs/plainText"
+        },
+        "description": {
+          "$ref": "#/$defs/plainText"
+        },
+        "disabled": {
+          "type": "boolean"
+        },
+        "sensitive": {
+          "const": true
+        },
+        "defaultValue": {
+          "type": "string"
+        }
       }
     },
     "fileField": {
       "type": "object",
-      "required": ["type", "name", "label", "allowedExtensions"],
+      "required": [
+        "type",
+        "name",
+        "label",
+        "allowedExtensions"
+      ],
       "additionalProperties": false,
       "properties": {
-        "type": { "const": "file" },
-        "name": { "$ref": "#/$defs/fieldName" },
-        "label": { "type": "string", "minLength": 1 },
-        "required": { "type": "boolean" },
-        "description": { "type": "string" },
+        "type": {
+          "const": "file"
+        },
+        "name": {
+          "$ref": "#/$defs/fieldName"
+        },
+        "label": {
+          "$ref": "#/$defs/fieldLabel"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "description": {
+          "$ref": "#/$defs/plainText"
+        },
         "allowedExtensions": {
           "type": "array",
           "minItems": 1,
           "maxItems": 16,
           "uniqueItems": true,
-          "items": { "type": "string", "pattern": "^\\.[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$" }
+          "items": {
+            "type": "string",
+            "pattern": "^\\.[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$"
+          }
         },
-        "fileNamePattern": { "type": "string", "maxLength": 256 },
-        "maxSizeBytes": { "type": "integer", "minimum": 1, "maximum": 2147483648 }
+        "fileNamePattern": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "maxSizeBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483648
+        }
       }
-    },
-    "formField": {
-      "oneOf": [
-        { "$ref": "#/$defs/inputField" },
-        { "$ref": "#/$defs/textareaField" },
-        { "$ref": "#/$defs/numberField" },
-        { "$ref": "#/$defs/selectField" },
-        { "$ref": "#/$defs/radioField" },
-        { "$ref": "#/$defs/checkboxField" },
-        { "$ref": "#/$defs/switchField" },
-        { "$ref": "#/$defs/dateField" },
-        { "$ref": "#/$defs/passwordField" },
-        { "$ref": "#/$defs/fileField" }
-      ]
     }
-  },
-  "x-runtimeOnlyRules": [
-    "同一模板内 name 必须唯一",
-    "options 值必须唯一",
-    "pattern 必须可编译",
-    "约束范围必须一致",
-    "纯文本不得含控制字符或 HTML/XML 标签",
-    "date 必须是有效日历日期"
-  ]
+  }
 }
