@@ -31,6 +31,7 @@ const uploadingFields = ref(new Set<string>());
 const tabs = computed<readonly TabFormNode[]>(() =>
   props.schema.filter((node): node is TabFormNode => node.type === 'tab'),
 );
+const activeTabName = ref('');
 const flatFields = computed<readonly FormField[]>(() =>
   props.schema.filter((node): node is FormField => node.type !== 'tab'),
 );
@@ -221,6 +222,15 @@ function emitValidation(): void {
 
 onMounted(emitValidation);
 watch(localIssues, emitValidation);
+watch(
+  tabs,
+  (nextTabs) => {
+    if (!nextTabs.some((tab) => tab.name === activeTabName.value)) {
+      activeTabName.value = nextTabs[0]?.name ?? '';
+    }
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -241,7 +251,7 @@ watch(localIssues, emitValidation);
     </el-alert>
 
     <el-empty v-if="schema.length === 0" description="当前模板没有配置项" />
-    <el-tabs v-else-if="tabs.length" class="config-editor__tabs">
+    <el-tabs v-else-if="tabs.length" v-model="activeTabName" class="config-editor__tabs">
       <el-tab-pane v-for="tab in tabs" :key="tab.name" :name="tab.name" :label="tab.label">
         <div v-if="tab.description" class="config-editor__tab-description">
           {{ tab.description }}

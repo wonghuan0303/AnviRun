@@ -37,6 +37,31 @@ const schema: FormSchema = [
 const global = { plugins: [ElementPlus] };
 
 describe('FormConfigEditor', () => {
+  it('selects the first tab when initially rendered', async () => {
+    const tabSchema: FormSchema = [
+      {
+        type: 'tab',
+        name: 'client',
+        label: '客户端设置',
+        children: [{ type: 'input', name: 'clientName', label: '客户端名称' }],
+      },
+      {
+        type: 'tab',
+        name: 'server',
+        label: '服务设置',
+        children: [{ type: 'input', name: 'serverName', label: '服务名称' }],
+      },
+    ];
+    const wrapper = mount(FormConfigEditor, {
+      props: { schema: tabSchema, modelValue: {} },
+      global,
+    });
+    await nextTick();
+
+    expect(wrapper.find('.el-tabs__item.is-active').text()).toBe('客户端设置');
+    expect(wrapper.find('.el-tab-pane[aria-hidden="false"]').text()).toContain('客户端名称');
+  });
+
   it('renders tab nodes and emits their values as nested objects', async () => {
     const tabSchema: FormSchema = [
       {
