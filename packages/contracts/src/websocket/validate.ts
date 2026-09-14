@@ -321,8 +321,45 @@ function configValue(value: unknown): boolean {
     isString(value) ||
     (isFiniteNumber(value) && !Number.isNaN(value)) ||
     typeof value === 'boolean' ||
-    (Array.isArray(value) && value.every((item) => isString(item) || isFiniteNumber(item)))
+    (Array.isArray(value) && value.every((item) => isString(item) || isFiniteNumber(item))) ||
+    (isPlainObject(value) &&
+      Object.keys(value).length === 4 &&
+      isString(value.fileId) &&
+      isString(value.fileName) &&
+      isFiniteNumber(value.size) &&
+      isString(value.sha256) &&
+      /^[a-f0-9]{64}$/.test(value.sha256))
   );
+}
+
+function inputFiles(
+  raw: unknown,
+  path: readonly ValidationPathSegment[],
+  issues: ProtocolMessageIssue[],
+): void {
+  if (raw === undefined) return;
+  if (!Array.isArray(raw)) {
+    issue(issues, 'PROPERTY_INVALID', path, 'inputFiles 必须是数组');
+    return;
+  }
+  raw.forEach((item, index) => {
+    const itemPath = [...path, index];
+    const file = objectValue(item, itemPath, issues);
+    if (!file) return;
+    unknownProperties(
+      file,
+      ['fileId', 'fieldName', 'fileName', 'size', 'sha256', 'targetRelativePath'],
+      itemPath,
+      issues,
+    );
+    idProperty(file, 'fileId', itemPath, issues);
+    stringProperty(file, 'fieldName', itemPath, issues, true, true);
+    stringProperty(file, 'fileName', itemPath, issues, true, true);
+    nonNegativeInteger(file, 'size', itemPath, issues, true);
+    if (!(isString(file.sha256) && /^[a-f0-9]{64}$/.test(file.sha256)))
+      issue(issues, 'PROPERTY_INVALID', [...itemPath, 'sha256'], 'sha256 非法');
+    relativePathProperty(file, 'targetRelativePath', itemPath, issues);
+  });
 }
 
 function configObject(
@@ -482,6 +519,7 @@ function serverPayload(
           'artifactDir',
           'timeoutSeconds',
           'config',
+          'inputFiles',
           'sensitiveConfigKeys',
           'interactiveInputEnabled',
         ],
@@ -498,6 +536,7 @@ function serverPayload(
       relativePathProperty(value, 'artifactDir', path, issues);
       positiveInteger(value, 'timeoutSeconds', path, issues);
       configObject(value.config, [...path, 'config'], issues);
+      inputFiles(value.inputFiles, [...path, 'inputFiles'], issues);
       stringArray(value, 'sensitiveConfigKeys', path, issues);
       booleanProperty(value, 'interactiveInputEnabled', path, issues);
       return;

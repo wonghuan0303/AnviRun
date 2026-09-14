@@ -20,7 +20,13 @@ export const FORM_FIELD_TYPES = [
   'switch',
   'date',
   'password',
+  'file',
 ] as const;
+
+export const FORM_FILE_DEFAULT_MAX_BYTES = 256 * 1024 * 1024;
+export const FORM_FILE_HARD_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+export const FORM_FILE_EXTENSION_PATTERN = /^\.[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$/;
+export const FORM_FILE_NAME_PATTERN_MAX_LENGTH = 256;
 
 /** 控件类型。 */
 export type FormFieldType = (typeof FORM_FIELD_TYPES)[number];
@@ -121,6 +127,30 @@ export type DateFormField = FormFieldCommon<'date', string>;
  */
 export type PasswordFormField = FormFieldCommon<'password', string>;
 
+export interface FileConfigValue {
+  readonly fileId: string;
+  readonly fileName: string;
+  readonly size: number;
+  readonly sha256: string;
+}
+
+/** 单文件上传；文件本体通过流式 HTTP 传输，配置中只保存不可变引用。 */
+export interface FileFormField {
+  readonly type: 'file';
+  readonly name: string;
+  readonly label: string;
+  readonly required?: boolean;
+  readonly description?: string;
+  readonly allowedExtensions: readonly string[];
+  readonly fileNamePattern?: string;
+  readonly maxSizeBytes?: number;
+  /** 文件引用不能由模板预置；这些 never 属性仅保持判别联合访问兼容。 */
+  readonly defaultValue?: never;
+  readonly placeholder?: never;
+  readonly disabled?: never;
+  readonly sensitive?: never;
+}
+
 /** 配置表单字段判别联合，判别属性为 `type`。 */
 export type FormField =
   | InputFormField
@@ -131,7 +161,8 @@ export type FormField =
   | CheckboxFormField
   | SwitchFormField
   | DateFormField
-  | PasswordFormField;
+  | PasswordFormField
+  | FileFormField;
 
 /** 配置表单模板：字段数组，允许为空数组（产品设计 5.2）。 */
 export type FormSchema = readonly FormField[];
@@ -187,4 +218,14 @@ export const FORM_FIELD_ALLOWED_PROPERTIES: Readonly<Record<FormFieldType, reado
   switch: [...FORM_FIELD_COMMON_PROPERTIES],
   date: [...FORM_FIELD_COMMON_PROPERTIES],
   password: [...FORM_FIELD_COMMON_PROPERTIES],
+  file: [
+    'type',
+    'name',
+    'label',
+    'required',
+    'description',
+    'allowedExtensions',
+    'fileNamePattern',
+    'maxSizeBytes',
+  ],
 };

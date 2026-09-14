@@ -14,12 +14,14 @@ describe('HealthController', () => {
   let storageRoot: string;
   const originalTaskLogRoot = process.env.TASK_LOG_ROOT;
   const originalArtifactRoot = process.env.ARTIFACT_STORAGE_ROOT;
+  const originalConfigFileRoot = process.env.CONFIG_FILE_STORAGE_ROOT;
   const originalWebRoot = process.env.WEB_STATIC_ROOT;
 
   beforeEach(async () => {
     storageRoot = await fs.mkdtemp(join(tmpdir(), 'buildplatform-health-'));
     process.env.TASK_LOG_ROOT = join(storageRoot, 'task-logs');
     process.env.ARTIFACT_STORAGE_ROOT = join(storageRoot, 'artifacts');
+    process.env.CONFIG_FILE_STORAGE_ROOT = join(storageRoot, 'config-files');
     delete process.env.WEB_STATIC_ROOT;
     moduleRef = await Test.createTestingModule({ imports: [HealthModule] })
       .overrideProvider(PrismaService)
@@ -35,6 +37,8 @@ describe('HealthController', () => {
     else process.env.TASK_LOG_ROOT = originalTaskLogRoot;
     if (originalArtifactRoot === undefined) delete process.env.ARTIFACT_STORAGE_ROOT;
     else process.env.ARTIFACT_STORAGE_ROOT = originalArtifactRoot;
+    if (originalConfigFileRoot === undefined) delete process.env.CONFIG_FILE_STORAGE_ROOT;
+    else process.env.CONFIG_FILE_STORAGE_ROOT = originalConfigFileRoot;
     if (originalWebRoot === undefined) delete process.env.WEB_STATIC_ROOT;
     else process.env.WEB_STATIC_ROOT = originalWebRoot;
   });
@@ -68,6 +72,7 @@ describe('HealthController', () => {
       database: { status: 'ok' },
       taskLogs: { status: 'ok' },
       artifacts: { status: 'ok' },
+      configFiles: { status: 'ok' },
       web: { status: 'disabled' },
     });
   });

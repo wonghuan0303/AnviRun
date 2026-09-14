@@ -5,6 +5,8 @@ import ElementPlus from 'element-plus';
 import type { FormSchemaIssue } from '@anvilrun/contracts';
 
 import FormSchemaEditor from './FormSchemaEditor.vue';
+import { FORM_SCHEMA_EXAMPLE_TEXT } from './example';
+import { parseFormSchemaText } from './schema';
 
 const serverIssue: FormSchemaIssue = {
   code: 'FIELD_TYPE_UNKNOWN',
@@ -19,6 +21,20 @@ const serverIssue: FormSchemaIssue = {
 const global = { plugins: [ElementPlus] };
 
 describe('FormSchemaEditor', () => {
+  it('shows all supported types and a valid JSON example', async () => {
+    const wrapper = mount(FormSchemaEditor, {
+      props: { modelValue: '[]' },
+      global,
+    });
+
+    expect(wrapper.text()).toContain('查看支持类型与 JSON 配置示例');
+    expect(wrapper.text()).toContain('file：文件上传');
+    expect(wrapper.text()).toContain('allowedExtensions');
+    const parsed = parseFormSchemaText(FORM_SCHEMA_EXAMPLE_TEXT);
+    expect(parsed.issues).toHaveLength(0);
+    expect(parsed.value).toHaveLength(10);
+  });
+
   it('shows syntax errors and a safe preview for valid JSON', async () => {
     const wrapper = mount(FormSchemaEditor, {
       props: { modelValue: '[]' },

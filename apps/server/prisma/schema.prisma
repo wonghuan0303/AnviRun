@@ -39,19 +39,20 @@ enum BuildTaskStatus {
 }
 
 model User {
-  id                String          @id @default(uuid()) @db.Uuid
-  username          String          @unique @db.VarChar(64)
-  passwordHash      String          @db.VarChar(255)
-  role              UserRole        @default(USER)
-  status            UserStatus      @default(ACTIVE)
-  tokenVersion      Int             @default(0)
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
-  refreshTokens     RefreshToken[]
-  createdTemplates  BuildTemplate[] @relation("BuildTemplateCreatedBy")
-  projects          Project[]       @relation("ProjectOwner")
-  createdTasks      BuildTask[]     @relation("BuildTaskCreatedBy")
-  auditLogs         AuditLog[]      @relation("AuditLogActor")
+  id               String          @id @default(uuid()) @db.Uuid
+  username         String          @unique @db.VarChar(64)
+  passwordHash     String          @db.VarChar(255)
+  role             UserRole        @default(USER)
+  status           UserStatus      @default(ACTIVE)
+  tokenVersion     Int             @default(0)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  refreshTokens    RefreshToken[]
+  createdTemplates BuildTemplate[] @relation("BuildTemplateCreatedBy")
+  projects         Project[]       @relation("ProjectOwner")
+  createdTasks     BuildTask[]     @relation("BuildTaskCreatedBy")
+  auditLogs        AuditLog[]      @relation("AuditLogActor")
+  configFiles      ConfigFile[]
 
   @@index([role])
   @@index([status])
@@ -59,15 +60,15 @@ model User {
 }
 
 model RefreshToken {
-  id            String   @id @default(uuid()) @db.Uuid
-  userId        String   @db.Uuid
-  tokenHash     String   @unique @db.VarChar(255)
+  id            String    @id @default(uuid()) @db.Uuid
+  userId        String    @db.Uuid
+  tokenHash     String    @unique @db.VarChar(255)
   expiresAt     DateTime
   revokedAt     DateTime?
-  clientSummary String?  @db.VarChar(255)
+  clientSummary String?   @db.VarChar(255)
   lastUsedAt    DateTime?
-  createdAt     DateTime @default(now())
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  createdAt     DateTime  @default(now())
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
 
   @@index([userId])
   @@index([expiresAt])
@@ -99,24 +100,25 @@ model Agent {
 }
 
 model BuildTemplate {
-  id             String        @id @default(uuid()) @db.Uuid
-  name           String         @db.VarChar(128)
-  description    String?        @db.Text
-  agentId        String         @db.Uuid
-  gitUrl         String         @db.Text
-  command        String         @db.Text
-  artifactDir    String         @db.VarChar(1024)
-  formSchema     Json
-  interactiveInputEnabled Boolean @default(false)
-  timeoutSeconds Int           @default(3600)
-  enabled        Boolean       @default(true)
-  createdBy      String         @db.Uuid
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  agent          Agent         @relation(fields: [agentId], references: [id], onDelete: NoAction, onUpdate: Cascade)
-  creator        User          @relation("BuildTemplateCreatedBy", fields: [createdBy], references: [id], onDelete: NoAction, onUpdate: Cascade)
-  projects       Project[]     @relation("ProjectBuildTemplate")
-  tasks          BuildTask[]   @relation("BuildTaskTemplate")
+  id                      String       @id @default(uuid()) @db.Uuid
+  name                    String       @db.VarChar(128)
+  description             String?      @db.Text
+  agentId                 String       @db.Uuid
+  gitUrl                  String       @db.Text
+  command                 String       @db.Text
+  artifactDir             String       @db.VarChar(1024)
+  formSchema              Json
+  interactiveInputEnabled Boolean      @default(false)
+  timeoutSeconds          Int          @default(3600)
+  enabled                 Boolean      @default(true)
+  createdBy               String       @db.Uuid
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+  agent                   Agent        @relation(fields: [agentId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  creator                 User         @relation("BuildTemplateCreatedBy", fields: [createdBy], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  projects                Project[]    @relation("ProjectBuildTemplate")
+  tasks                   BuildTask[]  @relation("BuildTaskTemplate")
+  configFiles             ConfigFile[]
 
   @@unique([agentId, name])
   @@index([agentId])
@@ -138,6 +140,7 @@ model Project {
   owner           User          @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: NoAction, onUpdate: Cascade)
   buildTemplate   BuildTemplate @relation("ProjectBuildTemplate", fields: [buildTemplateId], references: [id], onDelete: NoAction, onUpdate: Cascade)
   tasks           BuildTask[]   @relation("BuildTaskProject")
+  configFiles     ConfigFile[]
 
   @@index([ownerId, deletedAt, createdAt, id])
   @@index([buildTemplateId])
@@ -145,65 +148,107 @@ model Project {
 }
 
 model BuildTask {
-  id                String          @id @default(uuid()) @db.Uuid
-  projectId         String          @db.Uuid
-  buildTemplateId   String          @db.Uuid
-  agentId           String          @db.Uuid
-  createdBy         String          @db.Uuid
-  status            BuildTaskStatus  @default(CREATED)
-  statusReason      String?         @db.Text
-  branch            String          @db.VarChar(512)
-  config            Json
-  interactiveInputEnabled Boolean    @default(false)
-  sourceCommit      String?         @db.VarChar(128)
-  assignedArtifactDir String?       @db.VarChar(1024)
-  recoveryStatus    BuildTaskStatus?
-  agentLostAt       DateTime?
-  recoveryDeadlineAt DateTime?
-  creationIdempotencyKey String?    @db.VarChar(128)
-  exitCode          Int?
-  queuedAt          DateTime?
-  startedAt         DateTime?
-  finishedAt         DateTime?
-  cancelRequestedAt DateTime?
-  leaseHash         String?         @db.VarChar(255)
-  leaseExpiresAt    DateTime?
-  logSize           BigInt         @default(0)
-  lastLogSequence   BigInt         @default(0)
-  logLeaseHash      String?        @db.VarChar(255)
-  logLeaseExpiresAt DateTime?
-  logSensitiveKeys  Json?
-  artifactCount     BigInt         @default(0)
-  artifactBytes     BigInt         @default(0)
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
-  project           Project         @relation("BuildTaskProject", fields: [projectId], references: [id], onDelete: NoAction, onUpdate: Cascade)
-  buildTemplate     BuildTemplate   @relation("BuildTaskTemplate", fields: [buildTemplateId], references: [id], onDelete: NoAction, onUpdate: Cascade)
-  agent             Agent           @relation("BuildTaskAgent", fields: [agentId], references: [id], onDelete: NoAction, onUpdate: Cascade)
-  creator           User            @relation("BuildTaskCreatedBy", fields: [createdBy], references: [id], onDelete: NoAction, onUpdate: Cascade)
-  activeForAgent    Agent?          @relation("AgentActiveTask")
-  artifacts         Artifact[]
-  history           BuildTaskStatusHistory[]
+  id                      String                   @id @default(uuid()) @db.Uuid
+  projectId               String                   @db.Uuid
+  buildTemplateId         String                   @db.Uuid
+  agentId                 String                   @db.Uuid
+  createdBy               String                   @db.Uuid
+  status                  BuildTaskStatus          @default(CREATED)
+  statusReason            String?                  @db.Text
+  branch                  String                   @db.VarChar(512)
+  config                  Json
+  interactiveInputEnabled Boolean                  @default(false)
+  sourceCommit            String?                  @db.VarChar(128)
+  assignedArtifactDir     String?                  @db.VarChar(1024)
+  recoveryStatus          BuildTaskStatus?
+  agentLostAt             DateTime?
+  recoveryDeadlineAt      DateTime?
+  creationIdempotencyKey  String?                  @db.VarChar(128)
+  exitCode                Int?
+  queuedAt                DateTime?
+  startedAt               DateTime?
+  finishedAt              DateTime?
+  cancelRequestedAt       DateTime?
+  leaseHash               String?                  @db.VarChar(255)
+  leaseExpiresAt          DateTime?
+  logSize                 BigInt                   @default(0)
+  lastLogSequence         BigInt                   @default(0)
+  logLeaseHash            String?                  @db.VarChar(255)
+  logLeaseExpiresAt       DateTime?
+  logSensitiveKeys        Json?
+  artifactCount           BigInt                   @default(0)
+  artifactBytes           BigInt                   @default(0)
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+  project                 Project                  @relation("BuildTaskProject", fields: [projectId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  buildTemplate           BuildTemplate            @relation("BuildTaskTemplate", fields: [buildTemplateId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  agent                   Agent                    @relation("BuildTaskAgent", fields: [agentId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  creator                 User                     @relation("BuildTaskCreatedBy", fields: [createdBy], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  activeForAgent          Agent?                   @relation("AgentActiveTask")
+  artifacts               Artifact[]
+  history                 BuildTaskStatusHistory[]
+  inputFiles              BuildTaskInputFile[]
 
+  @@unique([createdBy, projectId, creationIdempotencyKey])
   @@index([projectId, createdAt, id])
   @@index([agentId, status, createdAt, id])
   @@index([status, createdAt, id])
   @@index([buildTemplateId, status, createdAt, id])
   @@index([createdBy, createdAt, id])
-  @@unique([createdBy, projectId, creationIdempotencyKey])
   @@index([status, recoveryDeadlineAt])
 }
 
+model ConfigFile {
+  id              String               @id @default(uuid()) @db.Uuid
+  ownerId         String               @db.Uuid
+  projectId       String?              @db.Uuid
+  buildTemplateId String               @db.Uuid
+  fieldName       String               @db.VarChar(64)
+  originalName    String               @db.VarChar(512)
+  size            BigInt
+  sha256          String               @db.Char(64)
+  storagePath     String               @db.VarChar(4096)
+  contentType     String?              @db.VarChar(255)
+  expiresAt       DateTime?
+  detachedAt      DateTime?
+  createdAt       DateTime             @default(now())
+  owner           User                 @relation(fields: [ownerId], references: [id], onDelete: NoAction)
+  project         Project?             @relation(fields: [projectId], references: [id], onDelete: NoAction)
+  buildTemplate   BuildTemplate        @relation(fields: [buildTemplateId], references: [id], onDelete: NoAction)
+  taskInputs      BuildTaskInputFile[]
+
+  @@index([ownerId, expiresAt])
+  @@index([projectId, fieldName])
+  @@index([buildTemplateId, fieldName])
+}
+
+model BuildTaskInputFile {
+  id                 String     @id @default(uuid()) @db.Uuid
+  taskId             String     @db.Uuid
+  configFileId       String     @db.Uuid
+  fieldName          String     @db.VarChar(64)
+  targetRelativePath String     @db.VarChar(2048)
+  originalName       String     @db.VarChar(512)
+  size               BigInt
+  sha256             String     @db.Char(64)
+  createdAt          DateTime   @default(now())
+  task               BuildTask  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  configFile         ConfigFile @relation(fields: [configFileId], references: [id], onDelete: NoAction)
+
+  @@unique([taskId, fieldName])
+  @@index([configFileId])
+}
+
 model BuildTaskStatusHistory {
-  id          String         @id @default(uuid()) @db.Uuid
-  taskId      String         @db.Uuid
-  fromStatus  BuildTaskStatus?
-  toStatus    BuildTaskStatus
-  source      String         @db.VarChar(32)
-  reason      String?        @db.Text
-  occurredAt  DateTime       @default(now())
-  createdAt   DateTime       @default(now())
-  task        BuildTask      @relation(fields: [taskId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  id         String           @id @default(uuid()) @db.Uuid
+  taskId     String           @db.Uuid
+  fromStatus BuildTaskStatus?
+  toStatus   BuildTaskStatus
+  source     String           @db.VarChar(32)
+  reason     String?          @db.Text
+  occurredAt DateTime         @default(now())
+  createdAt  DateTime         @default(now())
+  task       BuildTask        @relation(fields: [taskId], references: [id], onDelete: Cascade, onUpdate: Cascade)
 
   @@index([taskId, occurredAt, id])
 }
@@ -227,15 +272,15 @@ model Artifact {
 }
 
 model AuditLog {
-  id           String    @id @default(uuid()) @db.Uuid
-  actorId      String?   @db.Uuid
-  action       String    @db.VarChar(128)
-  resourceType String    @db.VarChar(128)
-  resourceId   String    @db.VarChar(128)
-  requestId    String?   @db.VarChar(128)
+  id           String   @id @default(uuid()) @db.Uuid
+  actorId      String?  @db.Uuid
+  action       String   @db.VarChar(128)
+  resourceType String   @db.VarChar(128)
+  resourceId   String   @db.VarChar(128)
+  requestId    String?  @db.VarChar(128)
   metadata     Json?
-  createdAt    DateTime  @default(now())
-  actor        User?     @relation("AuditLogActor", fields: [actorId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  createdAt    DateTime @default(now())
+  actor        User?    @relation("AuditLogActor", fields: [actorId], references: [id], onDelete: SetNull, onUpdate: Cascade)
 
   @@index([actorId])
   @@index([resourceType, resourceId])

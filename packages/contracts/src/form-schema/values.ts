@@ -15,9 +15,16 @@ import {
   type ValidationIssue,
   type ValidationPathSegment,
 } from '../validation';
-import type { FormField, FormFieldOptionValue, FormSchema } from './field-types';
+import {
+  FORM_FILE_DEFAULT_MAX_BYTES,
+  type FileConfigValue,
+  type FormField,
+  type FormFieldOptionValue,
+  type FormSchema,
+} from './field-types';
 
-export type FormFieldValue = string | number | boolean | readonly FormFieldOptionValue[] | null;
+export type FormFieldValue =
+  string | number | boolean | readonly FormFieldOptionValue[] | FileConfigValue | null;
 
 export type FormConfigValues = Readonly<Record<string, FormFieldValue>>;
 
@@ -117,7 +124,83 @@ function expectedFieldType(field: FormField): string {
       return 'array of string or finite number option values';
     case 'switch':
       return 'boolean';
+    case 'file':
+      return 'uploaded file reference';
   }
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+
+export function fileMatchesField(
+  field: Extract<FormField, { type: 'file' }>,
+  fileName: string,
+  size: number,
+): boolean {
+  const lower = fileName.toLowerCase();
+  const extensionAllowed = field.allowedExtensions.some((extension) =>
+    lower.endsWith(extension.toLowerCase()),
+  );
+  let nameAllowed = true;
+  if (field.fileNamePattern) {
+    try {
+      nameAllowed = new RegExp(`^(?:${field.fileNamePattern})$`).test(fileName);
+    } catch {
+      nameAllowed = false;
+    }
+  }
+  return (
+    extensionAllowed &&
+    nameAllowed &&
+    size >= 0 &&
+    size <= (field.maxSizeBytes ?? FORM_FILE_DEFAULT_MAX_BYTES)
+  );
+}
+
+function validateFileValue(
+  field: Extract<FormField, { type: 'file' }>,
+  value: unknown,
+): { value?: FileConfigValue; issues: FormConfigIssue[] } {
+  if (!isStrictJsonObject(value))
+    return {
+      issues: [
+        valueIssue(
+          field,
+          'FIELD_TYPE_INVALID',
+          `字段 ${field.name} 的值类型不符合模板`,
+          expectedFieldType(field),
+          value,
+        ),
+      ],
+    };
+  const keys = Object.keys(value);
+  const validKeys =
+    keys.length === 4 &&
+    ['fileId', 'fileName', 'size', 'sha256'].every((key) => hasOwn(value, key));
+  const valid =
+    validKeys &&
+    typeof value.fileId === 'string' &&
+    UUID_PATTERN.test(value.fileId) &&
+    typeof value.fileName === 'string' &&
+    value.fileName.length > 0 &&
+    typeof value.size === 'number' &&
+    Number.isSafeInteger(value.size) &&
+    typeof value.sha256 === 'string' &&
+    SHA256_PATTERN.test(value.sha256) &&
+    fileMatchesField(field, value.fileName, value.size);
+  return valid
+    ? { value: value as unknown as FileConfigValue, issues: [] }
+    : {
+        issues: [
+          valueIssue(
+            field,
+            'FIELD_CONSTRAINT_INVALID',
+            `字段 ${field.name} 的文件引用或文件约束无效`,
+            expectedFieldType(field),
+            value,
+          ),
+        ],
+      };
 }
 
 function valueIssue(
@@ -428,6 +511,8 @@ function validateFieldValue(
               ),
             ],
           };
+    case 'file':
+      return validateFileValue(field, value);
   }
 }
 

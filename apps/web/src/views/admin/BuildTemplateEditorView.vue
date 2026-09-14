@@ -264,7 +264,8 @@ onMounted(() => {
           <div class="card-section-title">3. 动态表单契约 (formSchema)</div>
         </template>
         <div class="schema-tip">
-          表单协议只在浏览器本地解析和预览，保存时提交校验后的 JSON。支持 9 种标准白名单控件。
+          表单协议只在浏览器本地解析和预览，保存时提交校验后的 JSON。支持 10
+          种标准白名单控件，配置说明与完整示例见下方。
         </div>
         <el-form-item label="formSchema JSON" required>
           <FormSchemaEditor

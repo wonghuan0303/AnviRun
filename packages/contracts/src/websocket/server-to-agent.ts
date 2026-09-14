@@ -80,6 +80,15 @@ export interface TaskGitSource {
   readonly branch: string;
 }
 
+export interface TaskInputFileAssignment {
+  readonly fileId: string;
+  readonly fieldName: string;
+  readonly fileName: string;
+  readonly size: number;
+  readonly sha256: string;
+  readonly targetRelativePath: string;
+}
+
 /** 任务派发。 */
 export interface TaskAssignmentPayload {
   /** 任务标识。 */
@@ -109,6 +118,8 @@ export interface TaskAssignmentPayload {
    * 禁止作为命令行参数或环境变量隐式展开。
    */
   readonly config: FormConfigValues;
+  /** 需在命令启动前通过租约保护的 HTTP 接口下载并校验的配置文件。 */
+  readonly inputFiles?: readonly TaskInputFileAssignment[];
   /** `config` 中属于敏感项的键名，日志与展示必须遮蔽。 */
   readonly sensitiveConfigKeys: readonly string[];
   /** 是否允许在任务运行期间向 stdin 写入一行文本。 */

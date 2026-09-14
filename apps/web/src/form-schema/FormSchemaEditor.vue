@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import type { FormSchema, FormSchemaIssue } from '@anvilrun/contracts';
 
 import FormSchemaPreview from './FormSchemaPreview.vue';
+import { FORM_FIELD_TYPE_GUIDE, FORM_SCHEMA_EXAMPLE_TEXT } from './example';
 import { parseFormSchemaText, type JsonSyntaxIssue } from './schema';
 
 const props = withDefaults(
@@ -127,6 +128,24 @@ onMounted(parse);
       <el-button size="small" @click="formatJson">格式化 JSON</el-button>
       <el-button size="small" @click="reset">重置为空数组</el-button>
     </div>
+    <el-collapse class="schema-editor__guide">
+      <el-collapse-item name="schema-example" title="查看支持类型与 JSON 配置示例">
+        <p class="schema-editor__guide-intro">
+          每个字段都需要 type、name 和 label；required、description 等为公共可选属性。
+        </p>
+        <div class="schema-editor__types" aria-label="支持的字段类型">
+          <span v-for="item in FORM_FIELD_TYPE_GUIDE" :key="item.type">
+            <code>{{ item.type }}</code
+            >：{{ item.label }}
+          </span>
+        </div>
+        <p class="schema-editor__guide-note">
+          文件类型通过 allowedExtensions 限制格式，fileNamePattern
+          按完整文件名限制包名，maxSizeBytes 限制字节数。
+        </p>
+        <pre class="schema-editor__example"><code>{{ FORM_SCHEMA_EXAMPLE_TEXT }}</code></pre>
+      </el-collapse-item>
+    </el-collapse>
     <div class="schema-editor__input-wrapper">
       <el-input
         :model-value="text"
@@ -183,6 +202,48 @@ onMounted(parse);
   display: flex;
   gap: 8px;
   margin-bottom: 10px;
+}
+
+.schema-editor__guide {
+  margin-bottom: 14px;
+  border: 1px solid var(--ar-border-color);
+  border-radius: var(--ar-radius-md);
+  padding: 0 14px;
+}
+
+.schema-editor__guide-intro,
+.schema-editor__guide-note {
+  margin: 0 0 10px;
+  color: var(--ar-text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.schema-editor__types {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px 16px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--ar-text-primary);
+}
+
+.schema-editor__types code {
+  color: var(--ar-color-primary);
+}
+
+.schema-editor__example {
+  max-height: 460px;
+  overflow: auto;
+  margin: 0 0 14px;
+  padding: 14px;
+  border-radius: var(--ar-radius-md);
+  background: var(--ar-bg-terminal);
+  color: #f1f5f9;
+  font-family: var(--ar-font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
 }
 
 .schema-textarea :deep(textarea) {

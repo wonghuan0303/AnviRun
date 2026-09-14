@@ -137,7 +137,13 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   }
 
   let body = options.body;
-  if (body !== undefined && typeof body !== 'string' && !(body instanceof FormData)) {
+  if (
+    body !== undefined &&
+    typeof body !== 'string' &&
+    !(body instanceof FormData) &&
+    !(body instanceof Blob) &&
+    !(body instanceof ArrayBuffer)
+  ) {
     headers.set('Content-Type', 'application/json');
     body = JSON.stringify(body);
   }
@@ -191,7 +197,13 @@ export async function apiBlobRequest(
     if (token) headers.set('X-CSRF-Token', token);
   }
   let body = options.body;
-  if (body !== undefined && typeof body !== 'string' && !(body instanceof FormData)) {
+  if (
+    body !== undefined &&
+    typeof body !== 'string' &&
+    !(body instanceof FormData) &&
+    !(body instanceof Blob) &&
+    !(body instanceof ArrayBuffer)
+  ) {
     headers.set('Content-Type', 'application/json');
     body = JSON.stringify(body);
   }

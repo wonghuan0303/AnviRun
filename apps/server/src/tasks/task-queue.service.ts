@@ -107,6 +107,16 @@ const CLAIM_SELECT = {
       formSchema: true,
     },
   },
+  inputFiles: {
+    select: {
+      configFileId: true,
+      fieldName: true,
+      originalName: true,
+      size: true,
+      sha256: true,
+      targetRelativePath: true,
+    },
+  },
 } as const;
 
 type ClaimResult = TaskAssignmentMessage | null;
@@ -1494,6 +1504,14 @@ export class TaskQueueService implements OnModuleInit, OnModuleDestroy {
             artifactDir: assignedArtifactDir,
             timeoutSeconds: task.buildTemplate.timeoutSeconds,
             config: task.config as FormConfigValues,
+            inputFiles: task.inputFiles.map((file) => ({
+              fileId: file.configFileId,
+              fieldName: file.fieldName,
+              fileName: file.originalName,
+              size: Number(file.size),
+              sha256: file.sha256,
+              targetRelativePath: file.targetRelativePath,
+            })),
             sensitiveConfigKeys: listSensitiveFormFieldNames(schema.value),
             interactiveInputEnabled: task.interactiveInputEnabled,
           },

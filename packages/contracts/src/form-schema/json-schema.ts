@@ -14,6 +14,8 @@ import {
   FORM_FIELD_NAME_PATTERN,
   FORM_FIELD_PATTERN_MAX_LENGTH,
   FORM_FIELD_TYPES,
+  FORM_FILE_HARD_MAX_BYTES,
+  FORM_FILE_NAME_PATTERN_MAX_LENGTH,
 } from './field-types';
 
 /** JSON Schema 文档的最小结构约定。 */
@@ -120,6 +122,7 @@ export const FORM_SCHEMA_JSON_SCHEMA: JsonSchemaDocument = {
         { $ref: '#/$defs/switchField' },
         { $ref: '#/$defs/dateField' },
         { $ref: '#/$defs/passwordField' },
+        { $ref: '#/$defs/fileField' },
       ],
     },
     inputField: {
@@ -231,6 +234,27 @@ export const FORM_SCHEMA_JSON_SCHEMA: JsonSchemaDocument = {
         // password 恒为敏感字段，不允许显式关闭遮蔽。
         sensitive: { const: true },
         defaultValue: { type: 'string' },
+      },
+    },
+    fileField: {
+      type: 'object',
+      required: [...REQUIRED_PROPERTIES, 'allowedExtensions'],
+      additionalProperties: false,
+      properties: {
+        type: { const: 'file' },
+        name: COMMON_PROPERTIES.name,
+        label: COMMON_PROPERTIES.label,
+        required: COMMON_PROPERTIES.required,
+        description: COMMON_PROPERTIES.description,
+        allowedExtensions: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 16,
+          uniqueItems: true,
+          items: { type: 'string', pattern: '^\\.[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$' },
+        },
+        fileNamePattern: { type: 'string', maxLength: FORM_FILE_NAME_PATTERN_MAX_LENGTH },
+        maxSizeBytes: { type: 'integer', minimum: 1, maximum: FORM_FILE_HARD_MAX_BYTES },
       },
     },
   },

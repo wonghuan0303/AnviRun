@@ -171,7 +171,7 @@ docker compose -f docker-compose.dev.yml up -d
 ```
 
 容器名为 `buildplatform-postgres-t11`，健康检查通过后监听宿主
-`127.0.0.1:54329`。开发数据库为 `buildplatform_dev`，默认凭据只用于本地开发。
+`127.0.0.1:15432`。开发数据库为 `buildplatform_dev`，默认凭据只用于本地开发。
 复制 `apps/server/.env.example` 为 `apps/server/.env` 后即可使用示例 `DATABASE_URL`。
 
 ### 8.2 Prisma 命令
@@ -195,7 +195,7 @@ pnpm run db:seed                    # 幂等开发种子，可重复执行
 ```powershell
 docker exec buildplatform-postgres-t11 psql -U buildplatform -d postgres -c "DROP DATABASE IF EXISTS buildplatform_test;"
 docker exec buildplatform-postgres-t11 psql -U buildplatform -d postgres -c "CREATE DATABASE buildplatform_test OWNER buildplatform;"
-$env:DATABASE_URL = 'postgresql://buildplatform:buildplatform_dev_only@127.0.0.1:54329/buildplatform_test?schema=public'
+$env:DATABASE_URL = 'postgresql://buildplatform:buildplatform_dev_only@127.0.0.1:15432/buildplatform_test?schema=public'
 pnpm run db:test
 ```
 

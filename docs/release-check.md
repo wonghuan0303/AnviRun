@@ -18,7 +18,7 @@ pwsh -File .\deploy\windows\release-check.ps1
 命令行：
 
 ```powershell
-$env:BUILDPLATFORM_TEST_DATABASE_URL = 'postgresql://<user>:<password>@127.0.0.1:54329/buildplatform_test'
+$env:BUILDPLATFORM_TEST_DATABASE_URL = 'postgresql://<user>:<password>@127.0.0.1:15432/buildplatform_test'
 pwsh -File .\deploy\windows\release-check.ps1
 ```
 

@@ -338,6 +338,7 @@ mod tests {
             artifact_dir: "dist".to_string(),
             timeout_seconds: 10,
             config: serde_json::Map::new(),
+            input_files: Vec::new(),
             sensitive_config_keys: Vec::new(),
             interactive_input_enabled: false,
         };
@@ -397,6 +398,7 @@ mod tests {
                 .as_object()
                 .expect("object config")
                 .clone(),
+            input_files: Vec::new(),
             sensitive_config_keys: Vec::new(),
             interactive_input_enabled: false,
         };

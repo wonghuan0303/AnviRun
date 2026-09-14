@@ -300,6 +300,32 @@ export class TasksService {
           },
           select: { id: true },
         });
+        const fileFields = schema.filter((field) => field.type === 'file');
+        for (const field of fileFields) {
+          const value = config.value[field.name];
+          if (!value || typeof value !== 'object' || Array.isArray(value) || !('fileId' in value))
+            continue;
+          const file = await tx.configFile.findFirst({
+            where: {
+              id: value.fileId,
+              projectId: project.id,
+              buildTemplateId: project.buildTemplateId,
+              fieldName: field.name,
+            },
+          });
+          if (!file) throw new ApiException('CONFIG_FILE_REFERENCE_INVALID');
+          await tx.buildTaskInputFile.create({
+            data: {
+              taskId: created.id,
+              configFileId: file.id,
+              fieldName: field.name,
+              targetRelativePath: `.anvilrun/inputs/${field.name}/${file.originalName}`,
+              originalName: file.originalName,
+              size: file.size,
+              sha256: file.sha256,
+            },
+          });
+        }
         await this.state.createInitial(tx, created.id, initialStatus, 'SERVER', statusReason);
         await this.audit.record(
           {

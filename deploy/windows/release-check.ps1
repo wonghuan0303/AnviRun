@@ -3,7 +3,7 @@ param(
   [string]$RepositoryRoot,
   [string]$TestDatabaseUrl = $env:BUILDPLATFORM_TEST_DATABASE_URL,
   [string]$PostgresContainer = 'buildplatform-postgres-t11',
-  [int]$PostgresPort = 54329,
+  [int]$PostgresPort = 15432,
   [string]$PostgresUser = 'buildplatform'
 )
 

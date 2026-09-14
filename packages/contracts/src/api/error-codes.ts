@@ -27,6 +27,9 @@ export const API_ERROR_CODES = [
   'BUILD_TEMPLATE_INVALID',
   /** 项目配置非法：配置值与模板不匹配。 */
   'PROJECT_CONFIG_INVALID',
+  'CONFIG_FILE_INVALID',
+  'CONFIG_FILE_TOO_LARGE',
+  'CONFIG_FILE_REFERENCE_INVALID',
   /** 任务当前状态不允许该操作，例如取消已完成的任务。 */
   'TASK_INVALID_STATE',
   /** 任务租约无效、已过期或已被其它 Agent 领取。 */
@@ -62,6 +65,9 @@ export const API_ERROR_HTTP_STATUS: Readonly<Record<ApiErrorCode, number>> = {
   AGENT_DISABLED: 409,
   BUILD_TEMPLATE_INVALID: 400,
   PROJECT_CONFIG_INVALID: 400,
+  CONFIG_FILE_INVALID: 400,
+  CONFIG_FILE_TOO_LARGE: 413,
+  CONFIG_FILE_REFERENCE_INVALID: 400,
   TASK_INVALID_STATE: 409,
   TASK_LEASE_INVALID: 403,
   ARTIFACT_INVALID_PATH: 400,
@@ -85,6 +91,9 @@ export const API_ERROR_DEFAULT_MESSAGES: Readonly<Record<ApiErrorCode, string>> 
   AGENT_DISABLED: '目标 Agent 已被禁用',
   BUILD_TEMPLATE_INVALID: '构建模板不合法',
   PROJECT_CONFIG_INVALID: '项目配置不合法',
+  CONFIG_FILE_INVALID: '配置文件不符合模板要求',
+  CONFIG_FILE_TOO_LARGE: '配置文件大小超过限制',
+  CONFIG_FILE_REFERENCE_INVALID: '配置文件引用无效或已过期',
   TASK_INVALID_STATE: '任务当前状态不允许该操作',
   TASK_LEASE_INVALID: '任务租约无效或已过期',
   ARTIFACT_INVALID_PATH: '产物路径不合法',

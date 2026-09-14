@@ -73,6 +73,13 @@ function options(field: FormField): readonly { label: string; value: string | nu
         :model-value="typeof field.defaultValue === 'string' ? field.defaultValue : undefined"
         disabled
       />
+      <div v-else-if="field.type === 'file'">
+        <el-button disabled>选择文件</el-button>
+        <small
+          >允许 {{ field.allowedExtensions.join('、') }}，最大
+          {{ Math.ceil((field.maxSizeBytes ?? 268435456) / 1048576) }} MiB</small
+        >
+      </div>
     </el-form-item>
   </el-form>
 </template>

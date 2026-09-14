@@ -187,10 +187,19 @@ dto!(TaskGitSource {
     url: String,
     branch: String
 });
+dto!(TaskInputFileAssignment {
+    file_id: String,
+    field_name: String,
+    file_name: String,
+    size: u64,
+    sha256: String,
+    target_relative_path: String
+});
 dto!(TaskAssignmentPayload {
     task_id: String, lease_token: String, lease_expires_at: String, agent_id: String,
     project_id: String, build_template_id: String, git: TaskGitSource, command: String,
     artifact_dir: String, timeout_seconds: u64, config: serde_json::Map<String, Value>,
+    #[serde(default)] input_files: Vec<TaskInputFileAssignment>,
     sensitive_config_keys: Vec<String>, interactive_input_enabled: bool
 });
 dto!(TaskCancelPayload {

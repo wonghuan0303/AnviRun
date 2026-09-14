@@ -22,14 +22,14 @@ jobs:
           POSTGRES_PASSWORD: buildplatform_ci_only
           POSTGRES_DB: buildplatform_test
         ports:
-          - 54329:5432
+          - 15432:5432
         options: >-
           --health-cmd "pg_isready -U buildplatform -d buildplatform_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
     env:
-      DATABASE_URL: postgresql://buildplatform:buildplatform_ci_only@127.0.0.1:54329/buildplatform_test?schema=public
+      DATABASE_URL: postgresql://buildplatform:buildplatform_ci_only@127.0.0.1:15432/buildplatform_test?schema=public
     steps:
       - uses: actions/checkout@v4
 

@@ -1,14 +1,18 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import {
   validateFormConfigValues,
+  fileMatchesField,
   type FormConfigIssue,
   type FormConfigValues,
+  type FileConfigValue,
   type FormField,
   type FormFieldOptionValue,
   type FormFieldValue,
   type FormSchema,
 } from '@anvilrun/contracts';
+import { uploadConfigFile } from '@/api/config-files';
+import { ElMessage } from 'element-plus';
 
 const props = withDefaults(
   defineProps<{
@@ -16,9 +20,12 @@ const props = withDefaults(
     modelValue: FormConfigValues;
     externalIssues?: readonly FormConfigIssue[];
     compact?: boolean;
+    buildTemplateId?: string;
   }>(),
-  { externalIssues: () => [], compact: false },
+  { externalIssues: () => [], compact: false, buildTemplateId: '' },
 );
+
+const uploadingFields = ref(new Set<string>());
 
 const emit = defineEmits<{
   'update:modelValue': [value: FormConfigValues];
@@ -139,6 +146,42 @@ function updateSwitch(field: FormField, value: unknown): void {
 
 function updateDate(field: FormField, value: string | undefined): void {
   updateField(field, value ?? null);
+}
+
+function fileValue(field: FormField): FileConfigValue | undefined {
+  const value = valueFor(field);
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && 'fileId' in value
+    ? (value as FileConfigValue)
+    : undefined;
+}
+
+async function uploadFile(
+  field: Extract<FormField, { type: 'file' }>,
+  event: Event,
+): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file || !props.buildTemplateId) return;
+  if (!fileMatchesField(field, file.name, file.size)) {
+    ElMessage.error('文件格式、包名或大小不符合模板要求');
+    return;
+  }
+  uploadingFields.value = new Set(uploadingFields.value).add(field.name);
+  try {
+    const result = await uploadConfigFile(props.buildTemplateId, field.name, file);
+    updateField(field, result.file);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '文件上传失败');
+  } finally {
+    const next = new Set(uploadingFields.value);
+    next.delete(field.name);
+    uploadingFields.value = next;
+  }
+}
+
+function removeFile(field: Extract<FormField, { type: 'file' }>): void {
+  updateField(field, null);
 }
 
 function emitValidation(): void {
@@ -271,6 +314,41 @@ watch(localIssues, emitValidation);
           class="full-width"
           @update:model-value="updateDate(field, $event)"
         />
+        <div v-else-if="field.type === 'file'" class="config-editor__file">
+          <div v-if="fileValue(field)" class="config-editor__file-current">
+            <span
+              >{{ fileValue(field)?.fileName }}（{{
+                Math.ceil((fileValue(field)?.size ?? 0) / 1024)
+              }}
+              KiB）</span
+            >
+            <el-button
+              link
+              type="danger"
+              :disabled="uploadingFields.has(field.name)"
+              @click="removeFile(field)"
+              >移除</el-button
+            >
+          </div>
+          <label class="config-editor__file-picker">
+            <el-button :loading="uploadingFields.has(field.name)" tag="span">{{
+              fileValue(field) ? '替换文件' : '选择并上传'
+            }}</el-button>
+            <input
+              type="file"
+              :accept="field.allowedExtensions.join(',')"
+              hidden
+              @change="uploadFile(field, $event)"
+            />
+          </label>
+          <small
+            >允许 {{ field.allowedExtensions.join('、') }}；最大
+            {{ Math.ceil((field.maxSizeBytes ?? 268435456) / 1048576) }} MiB<span
+              v-if="field.fileNamePattern"
+              >；包名需匹配 {{ field.fileNamePattern }}</span
+            ></small
+          >
+        </div>
         <ul v-if="fieldIssues(field.name).length" class="config-editor__field-issues">
           <li v-for="issue in fieldIssues(field.name)" :key="issue.pointer">
             {{ issue.message }}（{{ issue.pointer || '(root)' }}）
@@ -317,6 +395,23 @@ watch(localIssues, emitValidation);
   padding-left: 20px;
   color: var(--ar-status-danger);
   font-size: 13px;
+}
+.config-editor__file {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.config-editor__file-current {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.config-editor__file small {
+  color: var(--ar-text-secondary);
+  overflow-wrap: anywhere;
 }
 
 .config-editor__field-issues li {

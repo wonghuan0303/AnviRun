@@ -2,7 +2,6 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
   analyzeFormConfigCompatibility,
-  validateFormConfigValues,
   validateFormSchema,
   type FormConfigCompatibility,
   type FormConfigIssue,
@@ -15,6 +14,7 @@ import { ApiException } from '../common/api-exception';
 import { AuditService } from '../common/audit.service';
 import { PrismaService } from '../database/prisma.service';
 import type { CreateProjectInput, ProjectListQuery, UpdateProjectInput } from './project.dto';
+import { ConfigFilesService } from '../config-files/config-files.service';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -129,18 +129,13 @@ function assertValidSchema(value: unknown): FormSchema {
   return result.value;
 }
 
-function projectConfigException(issues: readonly FormConfigIssue[]): ApiException {
-  return new ApiException('PROJECT_CONFIG_INVALID', {
-    details: { issues: projectConfigIssues(issues) },
-  });
-}
-
 @Injectable()
 export class ProjectsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly authorization: AuthorizationService,
     private readonly audit: AuditService,
+    private readonly configFiles: ConfigFilesService,
   ) {}
 
   async createProject(
@@ -166,8 +161,14 @@ export class ProjectsService {
       }
 
       const schema = assertValidSchema(template.formSchema);
-      const config = validateFormConfigValues(schema, input.config);
-      if (!config.ok) throw projectConfigException(config.issues);
+      const resolved = await this.configFiles.canonicalizeConfig(
+        transaction,
+        actor.id,
+        null,
+        template.id,
+        schema,
+        input.config,
+      );
 
       const created = await transaction.project.create({
         data: {
@@ -176,10 +177,16 @@ export class ProjectsService {
           name: input.name,
           description: input.description,
           branch: input.branch,
-          config: jsonInput(config.value),
+          config: jsonInput(resolved.config),
         },
         select: PROJECT_WITH_SCHEMA_SELECT,
       });
+      await this.configFiles.reconcileProjectFiles(
+        transaction,
+        actor.id,
+        created.id,
+        resolved.fileIds,
+      );
 
       await this.audit.record(
         {
@@ -312,14 +319,26 @@ export class ProjectsService {
       if (!existing) throw new ApiException('RESOURCE_NOT_FOUND');
 
       const schema = assertValidSchema(existing.buildTemplate.formSchema);
-      const config = validateFormConfigValues(schema, input.config);
-      if (!config.ok) throw projectConfigException(config.issues);
+      const resolved = await this.configFiles.canonicalizeConfig(
+        transaction,
+        actor.id,
+        projectId,
+        existing.buildTemplateId,
+        schema,
+        input.config,
+      );
 
       const updated = await transaction.project.update({
         where: { id: projectId },
-        data: { config: jsonInput(config.value) },
+        data: { config: jsonInput(resolved.config) },
         select: PROJECT_WITH_SCHEMA_SELECT,
       });
+      await this.configFiles.reconcileProjectFiles(
+        transaction,
+        actor.id,
+        projectId,
+        resolved.fileIds,
+      );
 
       await this.audit.record(
         {

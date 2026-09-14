@@ -37,6 +37,7 @@ export interface ReadinessStatus {
   readonly database: ReadinessComponent;
   readonly taskLogs: ReadinessComponent;
   readonly artifacts: ReadinessComponent;
+  readonly configFiles: ReadinessComponent;
   readonly web: ReadinessComponent;
 }
 
@@ -68,15 +69,18 @@ export class HealthService {
   }
 
   async getReadiness(): Promise<ReadinessStatus> {
-    const [database, taskLogs, artifacts, web] = await Promise.all([
+    const [database, taskLogs, artifacts, configFiles, web] = await Promise.all([
       this.checkDatabase(),
       this.checkDirectory(process.env.TASK_LOG_ROOT ?? join(process.cwd(), 'data', 'task-logs')),
       this.checkDirectory(
         process.env.ARTIFACT_STORAGE_ROOT ?? join(process.cwd(), 'data', 'artifacts'),
       ),
+      this.checkDirectory(
+        process.env.CONFIG_FILE_STORAGE_ROOT ?? join(process.cwd(), 'data', 'config-files'),
+      ),
       this.checkWeb(),
     ]);
-    const components = [database, taskLogs, artifacts, web];
+    const components = [database, taskLogs, artifacts, configFiles, web];
     return {
       status: components.every((component) => component.status !== 'unavailable')
         ? 'ok'
@@ -84,6 +88,7 @@ export class HealthService {
       database,
       taskLogs,
       artifacts,
+      configFiles,
       web,
     };
   }

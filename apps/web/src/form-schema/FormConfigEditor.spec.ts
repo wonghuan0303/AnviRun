@@ -31,6 +31,7 @@ const schema: FormSchema = [
   { type: 'switch', name: 'enabled', label: '启用' },
   { type: 'date', name: 'releaseDate', label: '发布日期' },
   { type: 'password', name: 'secret', label: '密钥', sensitive: true },
+  { type: 'file', name: 'packageFile', label: '安装包', allowedExtensions: ['.zip'] },
 ];
 
 const global = { plugins: [ElementPlus] };
@@ -53,10 +54,12 @@ describe('FormConfigEditor', () => {
       '启用',
       '发布日期',
       '密钥',
+      '安装包',
     ]) {
       expect(wrapper.text()).toContain(label);
     }
     expect(wrapper.find('input[type="password"]').exists()).toBe(true);
+    expect(wrapper.find('input[type="file"]').attributes('accept')).toBe('.zip');
     expect((wrapper.find('input').element as HTMLInputElement).value).toBe('默认名称');
   });
 

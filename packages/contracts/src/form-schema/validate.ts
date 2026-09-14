@@ -32,6 +32,9 @@ import {
   FORM_FIELD_NAME_PATTERN,
   FORM_FIELD_PATTERN_MAX_LENGTH,
   FORM_FIELD_TYPES,
+  FORM_FILE_EXTENSION_PATTERN,
+  FORM_FILE_HARD_MAX_BYTES,
+  FORM_FILE_NAME_PATTERN_MAX_LENGTH,
   type FormField,
   type FormFieldOptionValue,
   type FormFieldType,
@@ -396,7 +399,102 @@ function validateConstraints(
     case 'switch':
     case 'date':
       return {};
+    case 'file':
+      validateFileConstraints(field, index, context, issues);
+      return {};
   }
+}
+
+function validateFileConstraints(
+  field: Record<string, unknown>,
+  index: number,
+  context: FormSchemaIssueContext,
+  issues: FormSchemaIssue[],
+): void {
+  const rawExtensions = field.allowedExtensions;
+  if (!Array.isArray(rawExtensions) || rawExtensions.length < 1 || rawExtensions.length > 16) {
+    issues.push(
+      createFormSchemaIssue(
+        'CONSTRAINT_INVALID',
+        [index, 'allowedExtensions'],
+        'allowedExtensions 必须是包含 1–16 项的数组',
+        { ...context, property: 'allowedExtensions' },
+      ),
+    );
+  } else {
+    const seen = new Set<string>();
+    rawExtensions.forEach((value, extensionIndex) => {
+      if (
+        !isString(value) ||
+        !FORM_FILE_EXTENSION_PATTERN.test(value) ||
+        seen.has(value.toLowerCase())
+      ) {
+        issues.push(
+          createFormSchemaIssue(
+            'CONSTRAINT_INVALID',
+            [index, 'allowedExtensions', extensionIndex],
+            '文件扩展名必须合法且不能重复',
+            { ...context, property: 'allowedExtensions' },
+          ),
+        );
+      } else seen.add(value.toLowerCase());
+    });
+  }
+  const pattern = field.fileNamePattern;
+  if (pattern !== undefined) {
+    if (!isString(pattern)) {
+      issues.push(
+        createFormSchemaIssue(
+          'PROPERTY_TYPE_INVALID',
+          [index, 'fileNamePattern'],
+          'fileNamePattern 必须是字符串',
+          { ...context, property: 'fileNamePattern' },
+        ),
+      );
+    } else if (pattern.length > FORM_FILE_NAME_PATTERN_MAX_LENGTH) {
+      issues.push(
+        createFormSchemaIssue(
+          'CONSTRAINT_INVALID',
+          [index, 'fileNamePattern'],
+          `fileNamePattern 长度不能超过 ${FORM_FILE_NAME_PATTERN_MAX_LENGTH}`,
+          { ...context, property: 'fileNamePattern' },
+        ),
+      );
+    } else if (unsafeFileNamePattern(pattern)) {
+      issues.push(
+        createFormSchemaIssue(
+          'CONSTRAINT_INVALID',
+          [index, 'fileNamePattern'],
+          'fileNamePattern 包含高风险正则结构',
+          { ...context, property: 'fileNamePattern' },
+        ),
+      );
+    } else {
+      try {
+        new RegExp(`^(?:${pattern})$`);
+      } catch {
+        issues.push(
+          createFormSchemaIssue(
+            'CONSTRAINT_INVALID',
+            [index, 'fileNamePattern'],
+            'fileNamePattern 不是合法的正则表达式',
+            { ...context, property: 'fileNamePattern' },
+          ),
+        );
+      }
+    }
+  }
+  readOptionalNumber(field, 'maxSizeBytes', index, context, issues, {
+    integer: true,
+    requirement: `必须是 1–${FORM_FILE_HARD_MAX_BYTES} 的安全整数`,
+    accepts: (value) => value >= 1 && value <= FORM_FILE_HARD_MAX_BYTES,
+  });
+}
+
+function unsafeFileNamePattern(pattern: string): boolean {
+  if (/\\[1-9]/.test(pattern) || /\(\?(?:[=!]|<[=!])/.test(pattern)) return true;
+  // 拒绝一个已量化分组再次被量化的常见灾难性回溯结构，例如 (a+)+。
+  return /\([^)]*(?:\*|\+|\{\d+(?:,\d*)?\})[^)]*\)(?:\*|\+|\{)/.test(pattern);
 }
 
 function validateLengthConstraints(
@@ -785,6 +883,9 @@ function validateDefaultValue(
 
       return;
     }
+    case 'file':
+      pushTypeIssue('不可设置默认值');
+      return;
 
     case 'number': {
       if (!isFiniteNumber(value)) {

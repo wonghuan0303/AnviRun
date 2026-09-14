@@ -269,6 +269,7 @@ onMounted(() => {
           v-else-if="form.buildTemplateId"
           v-model="config"
           :schema="schema"
+          :build-template-id="form.buildTemplateId"
           :external-issues="serverIssues"
           @validation="onConfigValidation"
           @field-change="onConfigFieldChange"

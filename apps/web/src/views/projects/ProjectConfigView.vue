@@ -171,6 +171,7 @@ onMounted(() => {
           <FormConfigEditor
             v-model="config"
             :schema="schema"
+            :build-template-id="project.buildTemplateId"
             :external-issues="serverIssues"
             compact
             @validation="onValidation"

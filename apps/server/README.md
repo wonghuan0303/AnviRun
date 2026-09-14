@@ -209,7 +209,11 @@ Agent 的 `task.log` 由 `/ws/agent` 接收并按任务追加到文件型 NDJSON
 
 Server 可通过 `WEB_STATIC_ROOT` 可选托管 `apps/web/dist`，与 API 和 WebSocket 使用同源访问。`/` 与无扩展名 Vue history 路由回退到 `index.html`；`/api/*`、`/health/*`、`/ws/*` 不参与 SPA 回退，不存在的带扩展名资源返回 404。静态根必须包含可读的 `index.html`，缺失时启动失败，`/health/ready` 也会报告 Web 不可用。
 
-`/health/live` 只检查 Node 进程响应，不访问数据库或磁盘；`/health/ready` 执行 `SELECT 1`，对 `TASK_LOG_ROOT` 和 `ARTIFACT_STORAGE_ROOT` 做独占临时文件写入/同步/删除探针，并检查可选 Web 入口。ready 成功返回 200，失败返回 503；响应不包含数据库 URL、密钥、绝对路径、Prisma 错误或堆栈。
+`/health/live` 只检查 Node 进程响应，不访问数据库或磁盘；`/health/ready` 执行 `SELECT 1`，对 `TASK_LOG_ROOT`、`ARTIFACT_STORAGE_ROOT` 和 `CONFIG_FILE_STORAGE_ROOT` 做独占临时文件写入/同步/删除探针，并检查可选 Web 入口。ready 成功返回 200，失败返回 503；响应不包含数据库 URL、密钥、绝对路径、Prisma 错误或堆栈。
+
+## 配置文件输入
+
+`FormSchema` 的 `file` 控件通过 `POST /api/config-files` 流式上传文件，支持 `allowedExtensions`、`fileNamePattern` 和 `maxSizeBytes`。新建项目时文件先作为 24 小时临时上传保存，项目创建或配置保存时校验所有权并原子绑定。任务创建会把文件引用快照到 `BuildTaskInputFile`；Agent 使用任务租约从 `/api/agent/tasks/:taskId/input-files/:fileId/content` 流式下载，校验大小和 SHA-256 后才执行构建命令。文件正文不会进入 JSON、数据库或 WebSocket。
 
 Windows 本机部署脚本位于 `deploy/windows/`：`build.ps1`、`start-server.ps1`、`start-agent.ps1`、`check-health.ps1`、`backup.ps1`、`restore.ps1` 和 `package-agent.ps1`。脚本支持带空格路径，使用 `-LiteralPath`，Server/Agent 前台运行，迁移失败不启动 Server，不自动 seed 或创建管理员。完整目录、升级回滚、备份恢复和故障排查见 `docs/windows-deployment.md` 与 `docs/operations.md`。
 

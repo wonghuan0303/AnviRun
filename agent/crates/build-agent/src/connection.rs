@@ -41,6 +41,7 @@ use crate::artifacts::{
 use crate::config::ConfigError;
 use crate::execution::{start_command_with_input, ExecutionEvent, ExecutionInput, ExecutionResult};
 use crate::git::GitClient;
+use crate::input_files::download_input_files;
 use crate::log_buffer::{BufferedLogEntry, LogBuffer, LogBufferError};
 use crate::preparation::{prepare_task_with_cancel, PreparationFailure, PreparationResult};
 use crate::task_config::write_platform_config;
@@ -149,9 +150,11 @@ struct ActiveTask {
     source_commit: Option<String>,
     config_written: bool,
     artifact_cleaned: bool,
+    input_files_downloaded: bool,
     command_completed: bool,
     command: String,
     config: serde_json::Map<String, Value>,
+    input_files: Vec<build_agent_contracts::TaskInputFileAssignment>,
     stdout_log_redactor: SensitiveLogRedactor,
     stderr_log_redactor: SensitiveLogRedactor,
     timeout_seconds: u64,
@@ -787,7 +790,36 @@ impl Agent {
                         )
                         .await;
                 }
-                if let Err(error) = write_platform_config(&source_path, &snapshot.config) {
+                if !snapshot.input_files_downloaded {
+                    let mut materialized = snapshot.config.clone();
+                    if let Err(error) = download_input_files(
+                        &self.http_client,
+                        &self.config.server_url,
+                        &snapshot.task_id,
+                        &snapshot.lease_token,
+                        &source_path,
+                        &snapshot.input_files,
+                        &mut materialized,
+                    )
+                    .await
+                    {
+                        return self
+                            .fail_active_task(
+                                socket,
+                                active,
+                                &error.to_string(),
+                                None,
+                                pending_logs,
+                            )
+                            .await;
+                    }
+                    if let Some(current) = active.as_mut() {
+                        current.config = materialized;
+                        current.input_files_downloaded = true;
+                    }
+                }
+                let materialized = &active.as_ref().expect("active task exists").config;
+                if let Err(error) = write_platform_config(&source_path, materialized) {
                     return self
                         .fail_active_task(socket, active, &error.to_string(), None, pending_logs)
                         .await;
@@ -1066,9 +1098,11 @@ impl Agent {
             source_commit: None,
             config_written: false,
             artifact_cleaned: false,
+            input_files_downloaded: false,
             command_completed: false,
             command: assignment.command.clone(),
             config: assignment.config.clone(),
+            input_files: assignment.input_files.clone(),
             stdout_log_redactor: SensitiveLogRedactor::new(
                 &assignment.config,
                 &assignment.sensitive_config_keys,
@@ -1425,6 +1459,30 @@ impl Agent {
                             .await;
                     }
                     current.artifact_cleaned = true;
+                }
+                if !current.input_files_downloaded {
+                    if let Err(error) = download_input_files(
+                        &self.http_client,
+                        &self.config.server_url,
+                        &current.task_id,
+                        &current.lease_token,
+                        &source_path,
+                        &current.input_files,
+                        &mut current.config,
+                    )
+                    .await
+                    {
+                        return self
+                            .fail_active_task(
+                                socket,
+                                active,
+                                &error.to_string(),
+                                None,
+                                pending_logs,
+                            )
+                            .await;
+                    }
+                    current.input_files_downloaded = true;
                 }
                 if let Err(error) = write_platform_config(&source_path, &current.config) {
                     return self
@@ -2296,6 +2354,22 @@ fn validate_assignment(
             "task assignment contains invalid Git or workspace metadata".to_string(),
         ));
     }
+    for file in &assignment.input_files {
+        if Uuid::parse_str(&file.file_id).is_err()
+            || !safe_text(&file.field_name)
+            || !safe_text(&file.file_name)
+            || !safe_relative_path(&file.target_relative_path)
+            || file.sha256.len() != 64
+            || !file
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(AgentError::Protocol(
+                "task assignment contains invalid input file metadata".to_string(),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -2645,6 +2719,7 @@ mod tests {
             .as_object()
             .expect("object config")
             .clone(),
+            input_files: Vec::new(),
             sensitive_config_keys: vec!["password".to_string()],
             interactive_input_enabled: false,
         };
@@ -2777,9 +2852,11 @@ mod tests {
             source_commit: None,
             config_written: true,
             artifact_cleaned: true,
+            input_files_downloaded: true,
             command_completed: true,
             command: "build".to_string(),
             config: config.clone(),
+            input_files: Vec::new(),
             stdout_log_redactor: SensitiveLogRedactor::new(&config, &[]),
             stderr_log_redactor: SensitiveLogRedactor::new(&config, &[]),
             timeout_seconds: 10,

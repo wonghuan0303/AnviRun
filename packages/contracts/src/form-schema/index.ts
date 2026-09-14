@@ -8,6 +8,10 @@ export {
   FORM_FIELD_NAME_PATTERN,
   FORM_FIELD_PATTERN_MAX_LENGTH,
   FORM_FIELD_TYPES,
+  FORM_FILE_DEFAULT_MAX_BYTES,
+  FORM_FILE_EXTENSION_PATTERN,
+  FORM_FILE_HARD_MAX_BYTES,
+  FORM_FILE_NAME_PATTERN_MAX_LENGTH,
   OPTION_BASED_FORM_FIELD_TYPES,
   isOptionBasedFormFieldType,
 } from './field-types';
@@ -15,6 +19,8 @@ export type {
   CheckboxFormField,
   DateFormField,
   FormField,
+  FileConfigValue,
+  FileFormField,
   FormFieldCommon,
   FormFieldOption,
   FormFieldOptionValue,
@@ -35,6 +41,7 @@ export {
   analyzeFormConfigCompatibility,
   normalizeFormConfigValues,
   validateFormConfigValues,
+  fileMatchesField,
 } from './values';
 export type {
   FormConfigCompatibility,

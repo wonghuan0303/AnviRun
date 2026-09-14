@@ -2,7 +2,7 @@
 param(
   [string]$RepositoryRoot,
   [string]$PostgresContainer = 'buildplatform-postgres-t11',
-  [int]$PostgresPort = 54329,
+  [int]$PostgresPort = 15432,
   [string]$PostgresUser = 'buildplatform',
   [int]$ServerPort = 0
 )
@@ -57,6 +57,7 @@ $runRoot = Join-Path ([IO.Path]::GetTempPath()) "buildplatform-e2e-$suffix"
 $workspaceRoot = Join-Path $runRoot 'agent-workspace'
 $artifactRoot = Join-Path $runRoot 'artifacts'
 $taskLogRoot = Join-Path $runRoot 'task-logs'
+$configFileRoot = Join-Path $runRoot 'config-files'
 $webRoot = Join-Path $runRoot 'web'
 $gitFixtureRoot = Join-Path $runRoot 'git-fixture'
 $agentConfigPath = Join-Path $runRoot 'build-agent.toml'
@@ -71,7 +72,7 @@ if ($ServerPort -le 0) { $ServerPort = 31000 + (Get-Random -Minimum 0 -Maximum 1
 if ($ServerPort -gt 65535) { throw 'ServerPort is invalid' }
 
 try {
-  New-Item -ItemType Directory -Force -Path $runRoot, $workspaceRoot, $artifactRoot, $taskLogRoot, $webRoot, $gitFixtureRoot | Out-Null
+  New-Item -ItemType Directory -Force -Path $runRoot, $workspaceRoot, $artifactRoot, $taskLogRoot, $configFileRoot, $webRoot, $gitFixtureRoot | Out-Null
 
   $dbExistsQuery = "SELECT 1 FROM pg_database WHERE datname = '$databaseName'"
   $dbExistsOutput = & docker exec $PostgresContainer psql -U $PostgresUser -d postgres -tAc $dbExistsQuery
@@ -99,6 +100,7 @@ try {
   $env:SERVER_PORT = [string]$ServerPort
   $env:TASK_LOG_ROOT = $taskLogRoot
   $env:ARTIFACT_STORAGE_ROOT = $artifactRoot
+  $env:CONFIG_FILE_STORAGE_ROOT = $configFileRoot
   $env:WEB_STATIC_ROOT = $webRoot
   $env:E2E_ADMIN_PASSWORD = "E2E administrator password $([guid]::NewGuid().ToString('N'))"
 

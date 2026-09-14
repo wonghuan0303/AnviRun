@@ -8,6 +8,7 @@ mod config;
 mod connection;
 mod execution;
 mod git;
+mod input_files;
 mod log_buffer;
 mod preparation;
 mod task_config;

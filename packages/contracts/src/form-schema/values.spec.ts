@@ -3,10 +3,62 @@ import {
   analyzeFormConfigCompatibility,
   normalizeFormConfigValues,
   validateFormConfigValues,
+  validateFormSchema,
   type FormSchema,
 } from './index';
 
 describe('form config values', () => {
+  it('rejects unsafe or malformed file schema constraints', () => {
+    expect(
+      validateFormSchema([
+        { type: 'file', name: 'file', label: '文件', allowedExtensions: ['zip'] },
+      ]).ok,
+    ).toBe(false);
+    expect(
+      validateFormSchema([
+        {
+          type: 'file',
+          name: 'file',
+          label: '文件',
+          allowedExtensions: ['.zip'],
+          fileNamePattern: '(a+)+',
+        },
+      ]).ok,
+    ).toBe(false);
+  });
+  it('validates uploaded file references and template file constraints', () => {
+    const fileSchema: FormSchema = [
+      {
+        type: 'file',
+        name: 'packageFile',
+        label: '安装包',
+        required: true,
+        allowedExtensions: ['.zip', '.tar.gz'],
+        fileNamePattern: 'app-[0-9]+\\.zip',
+        maxSizeBytes: 1024,
+      },
+    ];
+    expect(
+      validateFormConfigValues(fileSchema, {
+        packageFile: {
+          fileId: '00000000-0000-4000-8000-000000000001',
+          fileName: 'app-1.zip',
+          size: 12,
+          sha256: 'a'.repeat(64),
+        },
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateFormConfigValues(fileSchema, {
+        packageFile: {
+          fileId: '00000000-0000-4000-8000-000000000001',
+          fileName: 'other.exe',
+          size: 12,
+          sha256: 'a'.repeat(64),
+        },
+      }).ok,
+    ).toBe(false);
+  });
   const schema: FormSchema = [
     {
       type: 'input',
